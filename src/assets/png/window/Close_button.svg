@@ -1,0 +1,39 @@
+<svg
+   version="1.1"
+   id="svg1"
+   width="31.819824"
+   height="31.819794"
+   viewBox="0 0 31.819824 31.819794"
+   xml:space="preserve"
+   sodipodi:docname="Close_button.svg"
+   inkscape:version="1.4.4 (dcaf3e7, 2026-05-05)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"><sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="18.337642"
+     inkscape:cx="9.2705483"
+     inkscape:cy="14.860144"
+     inkscape:window-width="3440"
+     inkscape:window-height="1369"
+     inkscape:window-x="-8"
+     inkscape:window-y="1072"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg1" /><defs
+     id="defs1" /><style
+     type="text/css"
+     id="style1">
+	.st0{fill-rule:evenodd;clip-rule:evenodd;}
+</style><path
+     id="Close_button"
+     style="display:inline;fill:#ffffff;fill-opacity:1;stroke:none;stroke-width:0.44127;stroke-linejoin:bevel;stroke-opacity:1"
+     d="m 2636.4663,270.70934 14.1421,14.14214 3.5357,-3.53554 -14.1422,-14.14213 z m 17.6778,10.6066 3.5355,3.53554 14.1421,-14.14214 -3.5355,-3.53553 z m 3.5355,3.53554 -3.5355,3.53553 14.1421,14.14213 3.5355,-3.53553 z m -3.5355,3.53553 -3.5357,-3.53553 -14.1421,14.14213 3.5355,3.53553 z"
+     transform="matrix(0.9,0,0,0.9,-2372.8197,-240.45643)" /></svg>

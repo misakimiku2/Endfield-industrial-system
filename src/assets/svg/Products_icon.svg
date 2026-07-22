@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   version="1.1"
+   id="svg1"
+   width="19.440216"
+   height="21.90004"
+   viewBox="0 0 19.440216 21.90004"
+   sodipodi:docname="弹窗设计1600.svg"
+   xml:space="preserve"
+   inkscape:version="1.4.4 (dcaf3e7, 2026-05-05)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"><defs
+     id="defs1" /><sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     showgrid="false"
+     inkscape:zoom="1.62"
+     inkscape:cx="468.51852"
+     inkscape:cy="247.22222"
+     inkscape:window-width="3440"
+     inkscape:window-height="1369"
+     inkscape:window-x="-8"
+     inkscape:window-y="1072"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="layer1"><inkscape:page
+       x="0"
+       y="0"
+       width="19.440216"
+       height="21.90004"
+       id="page1"
+       margin="0"
+       bleed="0" /></sodipodi:namedview><style
+     type="text/css"
+     id="style1">
+	.st0{fill-rule:evenodd;clip-rule:evenodd;}
+</style><g
+     inkscape:groupmode="layer"
+     id="layer1"
+     inkscape:label="设备弹窗"
+     inkscape:export-filename="弹窗设计.svg"
+     inkscape:export-xdpi="96"
+     inkscape:export-ydpi="96"
+     transform="matrix(0.73,0,0,0.73,-922.99615,-336.25652)"><g
+       id="Inventory_Window"><g
+         id="Tab_bar"><path
+           d="m 1289.7977,467.2391 -10.8932,-6.2913 c -0.7508,-0.4299 -1.6712,-0.4299 -2.422,0 l -10.8931,6.2913 c -0.7509,0.4359 -1.2111,1.2352 -1.2111,2.095 v 12.5825 c 0,0.8659 0.4602,1.6652 1.2111,2.0951 l 10.8931,6.2913 c 0.7508,0.4299 1.6712,0.4299 2.422,0 l 10.8932,-6.2913 c 0.7508,-0.436 1.211,-1.2352 1.211,-2.0951 v -12.5825 c 0,-0.8658 -0.4602,-1.6651 -1.211,-2.095 z m -7.2177,11.208 c -1.5562,2.7005 -5.0076,3.6209 -7.7082,2.0647 -2.7005,-1.5561 -3.6209,-5.0075 -2.0648,-7.7081 1.5562,-2.7006 5.0076,-3.6209 7.7082,-2.0648 2.7006,1.5562 3.6209,5.0076 2.0648,7.7082 z"
+           p-id="13529"
+           id="Products_icon"
+           style="display:inline;fill:#929292;fill-opacity:1;stroke-width:0.0413922" /></g></g></g></svg>

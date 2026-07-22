@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   version="1.1"
+   id="svg1"
+   width="44"
+   height="44.000008"
+   viewBox="0 0 44 44.000008"
+   sodipodi:docname="液体弹窗设计.svg"
+   xml:space="preserve"
+   inkscape:version="1.4.4 (dcaf3e7, 2026-05-05)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"><defs
+     id="defs1" /><sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     showgrid="false"
+     inkscape:zoom="0.70465117"
+     inkscape:cx="754.27392"
+     inkscape:cy="311.50165"
+     inkscape:window-width="3440"
+     inkscape:window-height="1369"
+     inkscape:window-x="-8"
+     inkscape:window-y="1072"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="layer1"
+     inkscape:export-bgcolor="#ffffff00"><inkscape:page
+       x="0"
+       y="0"
+       width="44"
+       height="44.000008"
+       id="page1"
+       margin="0"
+       bleed="0" /></sodipodi:namedview><style
+     type="text/css"
+     id="style1">
+	.st0{fill-rule:evenodd;clip-rule:evenodd;}
+</style><g
+     id="g9"
+     transform="matrix(0.03405659,0,0,0.03405659,4.5629394,4.5630599)"
+     style="display:inline;fill:#636363;fill-opacity:1"
+     inkscape:label="recycle"><circle
+       style="display:inline;fill:#ffffff;fill-opacity:1;stroke-width:4.87284;stroke-linecap:round"
+       id="recycle_icon"
+       r="34"
+       cy="1069.6604"
+       cx="2122.3179"
+       transform="matrix(18.99952,0,0,18.99952,-39811.019,-19811.035)"
+       inkscape:label="BG" /><path
+       id="path1-4"
+       style="fill:#636363;fill-opacity:1"
+       d="m 170.64917,213.34572 v 170.6617 h 682.68391 v -170.6617 z m 42.6747,213.3364 V 810.68023 H 810.65838 V 426.68212 Z m 213.33641,85.3123 h 170.66169 v 85.3494 H 426.66028 Z" /></g></svg>

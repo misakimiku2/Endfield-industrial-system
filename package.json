@@ -7,10 +7,12 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "pack-assets": "node --experimental-strip-types scripts/pack-assets.ts"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
+    "sharp": "^0.35.3",
     "typescript": "~5.7.2",
     "vite": "^6.0.0"
   },

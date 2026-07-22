@@ -1,14 +1,23 @@
-// 入口文件 — Phase 0: Hello World 验证
-import { Application, Text, Graphics, Container } from 'pixi.js';
+// 入口文件 — T1.2 相机 + T1.3 资源 + T1.4 世界网格
+// 依据: implementation-phase-1.md T1.2 / T1.3 / T1.4
+//   - 中键拖拽平移 / WASD 平移 / 滚轮以鼠标为中心缩放 / 边界 64×64
+//   - 启动时加载 devices/items/ui 三图集 (T1.3)
+//   - 世界网格: 浅灰背景 #E6E4E4 + 网格线 #D6D4D4 64px + 边缘渐隐 + 暗角 (T1.4)
+
+import { Application, Text } from 'pixi.js';
+import { Camera } from './game/render/Camera';
+import { CameraController } from './game/render/CameraController';
+import { SceneRenderer } from './game/render/SceneRenderer';
+import { GridRenderer } from './game/render/GridRenderer';
+import { loadAllAssets, getTexture } from './game/render/AssetsLoader';
 
 async function main() {
   const app = new Application();
-
   await app.init({
     width: 1280,
     height: 720,
     resizeTo: window,
-    background: '#0a0a0a',
+    background: '#0a0a0a', // 视口外的区域（世界小于视口时可见）
     antialias: true,
     autoDensity: true,
     resolution: window.devicePixelRatio || 1,
@@ -16,79 +25,97 @@ async function main() {
 
   document.body.appendChild(app.canvas);
 
-  // 标题
-  const title = new Text({
-    text: '集成工业系统',
-    style: {
-      fontFamily: 'system-ui, sans-serif',
-      fontSize: 48,
-      fill: 0xffffff,
-      stroke: { color: 0x333333, width: 2 },
-    },
+  // ── 场景图层搭建 (A2 §4) ──
+  const scene = new SceneRenderer(app);
+
+  // ── 相机 (先于网格创建，网格依赖相机) ──
+  const camera = new Camera({ width: app.screen.width, height: app.screen.height });
+  camera.bindWorldContainer(scene.layers.worldContainer);
+
+  // ── T1.4 世界网格: 背景底色 + 网格线 + 边缘渐隐 + 暗角 ──
+  const gridRenderer = new GridRenderer(
+    scene.layers.backgroundLayer,
+    scene.layers.overlayLayer,
+    camera,
+    { width: app.screen.width, height: app.screen.height },
+  );
+
+  // ── 相机输入 ──
+  const controller = new CameraController(camera, app.canvas);
+
+  // ── 视口尺寸同步: 每帧轮询 app.screen，而非监听 window resize ──
+  // PixiJS 的 ResizePlugin 在 window resize 时异步更新 app.screen，与本监听
+  // 存在时序竞争 (可能读到旧值)。改为每帧轮询检测变化，下一帧必然捕获到新值，
+  // 彻底消除最大化/还原时 viewport 与 transform 不同步导致的画面错位。
+  let lastScreenW = app.screen.width;
+  let lastScreenH = app.screen.height;
+
+  // ── T1.3: 加载纹理图集 (devices/items/ui) ──
+  await loadAllAssets();
+
+  // T1.3 验收: 控制台确认关键纹理可取、无 404
+  const sampleDevice = getTexture('devices', 'transport_belt');
+  const sampleItem = getTexture('items', 'cuprium_ore');
+  const sampleUi = getTexture('ui', 'close_button');
+  console.log('[T1.3 验收] 纹理检查:',
+    'devices/transport_belt =', sampleDevice ? `✓ ${sampleDevice.width}×${sampleDevice.height}` : '✗ 缺失',
+    '| items/cuprium_ore =', sampleItem ? `✓ ${sampleItem.width}×${sampleItem.height}` : '✗ 缺失',
+    '| ui/close_button =', sampleUi ? `✓ ${sampleUi.width}×${sampleUi.height}` : '✗ 缺失',
+  );
+
+  // ── HUD: 相机状态 + 操作提示 ──
+  const hud = new Text({
+    text: '',
+    style: { fontFamily: 'monospace', fontSize: 13, fill: 0x00cc00 },
   });
-  title.anchor.set(0.5);
-  title.x = app.screen.width / 2;
-  title.y = app.screen.height / 2 - 60;
+  hud.x = 10;
+  hud.y = 10;
+  app.stage.addChild(hud);
 
-  // 副标题
-  const subtitle = new Text({
-    text: 'PixiJS v8 + Tauri 2.x · 渲染管线验证通过',
-    style: {
-      fontFamily: 'system-ui, sans-serif',
-      fontSize: 18,
-      fill: 0x888888,
-    },
+  const help = new Text({
+    text: '中键拖拽: 平移  |  WASD/方向键: 平移  |  滚轮: 以鼠标为中心缩放',
+    style: { fontFamily: 'system-ui, sans-serif', fontSize: 13, fill: 0x444444 },
   });
-  subtitle.anchor.set(0.5);
-  subtitle.x = app.screen.width / 2;
-  subtitle.y = app.screen.height / 2 + 20;
+  help.x = 10;
+  help.y = 30;
+  app.stage.addChild(help);
 
-  // 装饰性网格线 (Graphics 测试)
-  const grid = new Graphics();
-  const gridSize = 64;
-  for (let x = 0; x < app.screen.width; x += gridSize) {
-    grid.moveTo(x, 0).lineTo(x, app.screen.height).stroke({ width: 1, color: 0x1a1a1a });
-  }
-  for (let y = 0; y < app.screen.height; y += gridSize) {
-    grid.moveTo(0, y).lineTo(app.screen.width, y).stroke({ width: 1, color: 0x1a1a1a });
-  }
-
-  // 一个示例设备图标 (简单熔炉)
-  const device = new Graphics();
-  device.rect(600, 380, 80, 80)
-    .fill({ color: 0x222222 })
-    .stroke({ width: 2, color: 0x666666 });
-  device.rect(610, 370, 60, 10)
-    .fill({ color: 0x444444 })
-    .stroke({ width: 1, color: 0x666666 });
-  device.circle(640, 430, 16)
-    .fill({ color: 0xff6600, alpha: 0.6 })
-    .stroke({ width: 1, color: 0xff8800 });
-
-  // FPS 计数器
-  const fpsText = new Text({
-    text: 'FPS: --',
-    style: {
-      fontFamily: 'monospace',
-      fontSize: 14,
-      fill: 0x00ff00,
-    },
-  });
-  fpsText.x = 10;
-  fpsText.y = 10;
-
+  // ── 主循环 (A5 §2: PixiJS Ticker) ──
   app.ticker.add((ticker) => {
-    fpsText.text = `FPS: ${Math.round(ticker.FPS)} | Entities: 0`;
+    // 每帧轮询视口尺寸变化(绕开 resize 事件时序竞争)
+    if (app.screen.width !== lastScreenW || app.screen.height !== lastScreenH) {
+      lastScreenW = app.screen.width;
+      lastScreenH = app.screen.height;
+      const size = { width: lastScreenW, height: lastScreenH };
+      camera.setViewport(size);
+      gridRenderer.setViewport(size);
+    }
+    controller.update(ticker.deltaMS);
+    camera.updateTransform();
+    gridRenderer.update();
+    hud.text =
+      `FPS: ${Math.round(ticker.FPS)}` +
+      `  |  cam(${camera.x.toFixed(0)}, ${camera.y.toFixed(0)})` +
+      `  zoom=${camera.zoom.toFixed(2)}`;
   });
 
-  // 场景容器
-  const scene = new Container();
-  scene.addChild(grid, device, title, subtitle, fpsText);
-  app.stage.addChild(scene);
+  // 首帧立即对齐一次相机变换 + 网格，避免首帧错位
+  camera.updateTransform();
+  gridRenderer.update();
 
-  console.log('[集成工业系统] PixiJS v8 渲染管线初始化完成');
-  console.log(`  屏幕: ${app.screen.width}x${app.screen.height}`);
-  console.log(`  渲染器: ${app.renderer.name}`);
+  // 开发期调试钩子: 暴露关键对象到 window，便于控制台验证与测试。
+  (window as unknown as { __game: unknown }).__game = {
+    app,
+    camera,
+    gridRenderer,
+    getTexture,
+  };
+
+  console.log('[集成工业系统] T1.4 世界网格就绪');
+  console.log(`  世界: ${64}×${64} cells, CELL_SIZE=64`);
+  console.log('  操作: 中键拖拽/WASD 平移, 滚轮以鼠标为中心缩放');
 }
 
-main().catch(console.error);
+main().catch((err) => {
+  console.error('[集成工业系统] 初始化失败:', err);
+});

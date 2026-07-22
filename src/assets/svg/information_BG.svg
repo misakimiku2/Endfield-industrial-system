@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   version="1.1"
+   id="svg1"
+   width="348.16"
+   height="76.800018"
+   viewBox="0 0 348.16 76.800018"
+   sodipodi:docname="液体弹窗设计.svg"
+   xml:space="preserve"
+   inkscape:version="1.4.4 (dcaf3e7, 2026-05-05)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"><defs
+     id="defs1"><clipPath
+       clipPathUnits="userSpaceOnUse"
+       id="clipPath18"><rect
+         style="display:inline;fill:#373737;fill-opacity:1;stroke-width:1.94365;stroke-linecap:round"
+         id="rect18"
+         width="348.16"
+         height="76.800003"
+         x="509.88211"
+         y="500.27158"
+         rx="6.3895197"
+         ry="6.5693817" /></clipPath></defs><sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     showgrid="false"
+     inkscape:zoom="0.70465117"
+     inkscape:cx="754.27392"
+     inkscape:cy="311.50165"
+     inkscape:window-width="3440"
+     inkscape:window-height="1369"
+     inkscape:window-x="-8"
+     inkscape:window-y="1072"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="layer1"
+     inkscape:export-bgcolor="#ffffff00"><inkscape:page
+       x="0"
+       y="0"
+       width="348.16"
+       height="76.800018"
+       id="page1"
+       margin="0"
+       bleed="0" /></sodipodi:namedview><style
+     type="text/css"
+     id="style1">
+	.st0{fill-rule:evenodd;clip-rule:evenodd;}
+</style><g
+     id="information"
+     style="display:inline"
+     transform="matrix(0.64,0,0,0.64,-970.68212,-647.47158)"
+     inkscape:label="information_BG"><rect
+       style="display:inline;fill:#373737;fill-opacity:1;stroke-width:3.03695;stroke-linecap:round"
+       id="rect7"
+       width="544"
+       height="120"
+       x="1516.6908"
+       y="1011.6743"
+       rx="9.9836245"
+       ry="10.264659"
+       inkscape:label="BG" /><path
+       id="path8"
+       style="fill:#4c4c4c;fill-opacity:1;stroke:none;stroke-width:3.77244;stroke-linecap:square;stroke-linejoin:round;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1"
+       d="m 543.82508,440.03811 a 100,100 0 0 0 -2e-5,141.42134 100,100 0 0 0 141.42136,0 100,100 0 0 0 0,-141.42136 100,100 0 0 0 -141.42134,2e-5 z m 7.83203,29.82969 103.75967,103.75966 a 75,75 0 0 1 -93.91405,-9.84568 75,75 0 0 1 -9.84562,-93.91398 z m 21.99765,-21.99765 a 75,75 0 0 1 93.91399,9.84561 75,75 0 0 1 9.84567,93.91405 z"
+       clip-path="url(#clipPath18)"
+       transform="matrix(1.5625,0,0,1.5625,720,230)"
+       inkscape:label="NO" /></g></svg>
