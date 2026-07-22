@@ -306,6 +306,8 @@ type BuildingState = 'idle' | 'working' | 'blocked' | 'no_power';
 
 出口默认在建筑前方（0° 的右方）。入口默认在建筑后方。
 
+> **存储 vs 玩家输入的参考系差异**：`BuildingComponent.direction` 的上述值是**世界相对**存储的（存档/模拟都用世界朝向）。但**玩家按 R 键旋转**时的手感是**相对视图**的（屏幕上看起来转 90°）。当视图旋转 `viewRotation ≠ 0` 时（见 A6 §4.0），换算关系为 **世界朝向 = 屏幕朝向 − viewRotation (mod 360)**。即视图转 90° 后按一次 R，屏幕朝向 +90° 而世界朝向不变；连按两次才让世界朝向真正 +90°。实现放置/移动旋转时务必走此换算，不要直接对 `direction` 加 90。
+
 ### 3.4 Footprint 与 Cell 占用
 
 ```ts

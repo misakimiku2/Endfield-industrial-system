@@ -99,28 +99,46 @@ class Camera {
   x: number;       // 相机中心的世界 X 坐标
   y: number;       // 相机中心的世界 Y 坐标
   zoom: number;    // 缩放倍率 (1.0 = 1 世界像素 = 1 屏幕像素)
+  viewRotation: 0 | 90 | 180 | 270;  // 视图旋转角度（T1.5 引入），0 = 默认朝向
 
   // 世界坐标 → 屏幕坐标
+  // 复合变换：world → 相对相机中心 → 绕中心旋转 viewRotation → × zoom → + 屏幕中心
   worldToScreen(wx: number, wy: number): { x: number; y: number } {
-    const screenCenterX = canvasWidth / 2;
-    const screenCenterY = canvasHeight / 2;
+    const dx = wx - this.x;
+    const dy = wy - this.y;
+    const rad = -this.viewRotation * Math.PI / 180;  // 视图顺时针转 = 内容逆时针变到屏幕
+    const rx = dx * Math.cos(rad) - dy * Math.sin(rad);
+    const ry = dx * Math.sin(rad) + dy * Math.cos(rad);
     return {
-      x: (wx - this.x) * this.zoom + screenCenterX,
-      y: (wy - this.y) * this.zoom + screenCenterY,
+      x: rx * this.zoom + canvasWidth / 2,
+      y: ry * this.zoom + canvasHeight / 2,
     };
   }
 
-  // 屏幕坐标 → 世界坐标
+  // 屏幕坐标 → 世界坐标（worldToScreen 的逆运算）
   screenToWorld(sx: number, sy: number): { x: number; y: number } {
-    const screenCenterX = canvasWidth / 2;
-    const screenCenterY = canvasHeight / 2;
-    return {
-      x: (sx - screenCenterX) / this.zoom + this.x,
-      y: (sy - screenCenterY) / this.zoom + this.y,
-    };
+    const dx = (sx - canvasWidth / 2) / this.zoom;
+    const dy = (sy - canvasHeight / 2) / this.zoom;
+    const rad = this.viewRotation * Math.PI / 180;
+    const rx = dx * Math.cos(rad) - dy * Math.sin(rad);
+    const ry = dx * Math.sin(rad) + dy * Math.cos(rad);
+    return { x: rx + this.x, y: ry + this.y };
   }
 }
 ```
+
+### 4.0 viewRotation 与参考系（T1.5 引入）
+
+视图旋转是**渲染/输入层**概念，改变的是世界如何在屏幕上呈现，**不改变世界本身**。
+
+**参考系约定**：
+- **平移操作（WASD / 边缘滚动）→ 屏幕相对**：玩家按 W 永远让画面向屏幕上方移动。实现上，屏幕"上"方向在世界坐标系中旋转了 viewRotation 度，平移量要按此映射回相机世界坐标增量。例如视图转 90° 时按 W（屏幕上），相机世界 Y 实际减小。
+- **设备旋转 R 键 → 相对视图**：玩家按 R 让设备在屏幕上看起来转 90°。A3 §3.3 的 `BuildingComponent.direction` 是世界相对存储，换算关系：**世界朝向 = 屏幕朝向 − viewRotation**（mod 360）。即视图转 90° 后按 R，屏幕朝向 +90°，世界朝向实际不变（90 − 90 = 0）；连按两次才让世界朝向真正 +90°。
+- **滚轮缩放**：不受 viewRotation 影响，仍以鼠标位置为锚点。
+
+**边界 clamp**：viewRotation 不改变相机可看的世界范围（64×64 cells），只改变呈现方式。`x/y` 的 clamp 边界仍是 T1.2 定义的世界范围。
+
+> **实现提醒**：`updateTransform` 写入 `worldContainer` 时，要把 viewRotation 反映到 PixiJS Container 的 rotation（配合 pivot 处理枢轴 = 屏幕中心对应的相机中心）。模拟层（Phase 2 的传送带/机器）完全不感知 viewRotation，不要把旋转信息存进任何 Component。
 
 ### 4.1 相机约束
 
@@ -129,6 +147,7 @@ class Camera {
 this.x = clamp(this.x, minWorldX, maxWorldX);
 this.y = clamp(this.y, minWorldY, maxWorldY);
 this.zoom = clamp(this.zoom, 0.25, 4.0);  // 最小缩放 25%, 最大 400%
+this.viewRotation ∈ {0, 90, 180, 270};     // 离散 4 态，Ctrl+R 循环递增
 ```
 
 ---
