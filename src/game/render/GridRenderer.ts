@@ -148,58 +148,112 @@ export class GridRenderer {
 
   /**
    * 每帧更新网格线: 根据相机可见范围重绘，分段设 alpha 实现边缘渐隐。
-   * 网格线在世界空间等间距 64px，转到屏幕空间后位置随相机变。
-   * 每条线沿其长度方向分成 LINE_SEGMENTS 段，每段按中点的归一化距离设 alpha。
+   *
+   * 旋转感知 (T1.5): 视图旋转后，世界网格线在屏幕上不再轴对齐——worldX=const
+   * 的竖直线在 rot=90 时变成屏幕上的水平线。因此不能再用"每条线屏幕 x 恒定"
+   * 的画法。本实现把每条世界网格线（一条无限长直线）投影到屏幕：取线上两点
+   * 转 worldToScreen 得到屏幕直线，再裁剪到视口矩形 [0,w]×[0,h]，沿裁剪后
+   * 线段分段设 alpha。这样任意 viewRotation 下网格线方向与位置都正确。
+   *
+   * 性能: 可见网格线数随旋转后 AABB 变化（正方形视口下 0°/180° 与 90°/270°
+   * 的可见线数互换），每条分 LINE_SEGMENTS 段，开销与 T1.4 同量级。
    */
   update(): void {
     const { width, height } = this.viewport;
 
-    const topLeft = this.camera.screenToWorld(0, 0);
-    const bottomRight = this.camera.screenToWorld(width, height);
+    // 可见世界范围: 取屏幕四角的世界坐标求 AABB（旋转视图下视口是世界中的
+    // 旋转矩形，四角的 min/max 才是完整覆盖范围；两角法只在 0/180° 充分）。
+    const corners = [
+      this.camera.screenToWorld(0, 0),
+      this.camera.screenToWorld(width, 0),
+      this.camera.screenToWorld(0, height),
+      this.camera.screenToWorld(width, height),
+    ];
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const c of corners) {
+      if (c.x < minX) minX = c.x;
+      if (c.x > maxX) maxX = c.x;
+      if (c.y < minY) minY = c.y;
+      if (c.y > maxY) maxY = c.y;
+    }
 
-    const startGX = Math.floor(topLeft.x / CELL_SIZE);
-    const endGX = Math.ceil(bottomRight.x / CELL_SIZE);
-    const startGY = Math.floor(topLeft.y / CELL_SIZE);
-    const endGY = Math.ceil(bottomRight.y / CELL_SIZE);
+    const startGX = Math.floor(minX / CELL_SIZE);
+    const endGX = Math.ceil(maxX / CELL_SIZE);
+    const startGY = Math.floor(minY / CELL_SIZE);
+    const endGY = Math.ceil(maxY / CELL_SIZE);
 
     this.gridLines.clear();
 
-    // 垂直线: 每条线在屏幕 x=const，沿 y 方向分段
+    // 世界竖直网格线 (worldX = gx*CELL_SIZE): 投影到屏幕成一条直线，裁剪到视口。
     for (let gx = startGX; gx <= endGX; gx++) {
       const worldX = gx * CELL_SIZE;
-      const screen = this.camera.worldToScreen(worldX, 0);
-      const x = Math.round(screen.x);
-      if (x < -1 || x > width + 1) continue;
-      for (let s = 0; s < LINE_SEGMENTS; s++) {
-        const y0 = (s / LINE_SEGMENTS) * height;
-        const y1 = ((s + 1) / LINE_SEGMENTS) * height;
-        const yMid = (y0 + y1) / 2;
-        const alpha = this.fadeAlpha(this.normDistFromCenter(x, yMid));
-        if (alpha <= 0.01) continue;
-        this.gridLines
-          .moveTo(x, y0)
-          .lineTo(x, y1)
-          .stroke({ width: 1, color: COLOR_GRID_LINE, alpha });
-      }
+      // 取线上足够远的两点确定屏幕直线（覆盖整个视口对角线尺度即可）
+      const p0 = this.camera.worldToScreen(worldX, minY);
+      const p1 = this.camera.worldToScreen(worldX, maxY);
+      this.strokeScreenLine(p0.x, p0.y, p1.x, p1.y, width, height);
     }
 
-    // 水平线: 每条线在屏幕 y=const，沿 x 方向分段
+    // 世界水平网格线 (worldY = gy*CELL_SIZE): 同理。
     for (let gy = startGY; gy <= endGY; gy++) {
       const worldY = gy * CELL_SIZE;
-      const screen = this.camera.worldToScreen(0, worldY);
-      const y = Math.round(screen.y);
-      if (y < -1 || y > height + 1) continue;
-      for (let s = 0; s < LINE_SEGMENTS; s++) {
-        const x0 = (s / LINE_SEGMENTS) * width;
-        const x1 = ((s + 1) / LINE_SEGMENTS) * width;
-        const xMid = (x0 + x1) / 2;
-        const alpha = this.fadeAlpha(this.normDistFromCenter(xMid, y));
-        if (alpha <= 0.01) continue;
-        this.gridLines
-          .moveTo(x0, y)
-          .lineTo(x1, y)
-          .stroke({ width: 1, color: COLOR_GRID_LINE, alpha });
+      const p0 = this.camera.worldToScreen(minX, worldY);
+      const p1 = this.camera.worldToScreen(maxX, worldY);
+      this.strokeScreenLine(p0.x, p0.y, p1.x, p1.y, width, height);
+    }
+  }
+
+  /**
+   * 把一条屏幕直线（由两端点给出，可能延伸到视口外）裁剪到视口矩形，
+   * 然后沿裁剪后的线段分成 LINE_SEGMENTS 段，每段按中点距视口中心的归一化
+   * 距离设 alpha（边缘渐隐），stroke 到 gridLines。
+   *
+   * 用参数化裁剪: 点 = p0 + t*(p1-p0)，t∈[0,1]。求 t 进入/离开视口矩形的
+   * 区间 [t0,t1]，无交集则跳过。
+   */
+  private strokeScreenLine(
+    x0: number, y0: number, x1: number, y1: number,
+    width: number, height: number,
+  ): void {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    // 参数化裁剪到 [0,width]×[0,height]
+    let t0 = 0;
+    let t1 = 1;
+    const clip = (p: number, d: number, lo: number, hi: number): boolean => {
+      // 对每个边界求 t：p + t*d ∈ [lo, hi]
+      if (Math.abs(d) < 1e-9) {
+        // 平行于该轴：若 p 不在 [lo,hi] 内则整条线在区域外
+        return p >= lo && p <= hi;
       }
+      const ta = (lo - p) / d;
+      const tb = (hi - p) / d;
+      const tEnter = Math.min(ta, tb);
+      const tExit = Math.max(ta, tb);
+      if (tEnter > t0) t0 = tEnter;
+      if (tExit < t1) t1 = tExit;
+      return t0 <= t1;
+    };
+    if (!clip(x0, dx, 0, width)) return;
+    if (!clip(y0, dy, 0, height)) return;
+    if (t0 >= t1) return;
+
+    const sx0 = x0 + dx * t0;
+    const sy0 = y0 + dy * t0;
+    const sx1 = x0 + dx * t1;
+    const sy1 = y0 + dy * t1;
+
+    // 沿裁剪后线段分段，每段按中点归一化距离设 alpha
+    for (let s = 0; s < LINE_SEGMENTS; s++) {
+      const f0 = s / LINE_SEGMENTS;
+      const f1 = (s + 1) / LINE_SEGMENTS;
+      const mx = sx0 + (sx1 - sx0) * (f0 + f1) / 2;
+      const my = sy0 + (sy1 - sy0) * (f0 + f1) / 2;
+      const alpha = this.fadeAlpha(this.normDistFromCenter(mx, my));
+      if (alpha <= 0.01) continue;
+      this.gridLines
+        .moveTo(sx0 + (sx1 - sx0) * f0, sy0 + (sy1 - sy0) * f0)
+        .lineTo(sx0 + (sx1 - sx0) * f1, sy0 + (sy1 - sy0) * f1)
+        .stroke({ width: 1, color: COLOR_GRID_LINE, alpha });
     }
   }
 }

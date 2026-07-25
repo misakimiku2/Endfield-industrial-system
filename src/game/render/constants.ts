@@ -38,6 +38,16 @@ export const CAMERA_KEY_PAN_SPEED = 900;
 /** 中键拖拽平移：1 屏幕像素拖拽对应的世界像素位移 = 1 / zoom。 */
 // (拖拽时直接按 screenDelta / zoom 反算 worldDelta，无需额外常量)
 
+// ───────────────────────── 视图操作 (T1.5) ─────────────────────────
+
+/** 边缘滚动触发带宽度（屏幕像素）。鼠标距窗口边缘 ≤ 此值时触发边缘滚动。 */
+export const CAMERA_EDGE_SCROLL_MARGIN = 32;
+/** 边缘滚动速度（世界像素/秒），对齐 WASD 的 900px/s。 */
+export const CAMERA_EDGE_SCROLL_SPEED = 900;
+
+/** 视图旋转(Ctrl+R)过渡动画时长（ms）。0 = 瞬间切换(旧行为)，~200ms 有平滑手感又不拖沓。 */
+export const CAMERA_ROTATE_ANIM_MS = 220;
+
 // ───────────────────────── 配色 (A2 §5) ─────────────────────────
 
 /** 网格背景底色 (A2 §5.1)。 */

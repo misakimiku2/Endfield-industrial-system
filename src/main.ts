@@ -1,8 +1,11 @@
-// 入口文件 — T1.2 相机 + T1.3 资源 + T1.4 世界网格
-// 依据: implementation-phase-1.md T1.2 / T1.3 / T1.4
-//   - 中键拖拽平移 / WASD 平移 / 滚轮以鼠标为中心缩放 / 边界 64×64
+// 入口文件 — T1.2 相机 + T1.3 资源 + T1.4 世界网格 + T1.5 视图操作
+// 依据: implementation-phase-1.md T1.2 / T1.3 / T1.4 / T1.5
+//   - 中键拖拽平移 / WASD 平移(屏幕相对) / 滚轮以鼠标为中心缩放 / 边界 64×64
+//   - 边缘滚动 (T1.5): 鼠标到窗口边缘自动平移，8 方向，与 WASD 叠加
+//   - Ctrl+R 视图旋转 (T1.5): 顺时针 90°，4 态循环，以屏幕中心为枢轴
 //   - 启动时加载 devices/items/ui 三图集 (T1.3)
 //   - 世界网格: 浅灰背景 #E6E4E4 + 网格线 #D6D4D4 64px + 边缘渐隐 + 暗角 (T1.4)
+//            旋转感知 (T1.5): 网格线随视图旋转正确投影到屏幕
 
 import { Application, Text } from 'pixi.js';
 import { Camera } from './game/render/Camera';
@@ -73,7 +76,7 @@ async function main() {
   app.stage.addChild(hud);
 
   const help = new Text({
-    text: '中键拖拽: 平移  |  WASD/方向键: 平移  |  滚轮: 以鼠标为中心缩放',
+    text: '中键拖拽: 平移  |  WASD/方向键: 平移(屏幕相对)  |  鼠标靠边: 边缘滚动  |  滚轮: 以鼠标为中心缩放  |  Ctrl+R: 视图旋转',
     style: { fontFamily: 'system-ui, sans-serif', fontSize: 13, fill: 0x444444 },
   });
   help.x = 10;
@@ -91,12 +94,14 @@ async function main() {
       gridRenderer.setViewport(size);
     }
     controller.update(ticker.deltaMS);
+    camera.update(ticker.deltaMS); // 视图旋转过渡动画（必须在 updateTransform 之前）
     camera.updateTransform();
     gridRenderer.update();
     hud.text =
       `FPS: ${Math.round(ticker.FPS)}` +
       `  |  cam(${camera.x.toFixed(0)}, ${camera.y.toFixed(0)})` +
-      `  zoom=${camera.zoom.toFixed(2)}`;
+      `  zoom=${camera.zoom.toFixed(2)}` +
+      `  rot=${camera.viewRotation}°`;
   });
 
   // 首帧立即对齐一次相机变换 + 网格，避免首帧错位
@@ -107,13 +112,14 @@ async function main() {
   (window as unknown as { __game: unknown }).__game = {
     app,
     camera,
+    controller,
     gridRenderer,
     getTexture,
   };
 
-  console.log('[集成工业系统] T1.4 世界网格就绪');
+  console.log('[集成工业系统] T1.5 视图操作就绪');
   console.log(`  世界: ${64}×${64} cells, CELL_SIZE=64`);
-  console.log('  操作: 中键拖拽/WASD 平移, 滚轮以鼠标为中心缩放');
+  console.log('  操作: 中键拖拽/WASD(屏幕相对)/边缘滚动 平移, 滚轮以鼠标为中心缩放, Ctrl+R 视图旋转');
 }
 
 main().catch((err) => {

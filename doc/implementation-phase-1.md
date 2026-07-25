@@ -14,7 +14,7 @@
 | T1.2 相机系统 | ✅ 完成 | `Camera.ts` / `CameraController.ts` / `SceneRenderer.ts` |
 | T1.3 SVG/PNG 资源管线 | ✅ 完成 | `scripts/pack-assets.ts` / `AssetsLoader.ts`（三图集） |
 | T1.4 世界网格渲染 | ✅ 完成 | `GridRenderer.ts`（分段 alpha + Canvas2D 暗角） |
-| T1.5 视图操作 | ⬜ 待开发 | 边缘滚动、Ctrl+R 视图旋转(屏幕相对参考系) |
+| T1.5 视图操作 | ✅ 完成 | 边缘滚动、Ctrl+R 视图旋转(屏幕相对参考系+平滑过渡)、`screenDirToWorld`/`panByScreen`、GridRenderer 旋转感知 |
 | T1.6 渲染系统 | ⬜ 待开发 | 实体↔Sprite 绑定、视口剔除 |
 | T1.7 基础交互系统 | ⬜ 待开发 | 点击选中、选中框 |
 | T1.8 设备放置系统 | ⬜ 待开发 | 工具栏、放置预览、OccupancyMap、放置前旋转(R键) |
@@ -228,6 +228,30 @@ WASD 平移和滚轮缩放已在 T1.2 实现。边缘滚动是相机平移的便
 - **GridRenderer 回炉风险**：T1.4 已完成的网格渲染读的是相机可见范围。视图旋转后，可见的"世界矩形"变成了旋转后的矩形，`GridRenderer` 按 camera 可见范围画线时需确认其能正确处理旋转后的可见区域。若 T1.4 实现是按轴对齐矩形算可见范围，本任务要扩展它支持旋转矩形（或改为"画一个足够大的旋转网格 + 用视口裁剪"）。
 - **所有坐标转换必须经过 Camera**：旋转正确性的前提是没有任何代码绕开 `Camera.worldToScreen`/`screenToWorld` 自己算坐标。本任务完成后，审计 T1.6~T1.10 的实现是否都走 Camera，是确保旋转生效的关键。
 - **旋转是渲染/输入层概念，不进 ECS**：模拟层（Phase 2 的传送带/机器）是世界相对的，完全不感知 viewRotation。不要把旋转信息存进任何 Component。
+
+### ✅ 实现备注（已完成）
+- **产出文件**: `Camera.ts`（加 viewRotation/rotateClockwise/screenDirToWorld）、`CameraController.ts`（Ctrl+R + 边缘滚动 + WASD 屏幕相对）、`GridRenderer.ts`（旋转感知重写 update）、`constants.ts`（边缘滚动常量）、`main.ts`（HUD 显示 rot）、`scripts/verify-t1.5.ts`（49 条断言）、`scripts/ts-loader.mjs`（让 verify 脚本能跑无后缀 import）
+- **Camera 旋转数学** (A6 §4/§4.0): `worldToScreen` 用 `rad = -displayRotation`（视图顺时针=内容逆时针呈现），`screenToWorld` 逆运算用 `rad = +displayRotation`。4 旋转态逐点互逆。`displayRotation` 是连续弧度（平滑动画用），动画结束后等于 `viewRotation`（离散目标态）对应弧度。
+- **updateTransform 用 pivot 方式**: `pivot=camCenter`, `position=VP/2`, `scale=zoom`, `rotation=-displayRotation`。绕相机中心(=屏幕中心)旋转。rot=0 退化为旧公式且逐像素一致。**不用** PixiJS 的 pivot+position 手动算，让 PixiJS 自己处理枢轴。
+- **screenDirToWorld**: 把屏幕方向向量映射到世界方向（WASD/边缘滚动/中键拖拽共用）。rot=90 时屏幕上(0,−1)→世界右(+1,0)，按 W 让相机 X 增加。
+- **panByScreen（中键拖拽屏幕相对）**: 拖拽位移先经 `screenDirToWorld` 映射再平移，使旋转视图下拖拽方向直觉一致（鼠标上拖→画面上移），与 WASD 同一套参考系。**早期实现用 panByWorld 直接按世界位移，旋转后拖拽方向诡异（rot=90 鼠标上拖画面左移），已修复**。
+- **平滑旋转过渡**: `viewRotation` 是离散目标态，内部 `_displayRotation`(连续弧度)由 `update(dt)` 每帧 ease-in-out cubic lerp 向目标，动画结束吸附精确值。所有坐标转换与 updateTransform 都用 `_displayRotation`，保证过渡期间视觉与点击位置严格一致。连按 Ctrl+R 时以当前 displayRotation 为新起点接续，无角度突变。动画时长 `CAMERA_ROTATE_ANIM_MS=220ms`。
+- **GridRenderer 旋转感知（回炉风险已解决）**: 旋转后世界竖直线在屏幕上变斜线/水平线（rot=90→水平），不能再用"每条线屏幕 x 恒定"画法。重写为：取世界网格线两点→worldToScreen→屏幕直线→参数化裁剪到视口矩形(Liang-Barsky 风格)→分段设 alpha。可见范围用**四角世界坐标的 AABB**（旋转矩形包围盒，两角法只在 0/180° 充分）。连续中间角度(如 52°)下网格仍铺满无空白。
+- **边缘滚动**: 鼠标在窗口边缘 32px 触发带内 → 8 方向滚动。`mouseInside` 追踪（mouseenter/leave + mousemove 内容差判定），离开 canvas 不触发。速度 900px/s 对齐 WASD，与 WASD 叠加成屏幕方向向量后统一映射。
+- **边缘贴边容差**: 鼠标精确贴屏幕最右/下缘时 `clientX` 可能略微超出 `clientWidth`（亚像素）。`mouseInside` 判定加 2px 容差，边缘滚动判定去掉 `≤ w` 上界（触发带 `[w−m, +∞)`），确保贴边滚动不失效。
+- **Ctrl+R**: 在 onKeyDown 拦截 `Ctrl/Cmd+KeyR`，preventDefault 阻止浏览器刷新，调 `rotateClockwise()`。不进 WASD 状态机。
+- **验证（纯逻辑）**: `node --experimental-strip-types --experimental-loader ./scripts/ts-loader.mjs scripts/verify-t1.5.ts` → 49/49 通过（互逆/中心枢轴/4态循环/屏幕相对方向/zoomAt锚点/clamp/zoom边界）。`tsc --noEmit` 零错误，`vite build` 成功。
+- **验证（浏览器实测）**: 全部验收标准实测通过——
+  - Ctrl+R 旋转 90°，连按 4 次回 0°，旋转不改相机中心（前后均 2048,2048）
+  - **平滑过渡**：按下后 `isRotating=true`，500ms 处已转到 52°（2000ms 测试时长下），结束吸附 90°；52° 中间态网格呈对角线、边缘覆盖 79.1%（无空白）
+  - **中键拖拽屏幕相对**：rot=90 鼠标上拖 100px → 世界固定点屏幕 Y −100（画面上移，方向直觉一致，不再"画面左移"）
+  - rot=90 按 W → 相机 X +12.42、Y 不变（屏幕相对，非世界相对）
+  - 边缘滚动 8 方向：右上角对角滚动 rot=0 → X+1416/Y−1763（clamp 在边界）
+  - rot=90 上边缘滚动 → 相机 X 增大 Y 不变（屏幕相对在边缘滚动也生效）
+  - rot=90 滚轮缩放 → 锚点世界坐标缩放前后完全一致（3498.5,2316.0）
+  - 旋转网格铺满：rot=0/90/270 边缘暗像素覆盖均 79.6%（旋转无空白）
+- **ts-loader 说明**: Node 24 的 `--experimental-strip-types` 不解析无后缀 import（ESM 要求显式后缀，且 `./foo.js` 匹配不到 `./foo.ts`）。`scripts/ts-loader.mjs` 把无后缀相对 import 重写到 `.ts`。**注意**: 旧的 verify-t1.1/t1.2 现在也需要带 loader 跑（T1.4 拆出 constants.ts 后它们已无法直接 `node --experimental-strip-types` 运行）。
+- **调试钩子扩展**: `window.__game` 新增 `controller`（CameraController 实例），便于控制台验证输入状态。
 
 ---
 
