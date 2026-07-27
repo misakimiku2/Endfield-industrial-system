@@ -12,9 +12,11 @@
 |------|------|
 | 🔵 | Phase 1：核心框架（ECS + 渲染 + 设备放置） |
 | 🟢 | Phase 2：工厂生产系统（传送带 + 机器生产） |
-| 🟠 | Phase 3+：塔防 / 电力 / 高级功能 |
+| 🟠 | Phase 3：世界扩展 + 塔防 / 电力（拆分为 3a/3b/3c，见下文） |
 | 🟣 | Phase 4：性能优化（分帧） |
 | ⚪ | 全局：不分 Phase，每个 Phase 都要遵守 |
+
+> **⚠️ Phase 3 已拆分**：原 Phase 3（塔防 + 电力）装不下"无限世界 + 资源点 + 物流"，按 [A11 world-vision.md](architecture/world-vision.md) 拆为 **3a（Chunk+无限世界+小地图+迷雾）/ 3b（资源点+简化物流）/ 3c（塔防+电力）**。详见下文"🟠 Phase 3 前瞻"。
 
 ---
 
@@ -27,16 +29,17 @@ Phase 1 目标：建立 ECS + 渲染基础，实现设备放置、相机控制�
 | 优先级 | 文档 | 说明 |
 |--------|------|------|
 | ⭐⭐⭐ | [A7 core-decisions.md](architecture/core-decisions.md) | 14 条项目宪法。**编码前先通读**，所有代码必须遵守。 |
+| ⭐⭐⭐ | [A11 world-vision.md](architecture/world-vision.md) | 世界/地图产品方向（无限世界 / 手工核心+程序外围 / Chunk 提前 / 资源点 C 派 / 简化物流 / 小地图迷雾）。**定方向的上位文档**，A2 世界模型受它约束。Phase 1 有一项接口预留改动源自此处（见下）。 |
 | ⭐⭐⭐ | [A1 ecs-spec.md](architecture/ecs-spec.md) | ECS 全部（Entity/Component/System/World API）。T1.1 的核心依据。Phase 2 会往里加 System，但框架 Phase 1 全部建好。 |
 | ⭐⭐⭐ | [A6 coordinate-spec.md](architecture/coordinate-spec.md) | 全部（Grid↔World↔Screen 转换、Camera）。T1.2 相机、T1.7 放置的核心依赖。 |
 | ⭐⭐ | [A5 simulation-spec.md](architecture/simulation-spec.md) | **§1~§4 + §6 + §8**（双时钟架构、GameLoop、速度控制、暂停）。**§5（Tick 内 System 顺序）是 Phase 2 才用，Phase 1 跳过**。 |
-| ⭐⭐ | [A2 world-model.md](architecture/world-model.md) | **§1~§2、§4~§5、§7~§8**（Grid/Cell、层级模型、视觉风格、占用表、世界边界）。**§3 Chunk 是 Phase 4 才用，Phase 1 跳过**。 |
+| ⭐⭐ | [A2 world-model.md](architecture/world-model.md) | **§1~§2、§4~§5、§7~§8**（Grid/Cell、层级模型、视觉风格、占用表、世界边界）。**§3 Chunk 提前到 Phase 3a（A11 WV-003），Phase 1 跳过**。**§8 世界边界：64×64 是临时方案——`WORLD_*` 常量→地图实例属性改造已在 T1.6 完成（`src/game/world/MapInstance.ts`，A11 WV-003 §4.4）**。 |
 
 ### 部分阅读（只读指定章节）
 
 | 文档 | Phase 1 读哪些章节 | Phase 1 跳过哪些 |
 |------|------------------|----------------|
-| [A3 building-spec.md](architecture/building-spec.md) | ✅ §1 BuildingDefinition、§2 Port 系统、§3.3 方向约定、§3.4 Footprint 占用、§5 建造流程 | ❌ §3 BuildingComponent 的缓冲区字段、§3.1 缓冲区规则、§3.2 轮询规则、§4 状态机（这些都是 Phase 2 生产逻辑） |
+| [A3 building-spec.md](architecture/building-spec.md) | ✅ §1 BuildingDefinition、§2 Port 系统、§3.3 方向约定、§3.4 Footprint 占用、§5 建造流程 | ❌ §3 BuildingComponent 的缓冲区字段、§3.1 缓冲区规则、§3.2 轮询规则、§4 状态机、§2.4 端口/设备动态视觉表现（这些都是 Phase 2 生产逻辑） |
 
 > **说明**：A3 是跨 Phase 文档。Phase 1 做设备放置时只需要"建筑长什么样、占几格、Port 在哪、怎么放置"——这些在 §1/§2/§3.3/§3.4/§5。缓冲区、轮询、状态机是 Phase 2 生产才用，Phase 1 不实现。
 
@@ -87,7 +90,7 @@ Phase 2 目标：传送带能跑物品、机器能根据配方生产、物品从
 |------|---------------|--------------------------------------|
 | [A1 ecs-spec.md](architecture/ecs-spec.md) | 重点看 §3 System（BeltSystem/MachineSystem 的实现规范） | World/Entity/Component 框架已建好 |
 | [A5 simulation-spec.md](architecture/simulation-spec.md) | 重点看 **§5 Tick 内 System 顺序、§5.2 设备事件顺序** | GameLoop/速度控制已建好 |
-| [A3 building-spec.md](architecture/building-spec.md) | 重点看 **§3 BuildingComponent（缓冲区槽位/计时）、§3.1 缓冲区规则、§3.2 轮询规则、§4 状态机** | Definition/Port/放置已建好 |
+| [A3 building-spec.md](architecture/building-spec.md) | 重点看 **§3 BuildingComponent（缓冲区槽位/计时）、§3.1 缓冲区规则、§3.2 轮询规则、§4 状态机**。**§2.4 端口/设备动态视觉表现**（端口变色/元素位移/形状变形的实现路径 + BuildingView 分层架构，Phase 2 接状态机表现时参考） | Definition/Port/放置已建好 |
 
 ### Phase 2 明确排除（不在范围内）
 
@@ -98,17 +101,55 @@ Phase 2 目标：传送带能跑物品、机器能根据配方生产、物品从
 
 ---
 
-## 🟠 Phase 3 前瞻（尚未开写）
+## 🟠 Phase 3 前瞻（已定型方向，文档待开写）
 
-Phase 3 文档（`implementation-phase-3.md`）尚未创建。以下是从 Phase 1/2 排除项里累积、已确定归属 Phase 3 的功能，开写时需纳入计划：
+> **⚠️ Phase 3 已拆分为 3a/3b/3c**。原 Phase 3（塔防 + 电力）装不下"无限世界 + 资源点 + 远距离物流"，按 [A11 world-vision.md](architecture/world-vision.md) 拆分。三者可顺序做，也可视进度并行。Phase 3 实施计划文档（`implementation-phase-3.md`）尚未创建，开写时按下面三个子 Phase 组织。
 
-| 功能 | 来源（从哪个 Phase 排除） | 关键依赖 |
-|------|------------------------|----------|
-| **多选与组操作**（X 框选 + 组移动/旋转/删除 + 复制粘贴，传送带可入组） | Phase 1 T1.x 排除 / Phase 2 T2.x 排除 | T2.14 单设备移动机制（作为原型）、T2.0 传送带链管理 |
+### Phase 3a — 世界扩展基建（Chunk + 无限世界 + 小地图 + 迷雾）
+
+> 依据：A11 WV-001 / WV-003 / WV-006
+
+| 产出 | 说明 |
+|------|------|
+| **Chunk 系统** | 16×16 Cell 分块，按相机视野动态加载/卸载。从原 Phase 4 提前（A11 WV-003）。Chunk 不依赖程序生成。 |
+| **无限世界** | 世界向任意方向扩展，无固定边界。Phase 1 的 `MapInstance.widthCells/heightCells` 语义变为"初始已生成区域"。 |
+| **占用表/地形表 Chunk 化** | 从全局 Map 改为按 Chunk 存储（A2 §3.2 已预留职责）。 |
+| **小地图（Minimap）** | 世界缩放渲染到屏幕角落，只显示已探索区域。支持点击跳转。 |
+| **战争迷雾（Fog of War）** | 每 Cell 有 `explored` 状态，玩家视野内标记已探索。小地图只显示已探索区。 |
+
+**关键依赖**：Phase 1 的 `WORLD_*` 常量→地图实例属性改造（A11 WV-003 §4.4）必须已完成。
+
+### Phase 3b — 远征玩法（资源点 + 矿点开采 + 管道）
+
+> 依据：A11 WV-004 / WV-005、A12 EC-008 §11（固/液/气分类传输）、A12 EC-008 §18（矿点开采系统）
+
+| 产出 | 说明 |
+|------|------|
+| **资源点（矿脉）系统** | C 派定位：出生点附近资源管够，外围稀有资源散落远处。具体分布规则/储量/采集机制开写前细化（A11 §10）。 |
+| **矿点开采系统** | 基础采矿机（建矿脉上）+ **短距无线**传至储存站点 + **专用轨道 + 无人货运列车**运至基地储存站 → 自动入全局仓储。后期研发解锁高级采矿机（长距无线回仓，耗电多）。（详见 A11 WV-005 §6.2、A12 §18） |
+| **普通管道（液体/气体）** | 液体版传送带，复杂拓扑（分流器/汇流器/准入口/管道桥，与 A9 §10 同构）。占地。 |
+| **地下暗管（后期研发解锁）** | 极简 A-B 点对点传输，不占地，有距离上限（参考 300m）。区别于普通管道的独立设备。（详见 A12 §11.7、§17） |
+
+**明确排除（留到 Phase 5+）**：完整火车系统（有人火车，轨道信号/调度/车站，A11 WV-005）。
+
+### Phase 3c — 塔防 + 电力（原 Phase 3 内容）
+
+> 依据：原 Phase 3 计划 + A11 WV-004 §5.2（塔防落在远征前哨防御）
+
+| 产出 | 说明 |
+|------|------|
+| **塔防系统** | 敌人 + 炮塔 + 索敌 + 射击。玩法落点：远征前哨需要防御（A11 WV-004 §5.2），不是孤立系统。 |
+| **电力系统** | 供电桩/中继器/负载/过载断电（A10）。 |
+
+### Phase 3 其他累积功能（跨子 Phase 或独立排期）
+
+以下功能从 Phase 1/2 排除项累积，归属 Phase 3 但具体放哪个子 Phase 待排期：
+
+| 功能 | 来源 | 关键依赖 |
+|------|------|----------|
+| **多选与组操作**（X 框选 + 组移动/旋转/删除 + 复制粘贴，传送带可入组） | Phase 1 T1.x / Phase 2 T2.x 排除 | T2.14 单设备移动机制（原型）、T2.0 传送带链管理 |
 | 物流桥完整交叉逻辑 | Phase 2 排除 | T2.0 传送带创建系统 |
-| 分流器/汇流器/物品准入口过滤 | Phase 2 排除 | A9 物流系统 |
-| 地形系统（矿脉/障碍物/不可建造 Cell） + 采矿机 | Phase 2 排除 | A2 世界模型 |
-| 电力系统（供电桩/中继器/过载） | Phase 2 排除 | A10 电力系统 |
+| 分流器/汇流器/物品准人口过滤 | Phase 2 排除 | A9 物流系统 |
 | 配方 UI（玩家手动选择配方） | Phase 2 排除 | A8 生产系统 |
 
 > **多选与组操作的设计要点（用户已确认）**：
@@ -141,12 +182,14 @@ Phase 3 文档（`implementation-phase-3.md`）尚未创建。以下是从 Phase
 | 文档 | 编号 | Phase 归属 | 一句话 |
 |------|------|-----------|--------|
 | ecs-spec.md | A1 | 🔵 P1 + 🟢 P2 | ECS 框架（P1）+ 业务 System（P2） |
-| world-model.md | A2 | 🔵 P1 + 🟣 P4 | 网格/占用表（P1）+ Chunk 分帧（P4） |
+| world-model.md | A2 | 🔵 P1 + 🟠 P3a + 🟣 P4 | 网格/占用表（P1）+ Chunk 加载/卸载（P3a，A11 提前）+ Chunk 分帧（P4） |
 | building-spec.md | A3 | 🔵 P1 + 🟢 P2 | 建筑定义/放置（P1）+ 缓冲区/生产（P2） |
 | item-spec.md | A4 | 🟢 P2 | 物品/Tag/配方 |
 | simulation-spec.md | A5 | 🔵 P1 + 🟢 P2 | GameLoop/相机/速度（P1）+ Tick 时序（P2） |
 | coordinate-spec.md | A6 | 🔵 P1 | 坐标转换/Camera |
 | core-decisions.md | A7 | ⚪ 全局 | 14 条宪法 |
 | production-system-spec.md | A8 | 🟢 P2 | 生产系统 |
-| logistics-spec.md | A9 | 🟢 P2 | 物流/传送带 |
-| power-system-spec.md | A10 | 🟠 P3+ | 电力系统 |
+| logistics-spec.md | A9 | 🟢 P2 + 🟠 P3b | 物流/传送带（P2）+ 远距离物流（P3b，A11 WV-005） |
+| power-system-spec.md | A10 | 🟠 P3c | 电力系统 |
+| **world-vision.md** | **A11** | **⚪ 全局上位** | **世界/地图产品方向（无限世界/资源/物流/小地图）。A2 受其约束。** |
+| **economy-vision.md** | **A12** | **⚪ 全局上位（⚠️ 待定型）** | **经济/玩法愿景（人口+探索+市场+创造模式）。⚠️ 大方向备忘，核心选择（探索方式/人口定位/市场角色）待后续会话定型。创造模式（EC-002）已定型。** |

@@ -17,13 +17,38 @@ export interface AtlasGroup {
    * 这里的覆盖来自 building-spec.md / logistics-spec.md 指定的 texture key。
    */
   keyOverrides?: Record<string, string>;
+  /**
+   * SVG 光栅化倍率（**仅对 SVG 源生效**，PNG 源忽略）。
+   * 地图设备会随相机 zoom 放大显示，若纹理按 1:1 原始尺寸栅格化（1×1 设备仅 64×64 像素），
+   * zoom=4 时被放大 4 倍会模糊锯齿。devices 用 4× 栅格化，匹配 CAMERA_ZOOM_MAX=4.0，
+   * 保证最大缩放下纹素:屏幕像素 ≈ 1:1。
+   *
+   * - devices: 4（地图建筑，受 zoom 影响，矢量可无损提倍）
+   * - items: 不填(=1)（物品图标用于 UI 固定尺寸，源是 PNG 无矢量）
+   * - ui: 不填(=1)（界面部件屏幕空间固定尺寸渲染，提倍无意义）
+   *
+   * ⚠️ 若未来 CAMERA_ZOOM_MAX 调高，DEVICE_RASTER_SCALE 需同步（见下常量）。
+   */
+  rasterScale?: number;
 }
+
+/**
+ * devices 图集 SVG 光栅化倍率（单一真相源）。
+ * 取值 = CAMERA_ZOOM_MAX (src/game/render/constants.ts)，保证最大缩放下纹素:屏幕像素 ≈ 1:1，
+ * 设备图标在 zoom=4 时无放大锯齿。
+ *
+ * ⚠️ 若未来 CAMERA_ZOOM_MAX 调高，此处需同步（否则最大 zoom 仍会放大超采样模糊）。
+ *    items/ui 图集不受此影响（前者源是 PNG、后者屏幕空间固定尺寸）。
+ */
+export const DEVICE_RASTER_SCALE = 4;
 
 /** 三个图集分组。 */
 export const ATLAS_GROUPS: AtlasGroup[] = [
   {
     name: 'devices',
     inputDir: 'src/assets/svg',
+    // 地图设备随 zoom 放大显示，按 4× 栅格化匹配 CAMERA_ZOOM_MAX=4.0（纹素 1:1 无锯齿）。
+    rasterScale: DEVICE_RASTER_SCALE,
     keyOverrides: {
       // building-spec / logistics-spec 指定的 texture key
       '3x3_unit.svg': 'refining_unit', // 3x3_unit 内容即精炼炉

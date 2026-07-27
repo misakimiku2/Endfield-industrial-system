@@ -21,11 +21,13 @@
 // 边界策略: 让世界边缘正好贴住视口边缘（既不露黑底，也不允许看到世界外）。
 // 相机中心被约束在 [halfView, worldSize - halfView]；当世界小于视口时居中。
 // viewRotation 不改变相机可看的世界范围，clamp 仍在世界轴对齐边界内进行 (A6 §4.0)。
+//
+// 世界尺寸来源（A11 WV-003 §4.4）: 不再读全局常量 WORLD_WIDTH/HEIGHT_PX，
+// 而是构造时由调用方传入 WorldBounds（来自 MapInstance）。Phase 3a 换成
+// Chunk 化后，世界尺寸的访问入口仍是这里传入的 bounds，调用方改即可。
 
 import {
   CELL_SIZE,
-  WORLD_WIDTH_PX,
-  WORLD_HEIGHT_PX,
   CAMERA_ZOOM_MIN,
   CAMERA_ZOOM_MAX,
   CAMERA_ZOOM_DEFAULT,
@@ -36,6 +38,15 @@ import type { Container } from 'pixi.js';
 export interface ViewportSize {
   width: number; // 视口宽（屏幕像素 / CSS 像素）
   height: number;
+}
+
+/**
+ * 世界边界（世界像素）。由 MapInstance 的 widthPx/heightPx 提供 (A11 WV-003 §4.4)。
+ * Camera 的初始定位与边界 clamp 都读它，不再读全局常量。
+ */
+export interface WorldBounds {
+  widthPx: number;
+  heightPx: number;
 }
 
 /** 视图旋转的 4 个离散态 (A6 §4.1)。 */
@@ -52,6 +63,8 @@ export class Camera {
   viewRotation: ViewRotation = 0;
 
   private viewport: ViewportSize;
+  /** 世界边界（世界像素）。来自 MapInstance，用于初始定位与 clamp (A11 WV-003 §4.4)。 */
+  private bounds: WorldBounds;
   /** 相机变换写入目标（PixiJS 世界容器）。update 时同步其 position/scale/rotation。 */
   private worldContainer: Container | null = null;
 
@@ -65,12 +78,26 @@ export class Camera {
   /** 动画已进行时间(ms)。>= _rotAnimDuration 表示动画结束。 */
   private _rotAnimElapsed = Infinity;
 
-  constructor(viewport: ViewportSize) {
+  /**
+   * @param viewport 视口尺寸（屏幕像素）
+   * @param bounds   世界边界（世界像素），来自 MapInstance (A11 WV-003 §4.4)
+   */
+  constructor(viewport: ViewportSize, bounds: WorldBounds) {
     this.viewport = viewport;
+    this.bounds = bounds;
     this.zoom = CAMERA_ZOOM_DEFAULT;
     // 初始中心置于世界中央
-    this.x = WORLD_WIDTH_PX / 2;
-    this.y = WORLD_HEIGHT_PX / 2;
+    this.x = bounds.widthPx / 2;
+    this.y = bounds.heightPx / 2;
+  }
+
+  /**
+   * 替换世界边界（A11 WV-003 §4.4）。Phase 3a Chunk 化或加载不同尺寸地图时调用。
+   * 替换后重新 clamp 相机中心，确保不越新边界。
+   */
+  setWorldBounds(bounds: WorldBounds): void {
+    this.bounds = bounds;
+    this.clampPosition();
   }
 
   /**
@@ -102,6 +129,11 @@ export class Camera {
   setViewport(size: ViewportSize): void {
     this.viewport = size;
     this.clampPosition();
+  }
+
+  /** 当前视口尺寸（只读访问，供 RenderSystem 等做视口剔除）。 */
+  getViewport(): ViewportSize {
+    return this.viewport;
   }
 
   // ───────────────────────── 坐标转换 (A6 §4, §4.0) ─────────────────────────
@@ -224,17 +256,25 @@ export class Camera {
    * 模拟层不感知此变化，下游系统通过 worldToScreen/screenToWorld 自动正确。
    *
    * 平滑过渡: 更新离散目标态 viewRotation，同时启动一段 lerp 动画把
-   * displayRotation 从当前值过渡到新目标(按顺时针最短路径)。动画期间所有
-   * 坐标变换都用 displayRotation，故视觉与点击位置始终一致。
-   * 若上一次动画未结束就再次触发(连按 Ctrl+R)，以当前 displayRotation 为新起点。
+   * displayRotation 从当前值过渡到新目标。动画期间所有坐标变换都用 displayRotation，
+   * 故视觉与点击位置始终一致。若上一次动画未结束就再次触发(连按 Ctrl+R)，
+   * 以当前 displayRotation 为新起点。
+   *
+   * ⚠️ 目标重锚定（关键，修正"连旋不回正"bug）:
+   *   动画目标**必须锁定到 viewRotation 的精确离散弧度**，而非"起点 + π/2"累加。
+   *   早期实现用 `_rotAnimTo = _rotAnimFrom + π/2`，每次从当前显示角(可能是动画中途值
+   *   或 lerp 残差)累加，导致 displayRotation 随连按逐步漂离 viewRotation 的真实值
+   *   —— 表现为"转 4 次回不到正"(viewRotation=0 但画面停在 ~93°)。
+   *   现在目标 = 大于当前 displayRotation、且模 2π 等于 viewRotation*π/180 的最小值
+   *   (nextClockwiseTarget)。这样: (a) 始终顺时针 ≥ 一个 90° 档位; (b) 动画结束后
+   *   displayRotation mod 2π 严格 == viewRotation 对应弧度，每次都把漂移归零。
    */
   rotateClockwise(): void {
     this.viewRotation = (((this.viewRotation + 90) % 360) as ViewRotation);
-    // 动画起点 = 当前显示角度(若上次动画进行中，从当前进度接续，无突变)
+    // 动画起点 = 当前显示角度(若上次动画进行中，从当前进度接续，无画面突变)
     this._rotAnimFrom = this._displayRotation;
-    // 动画目标 = 起点向顺时针 +90°(π/2)。始终顺时针递增，不取最短路径反向——
-    // 因为 Ctrl+R 的语义就是"顺时针转 90°"，连按应连续顺时针，而非 270° 反向回退。
-    this._rotAnimTo = this._rotAnimFrom + Math.PI / 2;
+    // 动画目标 = 锁定到 viewRotation 的精确离散弧度，顺时针取下一个 ≥ from 的值
+    this._rotAnimTo = nextClockwiseTarget(this.viewRotation, this._displayRotation);
     this._rotAnimElapsed = 0;
   }
 
@@ -280,16 +320,18 @@ export class Camera {
   private clampPosition(): void {
     const halfW = this.viewport.width / 2 / this.zoom;
     const halfH = this.viewport.height / 2 / this.zoom;
+    const worldW = this.bounds.widthPx;
+    const worldH = this.bounds.heightPx;
 
-    if (WORLD_WIDTH_PX >= halfW * 2) {
-      this.x = clamp(this.x, halfW, WORLD_WIDTH_PX - halfW);
+    if (worldW >= halfW * 2) {
+      this.x = clamp(this.x, halfW, worldW - halfW);
     } else {
-      this.x = WORLD_WIDTH_PX / 2;
+      this.x = worldW / 2;
     }
-    if (WORLD_HEIGHT_PX >= halfH * 2) {
-      this.y = clamp(this.y, halfH, WORLD_HEIGHT_PX - halfH);
+    if (worldH >= halfH * 2) {
+      this.y = clamp(this.y, halfH, worldH - halfH);
     } else {
-      this.y = WORLD_HEIGHT_PX / 2;
+      this.y = worldH / 2;
     }
   }
 }
@@ -301,6 +343,29 @@ function clamp(v: number, min: number, max: number): number {
 /** ease-in-out cubic: 进出场都柔和，旋转过渡看起来"有分量"不生硬。t∈[0,1]。 */
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+/**
+ * 计算旋转动画的顺时针目标弧度（修正"连旋不回正"bug，见 rotateClockwise 注释）。
+ *
+ * 目标必须满足两个约束:
+ *   (1) 模 2π 等于 viewRotation 对应的精确弧度（保证动画结束后 displayRotation 与
+ *       离散 viewRotation 严格对齐，不累积漂移）；
+ *   (2) 大于 from（保证始终顺时针递进，Ctrl+R 语义是"顺时针 90°"，连按不反向）。
+ *
+ * 做法: 取 base = viewRotation*π/180（∈[0,2π)），不断 +2π 直到 > from。
+ *   - 静止态按下（from 恰是上一档的精确值，如 from=0、目标 90°）: base=π/2 > 0 ✓
+ *   - 动画中途连按（from 是中间值，如 from=0.3、目标应到 π/2）: π/2 > 0.3 ✓
+ *   - 从 270° 再按一次回 0°: base=0，需 +2π → 2π > from(=3π/2) ✓（顺时针走完最后 90°）
+ *
+ * @param viewRotation 当前离散目标态 (0/90/180/270)
+ * @param from         动画起点 = 当前 _displayRotation（可能为中间值）
+ */
+function nextClockwiseTarget(viewRotation: ViewRotation, from: number): number {
+  const TAU = Math.PI * 2;
+  let target = (viewRotation * Math.PI) / 180; // ∈ [0, 2π)
+  while (target <= from) target += TAU;
+  return target;
 }
 
 export { CELL_SIZE }; // 便于消费方从 camera 模块一并引入（可选）

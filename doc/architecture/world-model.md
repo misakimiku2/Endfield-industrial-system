@@ -2,7 +2,9 @@
 
 > **关联决策**: DD-009 (三层坐标), DD-011 (状态在 Component)
 
-> **Phase 归属**: 🔵 **Phase 1**（Grid/Cell 概念、OccupancyMap 占用表——设备放置要用） + 🟣 **Phase 4**（Chunk 分帧处理，性能优化时才用）。
+> **⚠️ 世界方向已定型**: 世界/地图的整体产品方向见 **[A11 world-vision.md](world-vision.md)**（WV-001 ~ WV-007）。本文件描述世界模型的**技术结构**（Grid/Cell/Chunk/占用表），其中"Phase 1 固定 64×64""Chunk 排在 Phase 4"已被 A11 修订——64×64 仅为临时方案，Chunk 提前到 Phase 3。本文件相关章节已加标注，冲突处以 A11 为准。
+
+> **Phase 归属**: 🔵 **Phase 1**（Grid/Cell 概念、OccupancyMap 占用表——设备放置要用） + 🟠 **Phase 3a**（Chunk 分块加载/卸载，支撑无限世界——见 A11 WV-003，从原 Phase 4 提前） + 🟣 **Phase 4**（Chunk 内的分帧处理，纯性能优化）。
 
 ---
 
@@ -108,12 +110,15 @@ function chunkForCell(gx: number, gy: number): ChunkCoord {
 | **实体索引** | 该 Chunk 内有哪些 ECS Entity（加速空间查询） |
 | **加载/卸载** | 相机视野外的 Chunk 可以卸载地形数据和实体渲染 |
 
-### 3.3 加载策略（Phase 2+ 实现）
+### 3.3 加载策略（⚠️ 已被 A11 WV-003 修订）
 
-- **Phase 1**: 不使用 Chunk 系统。视口内所有实体一次性渲染。世界大小硬限制为 64×64 cells。
-- **Phase 2+**: 引入 Chunk 加载/卸载，支持无限世界。
+> **修订说明**：原写"Phase 2+ 引入 Chunk"。A11 定型无限世界方向后，Chunk 提前到 **Phase 3a**（是无限世界的地基，见 A11 WV-003 §4.2）。Chunk 不依赖程序生成——即使 Phase 3 所有地图仍手工设计，Chunk 仍工作（它只是按区域加载/卸载机制）。
 
-Phase 1 先用伪 Chunk：
+- **Phase 1–2**: 不使用 Chunk 系统。视口内所有实体一次性渲染。世界大小硬限制为 64×64 cells（**临时方案**，见 §8）。
+- **Phase 3a**: 引入 Chunk 加载/卸载，支撑无限世界（A11 WV-001/WV-003）。
+- **Phase 4**: Chunk 内分帧处理（纯性能优化，非加载/卸载本身）。
+
+Phase 1–2 先用伪 Chunk：
 
 ```ts
 // Phase 1: 简单的占用表（二维数组）
@@ -208,6 +213,8 @@ const vignetteStyle = {
 
 ## 6. 地形
 
+> **⚠️ 资源点方向已定型**：矿脉/资源点的玩法定位见 **A11 WV-004**（C 派：前期建厂就近资源 + 后期远征稀有资源散落远处）。本节描述地形数据结构，资源点的具体分布规则/储量/采集机制留到 Phase 3b 开工前细化（见 A11 §10 待细化项）。
+
 ### 6.1 Phase 1 地形
 
 Phase 1 只有一种地形：**平地**。所有 Cell 默认可建造。
@@ -253,13 +260,22 @@ class OccupancyMap {
 
 ---
 
-## 8. 世界边界
+## 8. 世界边界（⚠️ 64×64 为临时方案）
 
-Phase 1 设定世界大小为 **64×64 cells**（4096 个 Cell，约 1 万像素见方）。
+> **⚠️ 临时方案**：64×64 固定世界是 Phase 1–2 的简化。A11 WV-001 已定型**无限世界**方向，Phase 3a 起世界向任意方向扩展，无固定边界。本节的固定尺寸/边界 clamp 仅在 Phase 1–2 有效。
 
-这个范围足够放置 100+ 设备 + 传送带网络。超出边界不可放置、不可平移。
+Phase 1–2 设定世界大小为 **64×64 cells**（4096 个 Cell，约 1 万像素见方）。
+
+这个范围足够放置 100+ 设备 + 传送带网络，用于跑通核心玩法。超出边界不可放置、不可平移。
 
 ```ts
-const WORLD_WIDTH_CELLS = 64;
-const WORLD_HEIGHT_CELLS = 64;
+// ✅ Phase 1 接口预留（A11 WV-003 §4.4）—— 已在 T1.6 实现：
+// 这两个值从"全局常量"改为"地图实例属性"，占用表/边界 clamp 都读地图实例，
+// 不读全局常量。这样 Phase 3a 把世界换成 Chunk 化时，无需扫全代码改硬编码。
+// 实现见 src/game/world/MapInstance.ts。
+interface MapInstance {
+  widthCells: number;   // Phase 1-2 = 64
+  heightCells: number;  // Phase 1-2 = 64
+  // Phase 3a 起这两个字段语义变为"初始已生成区域"，世界本身无固定边界
+}
 ```

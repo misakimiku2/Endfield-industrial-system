@@ -11,12 +11,17 @@
 //   7. 世界比视口小时相机居中（极小 zoom 场景）
 
 import { Camera } from '../src/game/render/Camera.ts';
+import { createDefaultMap } from '../src/game/world/MapInstance.ts';
 import {
-  WORLD_WIDTH_PX,
-  WORLD_HEIGHT_PX,
   CAMERA_ZOOM_MIN,
   CAMERA_ZOOM_MAX,
 } from '../src/game/render/constants.ts';
+
+// 世界边界来自 MapInstance（A11 WV-003 §4.4），默认 64×64 → 4096×4096 世界像素。
+const DEFAULT_MAP = createDefaultMap();
+const WORLD_WIDTH_PX = DEFAULT_MAP.widthPx;   // 4096
+const WORLD_HEIGHT_PX = DEFAULT_MAP.heightPx; // 4096
+const WORLD_BOUNDS = { widthPx: WORLD_WIDTH_PX, heightPx: WORLD_HEIGHT_PX };
 
 let passed = 0;
 let failed = 0;
@@ -42,7 +47,7 @@ const VIEWPORT = { width: 1280, height: 720 };
 // ── 1. worldToScreen / screenToWorld 互逆 ──
 console.log('[1] worldToScreen / screenToWorld 互逆');
 {
-  const cam = new Camera(VIEWPORT);
+  const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
   cam.x = 1500;
   cam.y = 2000;
   cam.zoom = 2.0;
@@ -63,7 +68,7 @@ console.log('[1] worldToScreen / screenToWorld 互逆');
 // ── 2. 相机中心 → 视口中央 ──
 console.log('\n[2] 相机中心映射到视口中央');
 {
-  const cam = new Camera(VIEWPORT);
+  const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
   const center = cam.worldToScreen(cam.x, cam.y);
   assert(approxEqual(center.x, VIEWPORT.width / 2) && approxEqual(center.y, VIEWPORT.height / 2),
     `相机中心(${cam.x},${cam.y}) → 屏幕中央(${VIEWPORT.width / 2},${VIEWPORT.height / 2})`);
@@ -72,7 +77,7 @@ console.log('\n[2] 相机中心映射到视口中央');
 // ── 3. 边界 clamp ──
 console.log('\n[3] 边界 clamp (世界 64×64 cells = 4096px)');
 {
-  const cam = new Camera(VIEWPORT); // zoom=1, 视口 1280×720
+  const cam = new Camera(VIEWPORT, WORLD_BOUNDS); // zoom=1, 视口 1280×720
   // 尝试把相机移到世界外
   cam.setPosition(-500, -500);
   // zoom=1 时 halfView = 1280/2/1 = 640, clamp 下界 = 640
@@ -88,7 +93,7 @@ console.log('\n[3] 边界 clamp (世界 64×64 cells = 4096px)');
 // ── 4. zoom 边界 ──
 console.log('\n[4] zoom 边界 [0.25, 4.0]');
 {
-  const cam = new Camera(VIEWPORT);
+  const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
   cam.setZoom(100); // 远超上限
   assert(approxEqual(cam.zoom, CAMERA_ZOOM_MAX), `setZoom(100) clamp 到 ${CAMERA_ZOOM_MAX}`);
   cam.setZoom(0.01); // 远低于下限
@@ -98,7 +103,7 @@ console.log('\n[4] zoom 边界 [0.25, 4.0]');
 // ── 5. zoomAt 锚点不变 ──
 console.log('\n[5] zoomAt 以锚点为中心缩放');
 {
-  const cam = new Camera(VIEWPORT);
+  const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
   cam.setPosition(2048, 2048); // 世界中心
   cam.setZoom(1.0);
 
@@ -120,7 +125,7 @@ console.log('\n[5] zoomAt 以锚点为中心缩放');
 // ── 6. panByWorld 平移并 clamp ──
 console.log('\n[6] panByWorld 平移 + clamp');
 {
-  const cam = new Camera(VIEWPORT);
+  const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
   const startX = cam.x;
   const startY = cam.y;
   cam.panByWorld(100, 50);
@@ -138,7 +143,7 @@ console.log('\n[7] 世界比视口小 → 相机居中');
   // zoom=0.25: 视口世界宽 = 1280/0.25 = 5120 > 世界宽 4096 → X 轴世界小于视口
   //            视口世界高 = 720/0.25  = 2880 < 世界高 4096 → Y 轴世界大于视口
   // 这是非正方形视口下的真实情况：X 居中、Y 可移动都是正确行为。
-  const cam = new Camera(VIEWPORT);
+  const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
   cam.setZoom(CAMERA_ZOOM_MIN);
   const halfW = VIEWPORT.width / 2 / cam.zoom;
   const worldSmallerX = WORLD_WIDTH_PX >= halfW * 2;

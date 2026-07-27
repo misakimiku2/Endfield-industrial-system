@@ -52,36 +52,44 @@ function resolveKey(group: AtlasGroup, filename: string): string {
  * 用 sharp 光栅化 SVG → PNG buffer。
  * sharp 会读取 SVG 的 width/height(像素)作为基础尺寸光栅化；
  * 若 SVG 只有 viewBox 无 width/height，sharp 默认按 72 DPI 渲染 viewBox。
- * 我们再 resize 到目标尺寸(此处用 SVG 自带尺寸，保持原始像素精度)。
+ *
+ * @param scale 光栅化倍率（默认 1）。SVG 是矢量，在更大目标尺寸下重新栅格化得到
+ *              真实高分辨率像素——devices 图集用 4× 匹配 CAMERA_ZOOM_MAX，避免 zoom 放大锯齿。
+ *              （对 PNG 源无意义，故 readPng 不接此参数。）
  */
-async function rasterizeSvg(svgPath: string): Promise<{ png: Buffer; width: number; height: number }> {
+async function rasterizeSvg(
+  svgPath: string,
+  scale = 1,
+): Promise<{ png: Buffer; width: number; height: number }> {
   const svgBuf = fs.readFileSync(svgPath);
-  // 先获取 sharp 解析出的尺寸(它内部用 librsvg 渲染)
+  // 先获取 sharp 解析出的基础尺寸(它内部用 librsvg 渲染)
   const meta = await sharp(svgBuf).metadata();
-  let width = meta.width ?? meta.pages;
-  let height = meta.height;
+  let baseWidth = meta.width ?? meta.pages;
+  let baseHeight = meta.height;
 
   // 如果 sharp 无法从 SVG 直接读出尺寸(某些无 width/height 的 SVG)，
   // 回退到解析 viewBox
-  if (!width || !height) {
+  if (!baseWidth || !baseHeight) {
     const content = svgBuf.toString('utf8');
     const vbMatch = content.match(/viewBox=["']([\d.\s,-]+)["']/);
     if (vbMatch) {
       const vb = vbMatch[1].trim().split(/[\s,]+/).map(Number);
       if (vb.length === 4) {
-        width = Math.round(vb[2]);
-        height = Math.round(vb[3]);
+        baseWidth = Math.round(vb[2]);
+        baseHeight = Math.round(vb[3]);
       }
     }
   }
-  if (!width || !height) {
+  if (!baseWidth || !baseHeight) {
     throw new Error(`无法确定 SVG 尺寸: ${svgPath}`);
   }
 
-  // 光栅化到原始像素尺寸(放大倍数=1)。sharp 对 SVG 默认以 72DPI 渲染，
-  // width/height 属性为像素时直接采用。
-  const png = await sharp(svgBuf).resize(width, height, { fit: 'fill' }).png().toBuffer();
-  return { png, width, height };
+  // 按倍率光栅化: SVG 矢量在 targetWidth×targetHeight 下重新渲染得真实高分辨率像素。
+  const targetWidth = Math.round(baseWidth * scale);
+  const targetHeight = Math.round(baseHeight * scale);
+  const png = await sharp(svgBuf).resize(targetWidth, targetHeight, { fit: 'fill' }).png().toBuffer();
+  // 返回光栅化后的实际尺寸（= 基础尺寸 × scale），供打包/JSON 使用
+  return { png, width: targetWidth, height: targetHeight };
 }
 
 /** 读取 PNG 文件 → {png, width, height}。 */
@@ -143,10 +151,11 @@ async function collectGroup(group: AtlasGroup): Promise<PackInput[]> {
       if (ext !== '.png') continue;
     }
 
-    // 光栅化/读取
+    // 光栅化/读取（SVG 走倍率栅格化，PNG 直接读取不提倍）
+    const rasterScale = group.rasterScale ?? 1;
     let raster: { png: Buffer; width: number; height: number };
     try {
-      raster = ext === '.svg' ? await rasterizeSvg(file) : await readPng(file);
+      raster = ext === '.svg' ? await rasterizeSvg(file, rasterScale) : await readPng(file);
     } catch (e) {
       console.warn(`  ⚠ 跳过 ${file}: ${(e as Error).message}`);
       continue;
@@ -165,7 +174,7 @@ async function collectGroup(group: AtlasGroup): Promise<PackInput[]> {
   if (group.name === 'ui') {
     const closeBtn = path.join('src/assets/png/window/Close_button.svg');
     if (fs.existsSync(closeBtn)) {
-      const raster = await rasterizeSvg(closeBtn);
+      const raster = await rasterizeSvg(closeBtn, group.rasterScale ?? 1);
       const key = 'close_button';
       if (!keySeen.has(key)) {
         keySeen.add(key);

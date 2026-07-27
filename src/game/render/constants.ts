@@ -9,15 +9,14 @@
 /** 一个 Cell 的世界像素边长 (A6 §2, A2 §2.1)。常量，运行时不改变。 */
 export const CELL_SIZE = 64;
 
-/** Phase 1 世界宽度（单位: Cell）(A2 §8)。世界 64×64 cells。 */
-export const WORLD_WIDTH_CELLS = 64;
-/** Phase 1 世界高度（单位: Cell）(A2 §8)。 */
-export const WORLD_HEIGHT_CELLS = 64;
-
-/** 世界宽度（世界像素）= WORLD_WIDTH_CELLS * CELL_SIZE。 */
-export const WORLD_WIDTH_PX = WORLD_WIDTH_CELLS * CELL_SIZE; // 4096
-/** 世界高度（世界像素）= WORLD_HEIGHT_CELLS * CELL_SIZE。 */
-export const WORLD_HEIGHT_PX = WORLD_HEIGHT_CELLS * CELL_SIZE; // 4096
+// ⚠️ 世界尺寸不再是全局常量（A11 WV-003 §4.4，A2 §8 修订）。
+// 原 WORLD_WIDTH/HEIGHT_CELLS 与 WORLD_WIDTH/HEIGHT_PX 已下放到 MapInstance
+// （src/game/world/MapInstance.ts），占用表 / 相机边界 clamp 都读地图实例属性。
+// 这样 Phase 3a 把世界换成 Chunk 化时无需扫全代码改硬编码。
+//
+// 此处仅保留"默认地图尺寸"作为 createDefaultMap 的取值来源（语义是默认值，非全局世界尺寸）。
+/** 默认地图尺寸（单位: Cell）(A2 §8)。Phase 1-2 默认 64×64。 */
+export const WORLD_DEFAULT_CELLS = 64;
 
 // ───────────────────────── 相机 ─────────────────────────
 

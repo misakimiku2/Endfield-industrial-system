@@ -15,12 +15,17 @@
 //     与 worldToScreen 逐像素一致；此处不依赖 PixiJS 运行时。
 
 import { Camera } from '../src/game/render/Camera.ts';
+import { createDefaultMap } from '../src/game/world/MapInstance.ts';
 import {
-  WORLD_WIDTH_PX,
-  WORLD_HEIGHT_PX,
   CAMERA_ZOOM_MIN,
   CAMERA_ZOOM_MAX,
 } from '../src/game/render/constants.ts';
+
+// 世界边界来自 MapInstance（A11 WV-003 §4.4），默认 64×64 → 4096×4096 世界像素。
+const DEFAULT_MAP = createDefaultMap();
+const WORLD_WIDTH_PX = DEFAULT_MAP.widthPx;   // 4096
+const WORLD_HEIGHT_PX = DEFAULT_MAP.heightPx; // 4096
+const WORLD_BOUNDS = { widthPx: WORLD_WIDTH_PX, heightPx: WORLD_HEIGHT_PX };
 
 let passed = 0;
 let failed = 0;
@@ -66,7 +71,7 @@ function setRotationAndFinishAnim(cam: Camera, target: 0 | 90 | 180 | 270): void
 // ── 1. worldToScreen / screenToWorld 互逆（4 旋转态）──
 console.log('[1] worldToScreen / screenToWorld 互逆（4 旋转态）');
 {
-  const cam = new Camera(VIEWPORT);
+  const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
   cam.x = 1500;
   cam.y = 2000;
   cam.zoom = 2.0;
@@ -90,7 +95,7 @@ console.log('[1] worldToScreen / screenToWorld 互逆（4 旋转态）');
 // ── 2. 旋转以屏幕中心为枢轴：相机中心 → 视口中央 ──
 console.log('\n[2] 旋转以屏幕中心为枢轴（相机中心恒在视口中央）');
 {
-  const cam = new Camera(VIEWPORT);
+  const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
   for (const rot of ROTATIONS) {
     setRotationAndFinishAnim(cam, rot);
     const center = cam.worldToScreen(cam.x, cam.y);
@@ -102,7 +107,7 @@ console.log('\n[2] 旋转以屏幕中心为枢轴（相机中心恒在视口中�
 // ── 3. rotateClockwise 4 态循环 ──
 console.log('\n[3] rotateClockwise 4 态循环 0→90→180→270→0');
 {
-  const cam = new Camera(VIEWPORT);
+  const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
   assert(cam.viewRotation === 0, `初始 viewRotation = 0`);
   cam.rotateClockwise();
   assert(cam.viewRotation === 90, `第 1 次 → 90`);
@@ -117,7 +122,7 @@ console.log('\n[3] rotateClockwise 4 态循环 0→90→180→270→0');
 // ── 4. screenDirToWorld: WASD 屏幕相对映射 ──
 console.log('\n[4] screenDirToWorld 屏幕相对方向映射');
 {
-  const cam = new Camera(VIEWPORT);
+  const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
   // 屏幕"上"方向 (0, -1) 在各旋转态下映射到的世界方向
   setRotationAndFinishAnim(cam, 0);
   let d = cam.screenDirToWorld(0, -1);
@@ -150,7 +155,7 @@ console.log('\n[4] screenDirToWorld 屏幕相对方向映射');
 // ── 5. zoomAt 在旋转视图下仍以鼠标为锚点 ──
 console.log('\n[5] zoomAt 旋转视图下以鼠标为锚点（锚点屏幕坐标不变）');
 {
-  const cam = new Camera(VIEWPORT);
+  const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
   cam.setPosition(2048, 2048);
   cam.setZoom(1.0);
 
@@ -174,7 +179,7 @@ console.log('\n[5] zoomAt 旋转视图下以鼠标为锚点（锚点屏幕坐标
 // ── 6. 边界 clamp 在旋转视图下仍生效 ──
 console.log('\n[6] 边界 clamp 在旋转视图下仍生效');
 {
-  const cam = new Camera(VIEWPORT);
+  const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
   for (const rot of ROTATIONS) {
     setRotationAndFinishAnim(cam, rot);
     cam.setZoom(1.0);
@@ -193,7 +198,7 @@ console.log('\n[6] 边界 clamp 在旋转视图下仍生效');
 // ── 7. rotateClockwise 不改变相机中心 ──
 console.log('\n[7] rotateClockwise 不改变相机中心（只改呈现方式）');
 {
-  const cam = new Camera(VIEWPORT);
+  const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
   cam.setPosition(1234, 2345);
   const beforeX = cam.x;
   const beforeY = cam.y;
@@ -206,7 +211,7 @@ console.log('\n[7] rotateClockwise 不改变相机中心（只改呈现方式）
 // ── 8. zoom 边界回归（旋转不应影响 zoom clamp）──
 console.log('\n[8] zoom 边界回归 [0.25, 4.0]（旋转不影响）');
 {
-  const cam = new Camera(VIEWPORT);
+  const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
   setRotationAndFinishAnim(cam, 90);
   cam.setZoom(100);
   assert(approxEqual(cam.zoom, CAMERA_ZOOM_MAX), `rot=90° setZoom(100) clamp 到 ${CAMERA_ZOOM_MAX}`);
@@ -217,7 +222,7 @@ console.log('\n[8] zoom 边界回归 [0.25, 4.0]（旋转不影响）');
 // ── 9. 平滑旋转: 动画结束后 displayRotation 精确等于目标 ──
 console.log('\n[9] 平滑旋转动画结束后 displayRotation 吸附到目标');
 {
-  const cam = new Camera(VIEWPORT);
+  const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
   cam.x = 1500;
   cam.y = 2000;
   cam.zoom = 1.5;
@@ -246,7 +251,7 @@ console.log('\n[9] 平滑旋转动画结束后 displayRotation 吸附到目标')
 // ── 10. 平滑旋转: 动画期间(连续中间角度)互逆仍成立 ──
 console.log('\n[10] 平滑旋转动画期间(连续中间角度) worldToScreen/screenToWorld 互逆');
 {
-  const cam = new Camera(VIEWPORT);
+  const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
   cam.x = 1500;
   cam.y = 2000;
   cam.zoom = 2.0;
@@ -274,11 +279,11 @@ console.log('\n[10] 平滑旋转动画期间(连续中间角度) worldToScreen/s
 // ── 11. 平滑旋转: 连按 Ctrl+R 在动画未结束时接续, 无角度突变 ──
 console.log('\n[11] 连按 Ctrl+R(动画未结束时再次触发)无突变');
 {
-  const cam = new Camera(VIEWPORT);
+  const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
   cam.rotateClockwise(); // 0→90, from=0 to=π/2
   cam.update(32); // 推进 2 帧, displayRotation 在 0~π/2 之间
   const midRot = cam.worldToScreen(2000, 2000); // 中间态参考点
-  // 此时再按一次: 新 from = 当前 displayRotation, to = from + π/2
+  // 此时再按一次: 新 from = 当前 displayRotation, to = 锁定到 viewRotation 离散值
   cam.rotateClockwise();
   assert(cam.viewRotation === 180, `连按第 2 次 viewRotation = 180`);
   // 接续后第一帧画面不应跳变: 旋转角度连续(from 接上当前 displayRotation)
@@ -291,6 +296,61 @@ console.log('\n[11] 连按 Ctrl+R(动画未结束时再次触发)无突变');
   const center = cam.worldToScreen(cam.x, cam.y);
   assert(approxEqual(center.x, VIEWPORT.width / 2) && approxEqual(center.y, VIEWPORT.height / 2),
     `连按后最终到 180° 态, 相机中心在视口中央`);
+}
+
+// ── 12. displayRotation 精确对齐 viewRotation（防"连旋不回正"回归）──
+// 背景: 早期 _rotAnimTo = _rotAnimFrom + π/2 累加起点，导致 displayRotation 随连按
+//       漂离 viewRotation 的真实离散值（连旋 4 次后 viewRotation=0 但画面停在 ~93°）。
+//       修复后目标锁定到 viewRotation 精确弧度，每次动画结束都重锚定、归零漂移。
+// 用 screenDirToWorld(1,0) 反推 displayRotation（其角度 = 视图顺时针角）。
+console.log('\n[12] displayRotation 精确对齐 viewRotation（连旋必回正，防漂移回归）');
+{
+  // 把角度归一到 [0,360)，便于和 viewRotation 比较
+  const norm360 = (deg: number): number => ((deg % 360) + 360) % 360;
+  const displayAngleDeg = (cam: Camera): number => {
+    const d = cam.screenDirToWorld(1, 0);
+    return norm360(Math.atan2(d.y, d.x) * 180 / Math.PI);
+  };
+
+  // (a) 干净连旋 4 次（每次等动画结束），每个静止态 displayRotation 应精确等于 viewRotation
+  {
+    const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
+    const expect: Array<0 | 90 | 180 | 270> = [90, 180, 270, 0];
+    let allPrecise = true;
+    for (let i = 0; i < 4; i++) {
+      cam.rotateClockwise();
+      for (let f = 0; f < 100; f++) cam.update(16); // 跑完动画
+      if (!approxEqual(displayAngleDeg(cam), expect[i], 0.01)) allPrecise = false;
+    }
+    assert(allPrecise, `干净连旋 4 次: 各静止态 displayRotation 精确 = 90/180/270/0（无漂移）`);
+    assert(approxEqual(displayAngleDeg(cam), 0, 0.01),
+      `连旋 4 次后 displayRotation = 0°（回正），实际 ${displayAngleDeg(cam).toFixed(2)}°`);
+  }
+
+  // (b) 快速连按 4 次（不等动画结束，模拟用户连按 Ctrl+R），跑完后仍应精确回 0
+  {
+    const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
+    for (let i = 0; i < 4; i++) {
+      cam.rotateClockwise();
+      for (let f = 0; f < 2; f++) cam.update(16); // 只推进 32ms，远小于 220ms 动画
+    }
+    for (let f = 0; f < 300; f++) cam.update(16); // 最终跑完
+    assert(cam.viewRotation === 0, `快速连按 4 次后 viewRotation = 0`);
+    assert(approxEqual(displayAngleDeg(cam), 0, 0.01),
+      `快速连按 4 次后 displayRotation = 0°（修复前为 ~93°，漂移），实际 ${displayAngleDeg(cam).toFixed(2)}°`);
+  }
+
+  // (c) 大量连旋（12 次 = 3 圈），最终仍精确回 0（验证长期无累积漂移）
+  {
+    const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
+    for (let i = 0; i < 12; i++) {
+      cam.rotateClockwise();
+      for (let f = 0; f < 3; f++) cam.update(16);
+    }
+    for (let f = 0; f < 300; f++) cam.update(16);
+    assert(approxEqual(displayAngleDeg(cam), 0, 0.01),
+      `连旋 12 次(3 圈)后 displayRotation = 0°（无长期累积漂移），实际 ${displayAngleDeg(cam).toFixed(2)}°`);
+  }
 }
 
 console.log(`\n=== 结果: ${passed} 通过, ${failed} 失败 ===\n`);

@@ -12,10 +12,10 @@
 |------|------|----------|
 | T1.1 ECS 核心完善 | ✅ 完成 | `src/game/ECS.ts`（generation-based EntityHandle） |
 | T1.2 相机系统 | ✅ 完成 | `Camera.ts` / `CameraController.ts` / `SceneRenderer.ts` |
-| T1.3 SVG/PNG 资源管线 | ✅ 完成 | `scripts/pack-assets.ts` / `AssetsLoader.ts`（三图集） |
+| T1.3 SVG/PNG 资源管线 | ✅ 完成 | `scripts/pack-assets.ts` / `AssetsLoader.ts`（三图集）。**优化**：devices 图集 SVG 按 `DEVICE_RASTER_SCALE=4` 光栅化（匹配 `CAMERA_ZOOM_MAX=4.0`），zoom=4 时纹素:像素 1:1 无放大锯齿 |
 | T1.4 世界网格渲染 | ✅ 完成 | `GridRenderer.ts`（分段 alpha + Canvas2D 暗角） |
-| T1.5 视图操作 | ✅ 完成 | 边缘滚动、Ctrl+R 视图旋转(屏幕相对参考系+平滑过渡)、`screenDirToWorld`/`panByScreen`、GridRenderer 旋转感知 |
-| T1.6 渲染系统 | ⬜ 待开发 | 实体↔Sprite 绑定、视口剔除 |
+| T1.5 视图操作 | ✅ 完成 | 边缘滚动、Ctrl+R 视图旋转(屏幕相对参考系+平滑过渡)、`screenDirToWorld`/`panByScreen`、GridRenderer 旋转感知。**修正**：`rotateClockwise` 旋转目标重锚定到 `viewRotation` 离散精确值（`nextClockwiseTarget`），消除连旋漂移导致"转 4 次不回正"的 bug |
+| T1.6 渲染系统 | ✅ 完成 | `RenderSystem`（query diff 实体↔Sprite 绑定、视口剔除、层映射）、`MapInstance`（WORLD_* 常量→地图实例属性，A11 WV-003 §4.4） |
 | T1.7 基础交互系统 | ⬜ 待开发 | 点击选中、选中框 |
 | T1.8 设备放置系统 | ⬜ 待开发 | 工具栏、放置预览、OccupancyMap、放置前旋转(R键) |
 | T1.9 设备删除 | ⬜ 待开发 | 删除已放置设备(Delete键)、占位释放 |
@@ -124,8 +124,9 @@ T1.4 世界网格 ────────────────────�
 - **产出文件**: `scripts/assets/asset-manifest.ts`、`scripts/assets/packer.ts`、`scripts/pack-assets.ts`、`src/game/render/AssetsLoader.ts`
 - **文档修订**: DD-008 修订为"设备/UI 用 SVG、物品用 PNG"（见 core-decisions.md）
 - **管线**: 自写构建脚本 + `sharp` 光栅化 SVG → shelf-pack 打包 → `{devices,items,ui}.{png,json}`
-- **图集产出**: devices(9块,1024×256) / items(93块,4096×2048) / ui(28块,2048×256)
+- **图集产出**: devices(9块,4096×1024,SVG 按 4× 光栅化) / items(93块,4096×2048) / ui(28块,2048×256)
 - **图集上限 4096**: WebGL2 安全上限（原 2048 装不下 93 个 254px 物品图标）
+- **SVG 光栅化倍率（`rasterScale`）**: 地图设备随 zoom 放大显示，若按 1:1 原始尺寸栅格化（1×1 设备仅 64px 纹理），zoom=4 时被放大 4 倍会模糊锯齿。devices 图集 SVG 按 `DEVICE_RASTER_SCALE=4` 栅格化（`asset-manifest.ts`），匹配 `CAMERA_ZOOM_MAX=4.0`，保证最大缩放下纹素:屏幕像素 ≈ 1:1。1×1 设备纹理 64→256px、3×3 设备 192→768px。items（PNG 源，无矢量）/ ui（屏幕空间固定尺寸）不提倍。⚠️ 若 `CAMERA_ZOOM_MAX` 调高，`DEVICE_RASTER_SCALE` 需同步。T1.6 RenderSystem 用 `sprite.width=世界尺寸` 覆盖纹理尺寸，对分辨率变化透明，无需改。
 - **texture key 映射**: 文件名→小写→非字母数字替 `_`；手工覆盖表（`3x3_unit→refining_unit` 等）
 - **运行时**: `AssetsLoader.loadAll()` 加载三图集，`getTexture(group, key)` 统一访问
 - **npm script**: `npm run pack-assets`（改 SVG 后重跑）；产物在 `public/spritesheets/`（.gitignore 排除）
@@ -276,6 +277,24 @@ WASD 平移和滚轮缩放已在 T1.2 实现。边缘滚动是相机平移的便
 
 ### 预估工时
 1~2 次会话
+
+### 实现说明（✅ 已完成）
+
+**WORLD_* 常量 → 地图实例属性（A11 WV-003 §4.4，本任务前置改造）**：
+- 新增 `src/game/world/MapInstance.ts`：世界尺寸（`widthCells/heightCells/widthPx/heightPx`）从全局常量下放为地图实例属性，`createDefaultMap()` 返回 64×64。
+- 删除 `constants.ts` 的 `WORLD_WIDTH/HEIGHT_CELLS` 与 `WORLD_WIDTH/HEIGHT_PX`，仅保留 `WORLD_DEFAULT_CELLS`（默认地图尺寸来源）。`CELL_SIZE` 仍是常量。
+- `Camera` 构造新增第二参数 `WorldBounds`（来自 `MapInstance`），`clampPosition`/初始定位改读 `this.bounds`；新增 `setWorldBounds()` 供 Phase 3a 切换世界尺寸。`getViewport()` 暴露只读视口供视口剔除。
+- `WorldData` 持有 `map: MapInstance`（世界尺寸的唯一真相源）。
+- 回归：`verify-t1.2`/`verify-t1.5` 改用 `createDefaultMap()` 派生 bounds（数值仍是 4096，断言不变）。
+
+**RenderSystem（实体↔Sprite 绑定）**：
+- 每帧 `world.query('Position','SpriteComp')`，diff 出新增/消失实体（A1 §5）：新增 → `new Sprite(texture)` 挂到对应层 Container；消失（`destroyEntity`/移组件）→ `sprite.destroy()` + 从父移除。覆盖 ecs-spec §4.3"销毁实体后由 RenderSystem 清理 PixiJS 对象"。
+- 位置同步：Sprite 在 `worldContainer` 子层内，Camera 变换已承担平移/缩放/**旋转(T1.5)**，故实体只用世界坐标（左上角 + 半宽高居中），不绕开 Camera。
+- 视口剔除：屏幕四角 world AABB + padding，屏外 Sprite 仅切 `visible=false`（不销毁），进出视口切换可见，避免反复 create/destroy。
+- 纹理查找通过注入 `getTexture`（来自 AssetsLoader），便于单测 mock。
+- `SpriteComp` 改为 `{ group, textureKey, width, height, layer }` 对齐图集管线。
+- `Game` 串联 ECS World + WorldData + Camera + RenderSystem；`main.ts` 主循环调 `game.update()`，并暴露 `__game.spawnTestDevices(n)` / `clearTestDevices()` 控制台钩子供验收。
+- 验证脚本：`scripts/verify-t1.6.ts`（20 项断言：MapInstance、Camera bounds 回归、RenderSystem diff/层映射/视口剔除/纹理变更重建）。
 
 ---
 
