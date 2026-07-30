@@ -39,7 +39,8 @@ Phase 1 目标：建立 ECS + 渲染基础，实现设备放置、相机控制�
 
 | 文档 | Phase 1 读哪些章节 | Phase 1 跳过哪些 |
 |------|------------------|----------------|
-| [A3 building-spec.md](architecture/building-spec.md) | ✅ §1 BuildingDefinition、§2 Port 系统、§3.3 方向约定、§3.4 Footprint 占用、§5 建造流程 | ❌ §3 BuildingComponent 的缓冲区字段、§3.1 缓冲区规则、§3.2 轮询规则、§4 状态机、§2.4 端口/设备动态视觉表现（这些都是 Phase 2 生产逻辑） |
+| [A3 building-spec.md](architecture/building-spec.md) | ✅ §1 BuildingDefinition、§2 Port 系统、§3.3 方向约定、§3.4 Footprint 占用、§5 建造流程、§2.4 中的 SVG 功能层规范（T1.7 已落地） | ❌ §3 BuildingComponent 的缓冲区字段、§3.1 缓冲区规则、§3.2 轮询规则、§4 状态机、§2.4 中 BuildingView 完整实现（Phase 2 生产逻辑） |
+| [asset-drawing-standard.md](asset-drawing-standard.md) | 设备 SVG 绘制规范：`layer-*` 功能层、画布尺寸、命名约定。T1.3/T1.7 涉及素材时必须遵守。 | — |
 
 > **说明**：A3 是跨 Phase 文档。Phase 1 做设备放置时只需要"建筑长什么样、占几格、Port 在哪、怎么放置"——这些在 §1/§2/§3.3/§3.4/§5。缓冲区、轮询、状态机是 Phase 2 生产才用，Phase 1 不实现。
 
@@ -59,10 +60,10 @@ Phase 1 的操作交互约定分散在各任务章节，此处集中速查。开
 | 相机平移 | T1.2 | 中键拖拽 / WASD / 边缘滚动(T1.5) | WASD + 边缘滚动 **屏幕相对**（视图旋转后不变） |
 | 相机缩放 | T1.2 | 滚轮（鼠标为锚） | 不受视图旋转影响 |
 | 视图旋转 | T1.5 | Ctrl+R 顺时针 90°，4 态循环 | 改 Camera.viewRotation；旋转不进 ECS |
-| 设备放置 | T1.8 | 工具栏选 → 左键确定 | 放置前 R 键旋转预览，**相对视图** |
-| 设备选中 | T1.7 | 短按左键（pointerup 提交） | 为 Phase 2 长按移动预留结构 |
+| 设备放置 | T1.7 | 工具栏选 → 左键确定 | 放置前 R 键旋转预览，**相对视图** |
+| 设备选中 | T1.8 | 短按左键（pointerup 提交） | 为 Phase 2 长按移动预留结构 |
 | 设备删除 | T1.9 | 选中 + Delete 键 | **不用右键** |
-| 取消放置 | T1.8 | 放置模式右键 / ESC | 右键专留此语义 |
+| 取消放置 | T1.7 | 放置模式右键 / ESC | 右键专留此语义 |
 
 **后续阶段相关**：
 - **设备移动（T2.14，Phase 2）**：长按 >300ms 进入移动态 → R 旋转 → 左键重放 / 右键取消。改变已放置设备朝向的唯一入口。
@@ -90,7 +91,8 @@ Phase 2 目标：传送带能跑物品、机器能根据配方生产、物品从
 |------|---------------|--------------------------------------|
 | [A1 ecs-spec.md](architecture/ecs-spec.md) | 重点看 §3 System（BeltSystem/MachineSystem 的实现规范） | World/Entity/Component 框架已建好 |
 | [A5 simulation-spec.md](architecture/simulation-spec.md) | 重点看 **§5 Tick 内 System 顺序、§5.2 设备事件顺序** | GameLoop/速度控制已建好 |
-| [A3 building-spec.md](architecture/building-spec.md) | 重点看 **§3 BuildingComponent（缓冲区槽位/计时）、§3.1 缓冲区规则、§3.2 轮询规则、§4 状态机**。**§2.4 端口/设备动态视觉表现**（端口变色/元素位移/形状变形的实现路径 + BuildingView 分层架构，Phase 2 接状态机表现时参考） | Definition/Port/放置已建好 |
+| [A3 building-spec.md](architecture/building-spec.md) | 重点看 **§3 BuildingComponent（缓冲区槽位/计时）、§3.1 缓冲区规则、§3.2 轮询规则、§4 状态机、§2.4 BuildingView 分层架构**（素材层已备好，Phase 2 直接组合渲染） | Definition/Port/放置已建好；`layer-*` 分层与 `pack-assets.ts` 子帧输出已在 T1.7 完成 |
+| [asset-drawing-standard.md](asset-drawing-standard.md) | 新增/修改设备 SVG 时必须遵守的绘制规范 | T1.7 已完成 `3x3_unit.svg` / `refining_unit.svg` 规范化与构建脚本拆层；新增 billboard `layer-logo` |
 
 ### Phase 2 明确排除（不在范围内）
 
@@ -193,3 +195,5 @@ Phase 2 目标：传送带能跑物品、机器能根据配方生产、物品从
 | power-system-spec.md | A10 | 🟠 P3c | 电力系统 |
 | **world-vision.md** | **A11** | **⚪ 全局上位** | **世界/地图产品方向（无限世界/资源/物流/小地图）。A2 受其约束。** |
 | **economy-vision.md** | **A12** | **⚪ 全局上位（⚠️ 待定型）** | **经济/玩法愿景（人口+探索+市场+创造模式）。⚠️ 大方向备忘，核心选择（探索方式/人口定位/市场角色）待后续会话定型。创造模式（EC-002）已定型。** |
+| asset-drawing-standard.md | S1 | ⚪ 全局（🔵 P1 T1.3/T1.7 起用） | 设备 SVG 绘制标准：`layer-*` 功能层、画布尺寸、命名约定 |
+

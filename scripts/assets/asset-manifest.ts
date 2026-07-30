@@ -51,7 +51,8 @@ export const ATLAS_GROUPS: AtlasGroup[] = [
     rasterScale: DEVICE_RASTER_SCALE,
     keyOverrides: {
       // building-spec / logistics-spec 指定的 texture key
-      '3x3_unit.svg': 'refining_unit', // 3x3_unit 内容即精炼炉
+      '3x3_unit.svg': '3x3_unit', // 通用 3×3 底座（不含设备专属装饰）
+      'refining_unit.svg': 'refining_unit', // 精炼炉完整外观（底座 + 专属 equipment）
       'Transport_Belt_Move.svg': 'transport_belt',
       'Transport_Belt_rotate.svg': 'belt_corner',
       'Item_Control_Port.svg': 'item_control_port',
@@ -80,6 +81,7 @@ export const ATLAS_GROUPS: AtlasGroup[] = [
 export const DEVICE_FILES: readonly string[] = [
   // 地图建筑纹理(尺寸规整: 1×1=64, 3×3=192, 3×1=192×64)
   '3x3_unit.svg',
+  'refining_unit.svg',
   'Belt_Bridge.svg',
   'Converger.svg',
   'Depot.svg',
@@ -96,11 +98,12 @@ export const DEVICE_FILES: readonly string[] = [
  * 脚本动态计算(svg 目录下非 device 即 ui)，这里不再硬编码列表，避免维护漂移。
  */
 
-/** 排除列表: 超大 logo / 设计母文件，不进任何图集(单独按需加载)。 */
+/** 排除列表: 超大 logo / 设计母文件 / 被设备组合引用的源文件，不进任何图集(单独按需加载)。 */
 export const EXCLUDE_FILES: readonly string[] = [
   'endfield-industries.svg', // 512×512 标题 logo
   'endfield-logo-zh.svg', // 1648×512 中文标题 logo
   '弹窗设计.svg', // 2000×980 设计母文件
+  'Refining_Unit_Logo.svg', // 已作为 refining_unit.svg 的 layer-equipment 一部分被组合使用，不再单独打包
 ];
 
 /**

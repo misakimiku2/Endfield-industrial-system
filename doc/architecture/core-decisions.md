@@ -91,6 +91,11 @@ World.destroyEntity(e) → generations[e.index]++ → e 从此无效
 
 构建时 `scripts/pack-assets.ts` 用 sharp 把 SVG 光栅化为 PNG，再与已有 PNG 一起按 DD-013 分组打包成 PixiJS spritesheet 图集。
 
+**设备 SVG 分层约定**: 设备 SVG 必须按功能层组织，详见 `doc/asset-drawing-standard.md`。核心要求：
+- 画布尺寸 = `footprint.w × 64` × `footprint.h × 64` px
+- 可见元素必须放在 `<g id="layer-<name>">` 功能层内（如 `layer-base`、`layer-ports`、`layer-arrows`、`layer-indicators`、`layer-equipment`、`layer-logo`）
+- `pack-assets.ts` 会为每个设备输出完整帧 + 各层子帧，供运行时按状态组合渲染
+
 **修订说明**: 原决策（"所有游戏美术源文件为 SVG"）与现状（物品图标为 PNG）冲突。本修订承认既成事实，区分设备/UI（SVG，需可编辑可版本控制）与物品图标（PNG，美术批量出图）。如未来物品图标需要可编辑性，可补 SVG 源文件回归统一格式。
 
 **理由**: SVG 可版本控制（diff 友好）、可精确编辑、可脚本化生成。与黑白工业风美术方向一致。物品图标作为大量、同质化的栅格资产，保留 PNG 避免无意义的矢量转换成本。

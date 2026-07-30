@@ -120,6 +120,11 @@ export class Camera {
     return this._rotAnimElapsed < CAMERA_ROTATE_ANIM_MS;
   }
 
+  /** 当前实际视图旋转弧度（连续，含过渡动画）。供 billboard 徽标反向旋转保持屏幕朝上。 */
+  get displayRotation(): number {
+    return this._displayRotation;
+  }
+
   /** 绑定 PixiJS 世界容器；此后每帧 updateTransform 会同步其变换。 */
   bindWorldContainer(container: Container): void {
     this.worldContainer = container;

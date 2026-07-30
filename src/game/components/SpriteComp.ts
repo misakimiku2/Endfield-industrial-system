@@ -11,6 +11,8 @@ export interface SpriteComp {
   group: AtlasGroup;
   /** 图集内的 texture key（不含 .png 后缀，如 'transport_belt', 'refining_unit'）。 */
   textureKey: string;
+  /** 可选： billboard 徽标层 key，叠加在主体上方并保持屏幕朝上（同属 group）。 */
+  logoTextureKey?: string;
   /** Sprite 世界像素宽（= footprint cells × CELL_SIZE）。 */
   width: number;
   /** Sprite 世界像素高。 */

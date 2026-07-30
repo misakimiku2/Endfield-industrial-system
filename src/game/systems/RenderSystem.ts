@@ -24,6 +24,7 @@ import { Sprite, Texture, type Container } from 'pixi.js';
 import type { World, EntityHandle } from '../ECS';
 import type { Position } from '../components/Position';
 import type { SpriteComp } from '../components/SpriteComp';
+import type { BuildingComp } from '../components/BuildingComp';
 import type { AtlasGroup } from '../render/AssetsLoader';
 import type { SceneLayers } from '../render/SceneRenderer';
 import type { Camera } from '../render/Camera';
@@ -34,6 +35,8 @@ export type TextureLookup = (group: AtlasGroup, key: string) => Texture | undefi
 /** 缓存单个实体的渲染态：Sprite + 上次绑定用的 SpriteComp 摘要（变更时重建）。 */
 interface SpriteEntry {
   sprite: Sprite;
+  /** billboard 徽标子 Sprite，保持屏幕朝上；无徽标时为 undefined。 */
+  logo?: Sprite;
   /** 上次绑定时的纹理标识；SpriteComp 的 group/textureKey 变了要换纹理。 */
   group: AtlasGroup;
   textureKey: string;
@@ -115,6 +118,18 @@ export class RenderSystem {
       // 位置同步: 左上角 → 中心（anchor 0.5）
       sprite.position.set(pos.x + spr.width / 2, pos.y + spr.height / 2);
 
+      // 朝向同步: 带 BuildingComp 的实体按 direction 旋转（A3 §3.3 世界朝向）。
+      // 与 PlacementSystem 落盘的 worldAngle 同值、同符号（正值=屏幕顺时针），
+      // 故已放置设备的视觉朝向与放置预览一致（T1.7 修复#4）。
+      // 非 BuildingComp 实体（如 T1.6 测试 Sprite）不旋转。
+      const building = this.world.getComponent<BuildingComp>(handle, 'BuildingComp');
+      sprite.rotation = building ? (building.direction * Math.PI) / 180 : 0;
+
+      // billboard 徽标：反向旋转以保持屏幕朝上
+      if (entry.logo) {
+        entry.logo.rotation = this.camera.displayRotation - sprite.rotation;
+      }
+
       // 视口剔除: 实体世界 AABB 与可见范围无交集 → 隐藏
       sprite.visible = this.intersectsView(pos, spr, view);
     }
@@ -137,10 +152,24 @@ export class RenderSystem {
     sprite.width = spr.width;
     sprite.height = spr.height;
     this.layerContainer(spr.layer).addChild(sprite);
-    return { sprite, group: spr.group, textureKey: spr.textureKey, layer: spr.layer };
+
+    // 可选 billboard 徽标层：作为子 Sprite 叠加，并在 update 中反向旋转保持屏幕朝上
+    // 注意：这里 scale 保持 1，让 logo 继承父 Sprite 的缩放；若单独设置 width/height 会再被父缩放一次导致过小
+    let logo: Sprite | undefined;
+    if (spr.logoTextureKey) {
+      const logoTex = this.getTexture(spr.group, spr.logoTextureKey) ?? Texture.EMPTY;
+      logo = new Sprite(logoTex);
+      logo.anchor.set(0.5);
+      logo.scale.set(1);
+      sprite.addChild(logo);
+    }
+
+    return { sprite, logo, group: spr.group, textureKey: spr.textureKey, layer: spr.layer };
   }
 
   private disposeEntry(entry: SpriteEntry): void {
+    entry.logo?.removeFromParent();
+    entry.logo?.destroy();
     const sprite = entry.sprite;
     sprite.removeFromParent();
     sprite.destroy();

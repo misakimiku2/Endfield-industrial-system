@@ -102,6 +102,125 @@ async function readPng(pngPath: string): Promise<{ png: Buffer; width: number; h
   return { png, width: meta.width, height: meta.height };
 }
 
+// ───────────────────────── 箭头 mask SVG 构建 ─────────────────────────
+
+/**
+ * 正则匹配端口箭头 path: 同时满足 `fill:none` + `stroke:#828080` 的 `<path/>`。
+ *
+ * 设计依据: 设备 SVG(3x3_unit.svg) 中 6 个端口箭头 path 唯一地用
+ *   `fill:none;...stroke:#828080;stroke-width:0.79375` 描述（箭头是描边线条，无填充）。
+ *   双 lookahead 保证只匹配箭头，不误伤:
+ *     - 连接器柱用 `fill:#828080;stroke:none`（stroke 是 none，不满足第二条）
+ *     - rect86 占位用 `fill:none;stroke:none`（stroke 非 #828080，不满足第二条）
+ *   lookahead 不消耗字符，两个条件都在同一 `<path .../>` 标签内时才命中。
+ */
+const ARROW_PATH_REGEX = /<path\b(?=[^>]*fill:\s*none)(?=[^>]*stroke:\s*#828080)[^>]*\/>/g;
+
+/**
+ * 从设备 SVG 生成"白色箭头 + 透明背景"的 mask SVG。
+ *
+ * 用途: 运行时预览染色 filter 需精确识别端口箭头变白。但端口区域全是消色差灰色，
+ *   箭头 stroke #828080 与面板灰的抗锯齿交界中点颜色极近（灰度插值必然复现 #828080），
+ *   按颜色识别会误染缝隙（详见 PreviewTintFilter 注释）。故构建期在矢量层精确分离
+ *   箭头，生成 mask 纹理供运行时双纹理采样，彻底摆脱颜色识别。
+ *
+ * 实现策略（CSS 隐藏法，保留完整变换层级）:
+ *   早期版本把箭头 path 单独提取出来，但丢失了父级 <g transform="..."> 的位移/旋转，
+ *   导致 mask 中所有箭头挤回默认坐标（全部叠在设备顶部）。现改为保留原 SVG 完整结构，
+ *   仅通过 CSS 把非箭头元素变透明、箭头 stroke 变白。这样所有 transform 层级都保留，
+ *   mask 箭头位置与原图完全一致。
+ *
+ *   1. 保留原 SVG 全部内容（含 width/height/viewBox 及所有 group transform）。
+ *   2. 在 <svg> 头部后注入全局 CSS:
+ *        svg * { fill-opacity:0 !important; stroke-opacity:0 !important; }
+ *        path[style*="fill:none"][style*="stroke:#828080"] { stroke:#fff !important; stroke-opacity:1 !important; }
+ *      非箭头元素全部透明；仅端口箭头显示为白色。
+ *
+ * @param svgContent 设备 SVG 源文本
+ * @returns 精简后的 mask SVG 文本；若不含箭头返回 null
+ */
+function buildArrowMaskSvg(svgContent: string): string | null {
+  const arrows = svgContent.match(ARROW_PATH_REGEX);
+  if (!arrows || arrows.length === 0) return null;
+  // 提取 <svg ...> 头部（到第一个 >），保留 width/height/viewBox
+  const headMatch = svgContent.match(/<svg\b[^>]*>/);
+  if (!headMatch) return null;
+
+  const styleBlock = `<style>
+  /* 隐藏所有元素，只保留端口箭头；箭头变白 */
+  svg * { fill-opacity: 0 !important; stroke-opacity: 0 !important; }
+  path[style*="fill:none"][style*="stroke:#828080"] { stroke: #ffffff !important; stroke-opacity: 1 !important; }
+</style>`;
+
+  // 在 <svg ...> 开标签后插入 CSS，原 SVG 的 transform 层级与箭头位置全部保留
+  return svgContent.replace(headMatch[0], `${headMatch[0]}\n${styleBlock}`);
+}
+
+/**
+ * 光栅化 mask SVG → PNG（与 rasterizeSvg 同逻辑，但输入是已构建的 SVG 文本而非文件路径）。
+ * 返回尺寸与设备帧一致（同 baseWidth × scale）。
+ */
+async function rasterizeMaskSvg(
+  maskSvg: string,
+  baseWidth: number,
+  baseHeight: number,
+  scale: number,
+): Promise<{ png: Buffer; width: number; height: number }> {
+  const buf = Buffer.from(maskSvg);
+  const targetWidth = Math.round(baseWidth * scale);
+  const targetHeight = Math.round(baseHeight * scale);
+  const png = await sharp(buf).resize(targetWidth, targetHeight, { fit: 'fill' }).png().toBuffer();
+  return { png, width: targetWidth, height: targetHeight };
+}
+
+// ───────────────────────── SVG 分层拆分 ─────────────────────────
+
+/**
+ * 列出设备 SVG 中所有符合 `layer-<name>` 约定的工作层名称。
+ *
+ * 只识别顶层 id 以 `layer-` 开头的 <g> 分组。这些组被约定为功能层
+ * （base/ports/arrows/indicators 等），后续构建脚本会分别为每一层
+ * 输出一张独立图集帧，供运行时按状态组合渲染。
+ */
+function listSvgLayers(svgContent: string): string[] {
+  const regex = /<g\b[^>]*?\bid=["']layer-([^"']+)["'][^>]*>/g;
+  const layers: string[] = [];
+  const seen = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = regex.exec(svgContent)) !== null) {
+    const name = m[1];
+    if (!seen.has(name)) {
+      seen.add(name);
+      layers.push(name);
+    }
+  }
+  return layers;
+}
+
+/**
+ * 从完整设备 SVG 中提取指定功能层的独立 SVG。
+ *
+ * 实现策略（CSS 显示切换）:
+ *   保留原 SVG 完整结构与 transform 层级，仅注入 CSS 把所有 `layer-*`
+ *   分组隐藏，再把目标 layer 显示出来。这样单帧光栅化后只含该层内容，
+ *   且坐标、尺寸与完整设备帧逐像素对齐，方便运行时按同一 sourceSize 叠加。
+ *
+ * @param svgContent 设备 SVG 源文本
+ * @param layerName  要去掉的 `layer-` 前缀，例如 "base" / "arrows"
+ * @returns 仅显示该层的 SVG 文本；若该层不存在返回 null
+ */
+function extractLayerSvg(svgContent: string, layerName: string): string | null {
+  if (!svgContent.includes(`id="layer-${layerName}"`)) return null;
+  const headMatch = svgContent.match(/<svg\b[^>]*>/);
+  if (!headMatch) return null;
+  const styleBlock = `<style>
+  /* 仅保留目标功能层，其余 layer-* 组隐藏 */
+  g[id^="layer-"] { display: none !important; }
+  g#layer-${layerName} { display: inline !important; }
+</style>`;
+  return svgContent.replace(headMatch[0], `${headMatch[0]}\n${styleBlock}`);
+}
+
 // ───────────────────────── 图集分组扫描 ─────────────────────────
 
 /**
@@ -168,6 +287,72 @@ async function collectGroup(group: AtlasGroup): Promise<PackInput[]> {
     }
     keySeen.add(key);
     blocks.push({ key, width: raster.width, height: raster.height, png: raster.png });
+  }
+
+  // devices 组额外生成功能层子帧 + 箭头 mask 帧
+  //   A. 对 SVG 中每个 `layer-<name>` 分组输出一帧，key = ${baseKey}/${layerName}。
+  //      运行时可以把 base/ports/arrows/indicators 等层按状态叠加渲染。
+  //   B. 继续生成 ${baseKey}_arrow_mask（T1.7 预览染色兼容），后续可迁移到 ${baseKey}/arrows。
+  if (group.name === 'devices') {
+    const rasterScale = group.rasterScale ?? 1;
+    for (const file of allFiles) {
+      const basename = path.basename(file);
+      if (!isDeviceFile(basename)) continue;
+      const ext = path.extname(file).toLowerCase();
+      if (ext !== '.svg') continue;
+      let svgContent: string;
+      try {
+        svgContent = fs.readFileSync(file, 'utf8');
+      } catch {
+        continue;
+      }
+      const baseKey = resolveKey(group, basename);
+
+      // 取与设备帧相同的基础尺寸（rasterizeSvg 同源逻辑：优先 sharp 元数据，回退 viewBox）
+      const svgBuf = fs.readFileSync(file);
+      const meta = await sharp(svgBuf).metadata();
+      let baseWidth = meta.width ?? 0;
+      let baseHeight = meta.height ?? 0;
+      if (!baseWidth || !baseHeight) {
+        const vbMatch = svgContent.match(/viewBox=["']([\d.\s,-]+)["']/);
+        if (vbMatch) {
+          const vb = vbMatch[1].trim().split(/[\s,]+/).map(Number);
+          if (vb.length === 4) { baseWidth = Math.round(vb[2]); baseHeight = Math.round(vb[3]); }
+        }
+      }
+      if (!baseWidth || !baseHeight) continue;
+
+      // A. 功能层子帧
+      const layers = listSvgLayers(svgContent);
+      for (const layerName of layers) {
+        const layerSvg = extractLayerSvg(svgContent, layerName);
+        if (!layerSvg) continue;
+        const layerKey = `${baseKey}/${layerName}`;
+        if (keySeen.has(layerKey)) continue;
+        try {
+          const { png, width, height } = await rasterizeMaskSvg(layerSvg, baseWidth, baseHeight, rasterScale);
+          keySeen.add(layerKey);
+          blocks.push({ key: layerKey, width, height, png });
+        } catch (e) {
+          console.warn(`  ⚠ 跳过 layer ${layerKey}: ${(e as Error).message}`);
+        }
+      }
+
+      // B. 箭头 mask 帧（T1.7 预览染色用）
+      const maskSvg = buildArrowMaskSvg(svgContent);
+      if (maskSvg) {
+        const maskKey = `${baseKey}_arrow_mask`;
+        if (!keySeen.has(maskKey)) {
+          try {
+            const { png, width, height } = await rasterizeMaskSvg(maskSvg, baseWidth, baseHeight, rasterScale);
+            keySeen.add(maskKey);
+            blocks.push({ key: maskKey, width, height, png });
+          } catch (e) {
+            console.warn(`  ⚠ 跳过箭头 mask ${basename}: ${(e as Error).message}`);
+          }
+        }
+      }
+    }
   }
 
   // ui 组额外纳入 png/window/Close_button.svg(它在 png 目录但属 UI)

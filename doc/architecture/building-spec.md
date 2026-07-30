@@ -17,7 +17,8 @@ interface BuildingDefinition {
   category: BuildingCategory;    // 分类
   footprint: { w: number; h: number };  // 占地面 (单位: Cell)
   ports: Port[];                 // 输入/输出口
-  texture: string;               // 纹理图集 key
+  texture: string;               // 主体纹理图集 key
+  logoTextureKey?: string;       // 可选：billboard 徽标层 key，运行时叠加并保持屏幕朝上
   selectable: boolean;           // 是否可被玩家选中
   buildCost: CostEntry[];        // 建造成本
   powerConsumption: number;      // 耗电峰值 (单位: W)
@@ -63,6 +64,7 @@ const BUILDING_DEFINITIONS: Record<string, BuildingDefinition> = {
       { type: 'liquid', position: { dx: 2, dy: 1 } },
     ],
     texture: 'refining_unit',
+    logoTextureKey: 'refining_unit/logo',
     selectable: true,
     buildCost: [{ itemId: 'stone', count: 5 }],
     powerConsumption: 5,
@@ -246,28 +248,32 @@ function rotatePort(port: Port, direction: 0 | 90 | 180 | 270, footprint: { w: n
 
 **判断标准**：效果是"有限离散状态"→ 多帧切换；是"连续运动"→ Graphics/独立对象。纯颜色变换（不改形状）可用滤镜（GPU 着色，性能好）。
 
-#### 推荐架构：设备视图分层（Phase 2 引入）
+#### 推荐架构：设备视图分层
 
 不要把整个设备做成一张大纹理序列（纹理爆炸）。设备作为**组合视图**：
 
 ```
 设备 = 一个 Container（BuildingView）
-  ├─ 主体 Sprite       （静态，高分辨率纹理，T1.6 已就绪）
-  ├─ 端口 Sprite/帧    （动态：变色用多帧/滤镜，由状态机驱动）
-  └─ 指示符 Graphics   （动态：流动/变形用矢量重绘，由 Ticker 驱动）
+  ├─ 主体 Sprite       （layer-base，静态高分辨率纹理）
+  ├─ 端口 Sprite       （layer-ports，动态：变色/隐藏）
+  ├─ 箭头 Sprite       （layer-arrows，方向指示）
+  └─ 指示符 Graphics   （layer-indicators / layer-state-*，动态状态）
 ```
 
 这样：主体保持高分辨率静态纹理（清晰、省内存），只有真正动的部件是动态对象，复合效果（主体静止 + 端口变色 + 指示符流动）可叠加。
 
+> **T1.7 已提前落地**: 设备 SVG 已按 `layer-*` 功能层规范化（`layer-base` / `layer-ports` / `layer-arrows` / `layer-indicators` / `layer-equipment` / `layer-logo`），`scripts/pack-assets.ts` 会为每个设备输出完整帧 + 各层子帧（`<device_key>/base`、`/ports`、`/arrows`、`/indicators`、`/equipment`、`/logo`），详见 `doc/asset-drawing-standard.md`。Phase 2 组合渲染时无需再改美术源文件。
+
 #### 对 T1.6 渲染系统的影响（Phase 2 扩展点）
 
-Phase 1 的 `RenderSystem` 是"一个实体 = 一个 Sprite"的单纹理模型（`SpriteComp` 单纹理单层）。Phase 2 接生产逻辑、设备有状态机/缓冲区需要表现时，需扩展为"设备 = 多部件 Container"：
+Phase 1 的 `RenderSystem` 以"一个实体 = 一个 Sprite"为主（`SpriteComp` 单纹理单层），当前使用完整设备帧（如 `refining_unit`）。特例是 T1.7 为精炼炉增加的 billboard 徽标层：带 `logoTextureKey` 的建筑会额外叠加一个反向旋转的 `layer-logo` 子 Sprite，保持屏幕朝上。Phase 2 接生产逻辑、设备有状态机/缓冲区需要表现时，再扩展为"设备 = 多部件 Container"：
 
-- 新增 `BuildingView`（或类似）组合主体 + 动态端口 + 指示符
-- `RenderSystem` 对带状态的建筑实体走 `BuildingView` 路径，普通实体仍走单 Sprite
+- 对带 `BuildingComp` 的实体创建 `BuildingView` Container，叠加 `layer-base` / `layer-ports` / `layer-arrows` / `layer-indicators` / `layer-equipment` / `layer-logo` Sprite
+- 状态变化时只切换/染色/隐藏对应层 Sprite，避免重绘整个设备
+- 普通实体（传送带、敌人等）仍走单 Sprite 路径
 - 动态部件的状态来源：`BuildingComponent` 的状态机（§4）+ Port 连接状态（§2.3）
 
-**Phase 1 不实现此扩展**——设备是静态贴图即可。此节作为 Phase 2 开发时的设计参考，避免届时重新讨论实现路径。
+**Phase 1 仅做素材层准备**——设备仍用单 Sprite 静态贴图。此节作为 Phase 2 开发时的设计参考，避免届时重新讨论实现路径。
 
 #### PixiJS v8 可用 API（已确认本项目依赖支持）
 

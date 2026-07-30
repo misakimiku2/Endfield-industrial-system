@@ -16,8 +16,8 @@
 | T1.4 世界网格渲染 | ✅ 完成 | `GridRenderer.ts`（分段 alpha + Canvas2D 暗角） |
 | T1.5 视图操作 | ✅ 完成 | 边缘滚动、Ctrl+R 视图旋转(屏幕相对参考系+平滑过渡)、`screenDirToWorld`/`panByScreen`、GridRenderer 旋转感知。**修正**：`rotateClockwise` 旋转目标重锚定到 `viewRotation` 离散精确值（`nextClockwiseTarget`），消除连旋漂移导致"转 4 次不回正"的 bug |
 | T1.6 渲染系统 | ✅ 完成 | `RenderSystem`（query diff 实体↔Sprite 绑定、视口剔除、层映射）、`MapInstance`（WORLD_* 常量→地图实例属性，A11 WV-003 §4.4） |
-| T1.7 基础交互系统 | ⬜ 待开发 | 点击选中、选中框 |
-| T1.8 设备放置系统 | ⬜ 待开发 | 工具栏、放置预览、OccupancyMap、放置前旋转(R键) |
+| T1.7 设备放置系统 | ✅ 完成 | 核心闭环完成（工具栏选设备→左键放网格交叉点→R 键旋转预览→右键/ESC 取消）。`BuildingDefinition`(DD-003)、`BuildingComponent`(DD-002)、`OccupancyMap`(A2 §7)、`InventoryUI`(PixiJS Container 挂 overlayLayer)、`PlacementSystem`(鼠标=设备中心 + R 键相对视图换算/A6 §4.0)、`PreviewTintFilter`(双纹理 mask 方案：主体纯色 + 箭头白)。预览染色经 4 轮迭代已稳定；用户反馈的箭头方向、R 键旋转跟随问题已修复。设备 SVG 已按 `layer-*` 功能层规范化，`pack-assets.ts` 同步输出 `/base`、`/ports`、`/arrows`、`/indicators`、`/equipment` 子帧；精炼炉已叠加 logo 与液体输入/输出端口视觉，为 Phase 2 动态表现奠基。 |
+| T1.8 基础交互系统 | ⬜ 待开发 | 点击选中、选中框 |
 | T1.9 设备删除 | ⬜ 待开发 | 删除已放置设备(Delete键)、占位释放 |
 | T1.10 性能基准测试 | ⬜ 待开发 | 100 设备 FPS ≥ 55 |
 
@@ -32,16 +32,17 @@
 T1.1 ECS 完善 ──────────────────────┐
                                      │
 T1.2 相机系统 ──────────────────────┤
-                                     ├──→ T1.5 视图操作 ──→ T1.6 渲染系统 ──→ T1.7 交互 ──→ T1.8 放置 ──→ T1.9 设备删除
-T1.3 SVG 资源管线 ──────────────────┤        (边缘滚动        (实体↔Sprite         (选中)        (工具栏+       (Delete键
-                                     │       +Ctrl+R 视图        绑定)                          放置预览)      占位释放)
+                                     ├──→ T1.5 视图操作 ──→ T1.6 渲染系统 ──→ T1.7 放置 ──→ T1.8 交互 ──→ T1.9 设备删除
+T1.3 SVG 资源管线 ──────────────────┤        (边缘滚动        (实体↔Sprite         (工具栏+       (选中)        (Delete键
+                                     │       +Ctrl+R 视图        绑定)                放置预览)                    占位释放)
 T1.4 世界网格 ──────────────────────┘        旋转, 改 Camera)                                                       │
                                                                                                                      ↓
                                                                                                                T1.10 性能基准
 ```
 
-> **T1.5 为何排在 T1.6 渲染之前**：视图旋转（Ctrl+R）会改 Camera 变换，下游所有用 `worldToScreen`/`screenToWorld` 的系统（T1.6 渲染、T1.7 交互、T1.8 放置）必须一开始就建成"旋转感知"的，否则后面返工面大。T1.5 把 Camera 改造好，后续任务直接用。
-> **T1.9 依赖说明**：删除需要 `OccupancyMap.release`（T1.8 建）+ `destroyEntity`（T1.1 已完成）+ 选择态（T1.7）。
+> **T1.5 为何排在 T1.6 渲染之前**：视图旋转（Ctrl+R）会改 Camera 变换，下游所有用 `worldToScreen`/`screenToWorld` 的系统（T1.6 渲染、T1.7 放置、T1.8 交互）必须一开始就建成"旋转感知"的，否则后面返工面大。T1.5 把 Camera 改造好，后续任务直接用。
+> **T1.7 为何排在 T1.8 交互之前**：选中（T1.8）的语义对象是"设备"，而"设备"这个概念——`BuildingComponent` + `BuildingDefinition` + `OccupancyMap`——要到 T1.7 才建立。若先做选中，只能用 `SpriteComp` 凑合 hit-test（会把同样带 SpriteComp 的传送带/敌人一并选中），T1.7 引入 BuildingComponent 时还得回头改选中逻辑。放置先于选中，选中框直接 hit-test BuildingComponent 实体，零返工。
+> **T1.9 依赖说明**：删除需要 `OccupancyMap.release`（T1.7 建）+ `destroyEntity`（T1.1 已完成）+ 选择态（T1.8）。
 > **操作交互约定**：放置模式下右键 = 取消放置（退出放置模式）；非放置模式下 Delete 键 = 删除选中设备。两套语义不重叠。
 
 ---
@@ -127,7 +128,12 @@ T1.4 世界网格 ────────────────────�
 - **图集产出**: devices(9块,4096×1024,SVG 按 4× 光栅化) / items(93块,4096×2048) / ui(28块,2048×256)
 - **图集上限 4096**: WebGL2 安全上限（原 2048 装不下 93 个 254px 物品图标）
 - **SVG 光栅化倍率（`rasterScale`）**: 地图设备随 zoom 放大显示，若按 1:1 原始尺寸栅格化（1×1 设备仅 64px 纹理），zoom=4 时被放大 4 倍会模糊锯齿。devices 图集 SVG 按 `DEVICE_RASTER_SCALE=4` 栅格化（`asset-manifest.ts`），匹配 `CAMERA_ZOOM_MAX=4.0`，保证最大缩放下纹素:屏幕像素 ≈ 1:1。1×1 设备纹理 64→256px、3×3 设备 192→768px。items（PNG 源，无矢量）/ ui（屏幕空间固定尺寸）不提倍。⚠️ 若 `CAMERA_ZOOM_MAX` 调高，`DEVICE_RASTER_SCALE` 需同步。T1.6 RenderSystem 用 `sprite.width=世界尺寸` 覆盖纹理尺寸，对分辨率变化透明，无需改。
-- **texture key 映射**: 文件名→小写→非字母数字替 `_`；手工覆盖表（`3x3_unit→refining_unit` 等）
+- **设备 SVG 功能层拆分（T1.7 收尾扩展）**: 设备 SVG 必须按 `layer-*` 功能层组织（详见 `doc/asset-drawing-standard.md`）。`pack-assets.ts` 会对每张设备 SVG 输出：
+  - 完整设备帧 `<device_key>`（所有层可见，兼容现有单 Sprite 渲染）
+  - 功能层子帧 `<device_key>/base`、`/ports`、`/arrows`、`/indicators`、`/equipment`
+  - T1.7 预览用箭头 mask `<device_key>_arrow_mask`（兼容用）
+  所有层子帧与完整帧 `sourceSize` 一致，运行时可直接叠加。`3x3_unit.svg` 已按标准重构为**通用 3×3 底座**，精炼炉专属 `layer-equipment` 独立到 `refining_unit.svg`。
+- **texture key 映射**: 文件名→小写→非字母数字替 `_`；手工覆盖表（`3x3_unit→3x3_unit`、`refining_unit.svg→refining_unit` 等）
 - **运行时**: `AssetsLoader.loadAll()` 加载三图集，`getTexture(group, key)` 统一访问
 - **npm script**: `npm run pack-assets`（改 SVG 后重跑）；产物在 `public/spritesheets/`（.gitignore 排除）
 - **验证**: 三个 JSON 全 200 无 404；texture key 全部正确；`tsc` 零错误
@@ -176,11 +182,11 @@ T1.4 世界网格 ────────────────────�
 补齐相机层的两项 QoL 操作：鼠标到窗口边缘自动平移（RTS 风格）、Ctrl+R 顺时针旋转整个视图 90°。
 
 ### 背景
-WASD 平移和滚轮缩放已在 T1.2 实现。边缘滚动是相机平移的便捷增强；视图旋转（类似 Factorio）则是一个**会级联影响下游所有系统**的改造——它改变 Camera 变换，因此 T1.6 渲染 / T1.7 交互 / T1.8 放置都必须从一开始就建成"旋转感知"的。本任务排在 T1.6 之前，正是为了把 Camera 改造好，后续任务直接消费。
+WASD 平移和滚轮缩放已在 T1.2 实现。边缘滚动是相机平移的便捷增强；视图旋转（类似 Factorio）则是一个**会级联影响下游所有系统**的改造——它改变 Camera 变换，因此 T1.6 渲染 / T1.7 放置 / T1.8 交互都必须从一开始就建成"旋转感知"的。本任务排在 T1.6 之前，正是为了把 Camera 改造好，后续任务直接消费。
 
 > **参考系决策（已确认）**：
 > - **WASD / 边缘滚动 → 屏幕相对**：无论视图怎么转，W 永远让画面向上平移、鼠标到屏幕上边永远向上滚（符合 RTS / Factorio 习惯）。
-> - **R 键（设备放置/旋转）→ 相对视图**：视图转 90° 后按 R，设备在屏幕上看起来转 90°（即玩家面对屏幕操作）。详见 T1.8 放置章节。
+> - **R 键（设备放置/旋转）→ 相对视图**：视图转 90° 后按 R，设备在屏幕上看起来转 90°（即玩家面对屏幕操作）。详见 T1.7 放置章节。
 >
 > **为何都用屏幕相对/相对视图而非世界相对**：玩家操作的是屏幕上的画面，不是世界坐标系。屏幕相对在视图旋转后直觉一致，不会出现"按 W 画面却往右移"这种反直觉行为。
 
@@ -191,7 +197,7 @@ WASD 平移和滚轮缩放已在 T1.2 实现。边缘滚动是相机平移的便
 - 平移速度帧率无关，对齐 WASD 的 900px/s
 - 到达世界边界时优雅停止（不抖动、不越界，复用 T1.2 的边界 clamp）
 - 8 方向（上/下/左/右 + 四个对角）支持
-- **与放置模式共存**：放置预览模式（T1.8）下鼠标到边缘，预览跟随平移后的画面移动（这是期望行为，方便往远处放设备）
+- **与放置模式共存**：放置预览模式（T1.7）下鼠标到边缘，预览跟随平移后的画面移动（这是期望行为，方便往远处放设备）
 
 **视图旋转（View Rotation）**
 - `Ctrl+R` → 整个视图顺时针旋转 90°（4 个离散状态：0° / 90° / 180° / 270° → 循环回 0°）
@@ -292,13 +298,208 @@ WASD 平移和滚轮缩放已在 T1.2 实现。边缘滚动是相机平移的便
 - 位置同步：Sprite 在 `worldContainer` 子层内，Camera 变换已承担平移/缩放/**旋转(T1.5)**，故实体只用世界坐标（左上角 + 半宽高居中），不绕开 Camera。
 - 视口剔除：屏幕四角 world AABB + padding，屏外 Sprite 仅切 `visible=false`（不销毁），进出视口切换可见，避免反复 create/destroy。
 - 纹理查找通过注入 `getTexture`（来自 AssetsLoader），便于单测 mock。
-- `SpriteComp` 改为 `{ group, textureKey, width, height, layer }` 对齐图集管线。
+- `SpriteComp` 改为 `{ group, textureKey, logoTextureKey?, width, height, layer }` 对齐图集管线；`logoTextureKey` 用于 billboard 徽标层（T1.7 精炼炉）。
 - `Game` 串联 ECS World + WorldData + Camera + RenderSystem；`main.ts` 主循环调 `game.update()`，并暴露 `__game.spawnTestDevices(n)` / `clearTestDevices()` 控制台钩子供验收。
 - 验证脚本：`scripts/verify-t1.6.ts`（20 项断言：MapInstance、Camera bounds 回归、RenderSystem diff/层映射/视口剔除/纹理变更重建）。
 
 ---
 
-## T1.7 — 基础交互系统
+## T1.7 — 设备放置系统
+
+### 目标
+从工具栏选择设备，放置到地图网格上；放置前可旋转朝向（相对视图）。本任务是 Phase 1 后半程的**地基任务**——它建立"设备"这个概念（`BuildingDefinition` + `BuildingComponent` + `OccupancyMap`），后续 T1.8 选中、T1.9 删除、T1.10 性能基准都建立在本任务产出的设备实体之上。
+
+### 需求
+- 底部显示工具栏，有 4 种设备图标按钮
+- 点击按钮 → 鼠标变成半透明设备预览（跟随鼠标，吸附网格）
+- 左键点击地图 → 设备放置到网格交叉点
+- 右键或 ESC → 取消放置模式
+- **放置前按 R 键** → 预览设备顺时针旋转 90°（0°→90°→180°→270°→0°），Port 朝向跟随
+- 旋转后的 footprint 占位检查随之更新（3×3 等正方形占地不变，仅朝向/Port 变化）
+
+> **工具栏技术选型（PixiJS Container，不用 DOM overlay）**：工具栏用 PixiJS Container 实现，挂在 `app.stage` 的屏幕空间层（`SceneRenderer` 的 UIOverlay 层序 6，A2 §4），**不要**挂到 `worldContainer`——这样它不随 Ctrl+R 视图旋转、不随相机平移/缩放，永远钉在屏幕底部。理由：(1) 与现有 HUD/help Text（`main.ts` 全部是 PixiJS `Text`）同栈，不引入第二套 DOM 渲染体系；(2) 图集已就绪，按钮图标直接 `getTexture('devices', '<设备key>')` 复用 T1.3 打包的纹理，无需为 DOM 单独存散图；(3) 输入走 PixiJS 事件系统（`eventMode:'static'` + `pointerdown`），与相机输入同一套 pointer 流，互斥好处理（点工具栏时 `stopPropagation` 抑制相机拖拽）。现有空壳 `src/game/ui/InventoryUI.ts` 即工具栏的落点（其 `// Phase 2 实现` 注释待 T1.7 改写）。DOM overlay 方案被排除：在有视图旋转 + 单画布架构下，DOM↔Canvas 坐标/缩放同步是新坑，得不偿失。
+
+> **R 键参考系约定（相对视图）**：A3 §3.3 的方向（0°=右）是世界相对定义，但玩家按 R 的手感是**屏幕相对**的——视图旋转后，按 R 让设备在屏幕上看起来转 90°。实现上：玩家按 R 时，设备的"屏幕显示朝向"加 90°，再换算回世界朝向存入 `BuildingComponent.direction`（世界朝向 = 屏幕朝向 − viewRotation）。Phase 2 的 T2.14 移动态旋转同理。详见 A6 Camera 的 `viewRotation`。
+
+### 验收标准（你在浏览器看到的效果）
+- **打开浏览器** → 底部看到一排按钮，上面有设备图标
+- **点击一个设备按钮** → 鼠标位置出现半透明的设备轮廓
+- **移动鼠标** → 预览轮廓吸附到最近的网格交叉点，一跳一跳地移动
+- **按 R 键** → 预览设备顺时针旋转 90°，每次按键转一次，能转满一圈
+- **左键点击** → 设备按当前朝向固定在地图上，显示为 SVG 绘制的图形
+- **左键点另一个位置** → 第二个设备出现
+- **右键 或 ESC** → 预览消失，退出放置模式
+- 设备位置正好在网格交叉点上，不偏移
+
+### 预估工时
+2 次会话（UI 占主要时间）
+
+### ✅ 实现备注（已完成）
+
+**产出文件**:
+- `src/game/data/buildings.ts` — `BuildingDefinition` 数据表（DD-003 数据驱动）。严格按 A3 §1.1 建 7 个设备定义（refining/shredding/fitting/moulding/seed_picking/planting），Phase 2 生产字段（buildCost/powerConsumption/inputSlotCount/outputSlotCount/bufferCapacity）照填备用，Phase 1 只用 footprint/ports/texture/selectable。`TOOLBAR_BUILDINGS` 选 4 个（覆盖 3×3 + 5×5 footprint）。
+- `src/game/components/BuildingComp.ts` — `BuildingComponent`（DD-002 纯数据）。**Phase 1 最小版**：只 `definitionId + direction + state('idle')`。缓冲区/计时/轮询指针等生产字段（A3 §3）不加，Phase 2 接生产逻辑时扩展。`Direction` 类型（0/90/180/270，世界相对存储 A3 §3.3）定义于此。
+- `src/game/world/OccupancyMap.ts` — 占用表（A2 §7.1）。`Map<"gx,gy", definitionId>`。**边界严格读 `MapInstance`**（A11 WV-003 §4.4，T1.6 接口预留），`canPlace` 查 `[0,widthCells)×[0,heightCells)`，不读全局常量。提供 `occupyFootprint/releaseFootprint` 便利方法（后者 T1.9 删除用，本会话建好备用）。
+- `src/game/ui/InventoryUI.ts` — **重写空壳**为工具栏。PixiJS Container，挂 `overlayLayer`（屏幕空间层 6），**不进 worldContainer** → 钉死屏幕底部，不受 Ctrl+R 旋转/相机平移影响。按钮 `eventMode:'static'` + `pointerdown` → onSelect 回调 + `stopPropagation`。占位图工厂（`PlaceholderTextureFactory`）对缺 SVG 设备用 Graphics 画 footprint 边框 + Port 标记 + 设备名首字 → `generateTexture` 缓存；补 SVG 后有纹理设备不再触发占位图。
+- `src/game/systems/PlacementSystem.ts` — 放置预览 + 落盘系统。预览不进 ECS（UI 态），落盘才创建真实体。
+- 改 `Game.ts`（持有 occupancy + placement）、`main.ts`（装配 InventoryUI + 输入转发 + 验收钩子）。
+
+**R 键相对视图换算（A6 §4.0，本任务最易写错处）**:
+- 核心策略：预览维护**屏幕呈现角 `screenAngle`(0/90/180/270)**，按 R 永远 `screenAngle = (screenAngle+90)%360`。**绝不直接对 `direction` 加 90**——防错根本。
+- 关键统一：预览 Sprite 在 `layer2Building`（worldContainer 子层），其 rotation 是**世界空间**内的旋转，再被 camera 整体变换到屏幕。要在屏幕上呈现 screenAngle，预览 Sprite 的世界 rotation 必须 = `screenAngle − viewRotation`——这正是落盘时写入 `BuildingComponent.direction` 的同一公式（A6 §4.0：世界朝向 = 屏幕朝向 − viewRotation）。故预览渲染与落盘**共用同一世界角度**，无双轨，所见即所存。
+- `sprite.rotation` 符号实测确认：`ROTATION_SIGN = +1`（`sprite.rotation = +worldAngle_rad`，PixiJS rotation 正值=屏幕顺时针）。浏览器实测：seed_picking_unit 占位图（input 蓝/output 橙标记）angle=0 时蓝在底，按 R 到 angle=90 时蓝移到左侧——**顺时针 90°**（底→左），符号正确。
+- 落盘后真实体 Sprite **不旋转**（Phase 1 设备是静态贴图，A3 §2.4 明确 Phase 2 才接动态表现）。朝向信息存 `BuildingComponent.direction`，Phase 2 接视觉时 RenderSystem 读它旋转。本会话 RenderSystem 不改。
+
+**snapToCell 行为（A2 §2.3）**: `Math.round(wx/CELL_SIZE)*CELL_SIZE`。JS `Math.round` 对 .5 向上取整，故 Cell 边界正中间（如 32px = 0.5 cell）吸附到**下一个 Cell**（64px）。0~31px→Cell 0，32~95px→Cell 1。不会出现"放一半"。
+
+**修复的 bug（工具栏点击误放置）**:
+- 现象：点击工具栏按钮选设备时，会在按钮对应的屏幕坐标处**误触发地图放置**（grid(30,35) 出现 refining_unit）。
+- 根因：InventoryUI 按钮 pointerdown 调了 PixiJS 的 `stopPropagation`，但那只挡 PixiJS 事件系统内的冒泡；main.ts 的 `onPointerDownMain` 是加在 `app.canvas` 上的**原生 DOM 监听**，两者是独立事件流，stopPropagation 管不到。
+- 修复：`onPointerDownMain` 用 `inventoryUI.container.getBounds()` 判断点击是否落在工具栏屏幕区域内，若是则不转发给 placement（让 InventoryUI 的 PixiJS 事件处理按钮选中）。
+
+**R 与 Ctrl+R 冲突处理（用户强调）**:
+- CameraController 已在 onKeyDown 拦截 `Ctrl/Cmd+KeyR`（视图旋转），裸 KeyR 不触发视图旋转。
+- T1.7 的 R 监听由 main.ts **额外**加一个 window keydown 监听（`onKeyPlacing`），**只在 placing 态响应**裸 KeyR + Escape。两个监听并存不冲突。
+- 实测：placing 态连按 4 次裸 R，screenAngle 转一圈回 0，camera.viewRotation 始终为 0——裸 R 不误触发视图旋转。
+
+**相对视图换算语义实测（A6 §4.0）**: viewRot=90 时按 R：
+- screenAngle 0→90，worldDir = (90−90)%360 = 0
+- screenAngle 90→180，worldDir = (180−90)%360 = 90
+- 每次按 R 世界朝向都 +90（mod 360），与不转视图时按 R 效果一致。A6 §4.0"世界朝向不变"指 Ctrl+R 视图旋转不改变已放置设备的世界朝向，非指按 R 不改变。
+
+**输入转发架构**: PlacementSystem 不直接监听 DOM（避免与 CameraController 双监听冲突），由 main.ts 统一转发：`pointermove`→`setMouse`、`pointerdown`→`onPointerDown`、`keydown`→`onKeyDown`。
+
+**验收钩子**: `__game` 新增 `placement`/`occupancy`/`inventoryUI`/`placeAt(defId,gx,gy,dir?)`/`getOccupiedCells()`/`clearAllPlaced()`。保留 T1.6 的 `spawnTestDevices`（不冲突，SpriteComp 测试用）。
+
+**验证**:
+- 纯逻辑：`verify-t1.7.ts` 137/137 通过（OccupancyMap 边界/footprint/正方形占地旋转不变、snapToCell、R 键换算 16 组合全表、screenAngle 递增、放置落盘三组件、边界外/冲突拒绝）。
+- 浏览器实测：8 条验收标准全过——工具栏 4 按钮（refining 真实纹理 + 3 占位图）、点击进 placing、预览跟随吸附网格、R 顺时针旋转（符号实测确认）、左键放置、连放第二个、右键/ESC 取消、网格交叉点精确对齐（pos%64=0）。
+- `tsc --noEmit` 零错误，`vite build` 成功，T1.6 verify 回归 20/20 通过。
+
+**已知张力点 / 留给后续**:
+- **缺 SVG 设备的正式美术**：shredding/fitting/moulding/seed_picking/planting 用占位图。补 SVG 是独立的 T1.3 收尾任务（重跑 pack-assets，definition texture key 不变，零代码改）。
+- **BuildingComponent 待扩生产字段**：Phase 2 接生产逻辑时加 BufferSlot/currentRecipeId/progress/elapsed/bufferInput/bufferOutput/inputPollIndex/outputPollIndex（A3 §3）。
+- **鼠标在工具栏上时预览仍跟随**：pointermove 不排除工具栏区域。视觉上预览可能显示在工具栏下方，不影响正确性。若需优化，pointermove 加工具栏区域排除（setMouse inside=false）。
+
+### ✅ 后续修复（用户反馈 4 项）
+
+T1.7 初版验收后，用户实测发现 4 个体验问题，已修复：
+
+1. **鼠标=设备中心吸附（修复"设备出现在鼠标右下角"）**:
+   - 原 bug：`worldToCell(mouseWorld)` 把鼠标位置当作设备**左上角** Cell 参考，导致设备整体在鼠标右下方。
+   - 修复：新增 `placementFromMouse(mouseWorld, w, h)`，以**鼠标位置为设备中心**回推 footprint 左上角（`topLeft = mouseWorld − halfFootprint`，再吸附网格）。预览与落盘共用此算法，鼠标落在设备覆盖范围内。
+   - 奇数 footprint（3×3/5×5）中心恰在某 Cell 中心；偶数 footprint 中心在四 Cell 交点。
+2. **预览配色改为蓝/橙红**:
+   - 原 `TINT_VALID=0xccffcc`（淡绿）/`TINT_INVALID=0xff9999`（淡红）→ 改为 `0x76bbea`（蓝）/`0xff8233`（橙红），整个预览染此色（tint）。
+3. **预览浮在已放置设备之上**:
+   - 预览与已放置设备同在 layer2Building，后创建的真实体会盖住预览。
+   - 修复：预览 Sprite 设 `zIndex=10000`（layer2Building 已开 sortableChildren），始终浮在最上层。
+4. **已放置设备保持旋转（修复"落盘后变正"）**:
+   - 原 bug：RenderSystem 不读 `BuildingComp.direction`，真实体 Sprite 永不旋转（Phase 1 原计划设备静态）。
+   - 修复：RenderSystem 每帧对带 BuildingComp 的实体按 `direction` 设 `sprite.rotation = direction_rad`（正值=屏幕顺时针，与预览 ROTATION_SIGN 同符号）。落盘设备的视觉朝向与放置预览一致。
+   - T1.7 还增加了 billboard 徽标层：若 `SpriteComp.logoTextureKey` 存在，RenderSystem 会叠加一个子 Sprite，并每帧按 `camera.displayRotation - sprite.rotation` 反向旋转，使徽标在视图/设备旋转时保持屏幕朝上。
+   - 此修复提前实现了原计划 Phase 2 的"RenderSystem 读 direction"（A3 §2.4 的主体旋转部分），Phase 2 接动态端口表现时在此基础上扩展。
+
+验证：verify-t1.7 新增 E2 节（placementFromMouse 中心吸附 8 断言），共 145/145 通过；浏览器实测 4 项修复全部视觉确认。
+
+### ✅ 预览染色 Filter 演进（用户需求："设备整体变蓝、端口箭头变白"）
+
+T1.7 预览染色是本任务反复迭代最多、坑最深的环节。用户最终需求明确为：**创建预览时设备主体整体变蓝（可放置）/橙红（不可放置），端口箭头单独变白；放置后设备还原原始外观**。经历了多轮方案迭代，下表记录演进脉络与每版的坑，供后续维护参考：
+
+| 版本 | 方案 | 结果 / 问题 |
+|------|------|------|
+| v1 | `Sprite.tint` 乘法染色 | 黑色×蓝色=黑色，灰阶设备暗部染不上 |
+| v2 | `ColorMatrixFilter` 亮度→颜色梯度（黑→深蓝、白→淡蓝） | 保留了设备明暗结构呈梯度蓝，但箭头被一起染成中等蓝，无法单独变白 |
+| v3 | 自定义 `Filter` 按颜色距离识别 `#828080` 像素→白 + smoothstep 平滑 | 端口灰色元素抗锯齿交界中点（如 `#202020↔#cbc9c9` 交界 `#767575`）距 `#828080` 仅 0.08，被误判为箭头→端口出现白色缝隙。**这是灰度空间插值的数学必然，调阈值无法两全** |
+| **v4（当前）** | **双纹理 mask 方案** | ✅ 彻底解决。构建期矢量层分离箭头生成 mask 纹理，运行时双纹理采样，不依赖颜色识别 |
+
+**v4 当前方案（`PreviewTintFilter` 双纹理 mask）**：
+
+核心思路：不靠颜色识别箭头（端口灰色交界必然复现 `#828080`，死路），改为**构建期在矢量层精确分离箭头**，运行时用第二张 mask 纹理指示箭头位置。
+
+- **构建期**（`pack-assets.ts`）：新增 `buildArrowMaskSvg()` 用正则 `/<path\b(?=[^>]*fill:\s*none)(?=[^>]*stroke:\s*#828080)[^>]*\/>/g` 精确提取 6 个箭头 path（`fill:none`+`stroke:#828080` 双条件，无误伤连接器柱 `fill:#828080`），stroke 改白，拼上原 SVG 头部（保留 `width/height/viewBox` 保证尺寸一致）重建精简 SVG → 光栅化成 `${baseKey}_arrow_mask` 帧打包进 devices 图集。mask 帧与设备帧 sourceSize 完全一致（768×768）。
+- **运行时**（`PreviewTintFilter`）：双纹理 `Filter`。`uTexture`（设备原图）染主体纯色（蓝 `#76BBEA`/橙红 `#FF8233`）；`uMaskTexture`（箭头 mask，整个图集 source）经 UV 变换后采样，`R` 通道作箭头权重→白。
+
+**双纹理 + spritesheet UV 变换的三个关键坑（均已解决，记录防回归）**：
+
+1. **`uTexture` 是 render-target 而非图集纹理**：filter 系统把 sprite 先画进一个借自 `TexturePool` 的独立 render-target，再采样它。故 `vTextureCoord` 是 render-target 内坐标（范围 `[0, bounds/po2]`，非图集 UV 也非 0~1）。`uMaskTexture` 绑定的是整个图集 source（4096×1024），直接 `texture(uMaskTexture, vTextureCoord)` 会采样错位→颜色错乱。修复：shader 用 filter 内置 uniform `uOutputFrame`/`uInputSize` 还原设备局部 `[0,1]`，再用 `uMaskUvRect`（mask 帧在图集的 UV rect）映射采样。
+2. **GLSL 精度冲突**：声明 `uInputSize`/`uOutputFrame` 时若不显式加 `highp`，PixiJS 给 vertex 注入 `highp`、fragment 注入 `mediump`→同名 uniform 精度不一致→shader 编译失败（`Could not initialize shader`）→预览完全不显示。修复：fragment 声明加 `uniform highp vec4 uInputSize`。
+3. **Y 轴翻转**：设备图经 render-target 渲染后 Y 翻转，而 mask 的 `Texture.uvs` 是图集原始 UV（未翻转）。直接映射会导致箭头上下错乱、聚集到下方中间。修复：mask UV 的 Y 用 `1.0 - local01.y` 翻转抵消。
+
+**其它配套改动**：
+- `setMask(maskTexture)` 从 `Texture.uvs` 对象（`{x0,y0,...,x3,y3}`，**注意是对象非数组**）读取 UV rect 注入 `maskUniforms.uMaskUvRect`，自动适配图集重排/rotate/trim。
+- `defaultFilterVertex.ts`（新增）：内联 PixiJS v8 filter 默认 vertex shader（官方未公开导出，自定义 filter 复用）。
+- `PlacementSystem.refreshPreview` 换纹理时同步 `setMask(getTexture('devices', '${texture}_arrow_mask'))`。
+- SVG `3x3_unit.svg` 保持原始状态（连接器柱与箭头都用 `#828080`）——mask 方案不依赖颜色区分，放置后设备保持原始外观。
+
+**验证方法学**：定位坑 1/3 时用了**调试 shader**（把坐标/采样值编码成颜色输出），比盲目猜测高效：先确认 `local01` 是正确的 `[0,1]` 渐变，再确认 Y 翻转后 mask 输出 6 个分散箭头。
+
+### ✅ 用户反馈收尾（已修复）
+
+T1.7 初版验收后，用户针对预览染色与素材组织提出 3 个追加问题，均已修复：
+
+1. **箭头方向反了**  
+   原 shader 中 mask UV 的 Y 轴多了一次 `1.0 - local01.y` 翻转，导致原 SVG 中朝上的箭头在预览里朝下。修复：移除该翻转，直接按 `local01` 采样 mask。
+
+2. **按 R 旋转时箭头不跟随**  
+   原 `PreviewTintFilter` 没有同步预览 Sprite 的 `rotation`，mask 始终按 0° 采样。修复：新增 `uRotation` uniform + `setRotation()` 接口，在 `PlacementSystem.refreshPreview` 每帧把 `preview.rotation` 同步给 filter；同时把 filter `padding` 设为 `0`，避免输出帧外扩导致 mask 缩放错位。
+
+3. **SVG 分层不规范**  
+   原 `3x3_unit.svg` 的图层按网格位置命名（`layer_2_1` 等），每个位置组内混合了底盘、面板、箭头，无法按功能拆分。修复：重构成 `layer-base` / `layer-ports` / `layer-arrows` / `layer-indicators` 功能层，并扩展 `pack-assets.ts` 输出各层子帧。详见下节。
+
+### ✅ SVG 功能层规范化与素材管线扩展
+
+为支持 Phase 2 "设备接入传送带后端口/指示灯状态变化"，T1.7 提前把设备 SVG 从"单张大图"演进为"功能层组合"。
+
+**规范来源**: `doc/asset-drawing-standard.md`
+
+**通用底座 `3x3_unit.svg` 重构结果**:
+- `layer-base`: 底盘、边框、占位框（所有 3×3 设备可复用）
+- `layer-ports`: 6 个端口面板（`rect_mid_*` / `rect_top_*`）
+- `layer-arrows`: 6 个端口方向箭头
+- `layer-indicators`: 空层，供 Phase 2 状态指示灯使用
+
+**精炼炉专用 SVG `refining_unit.svg` 结构**:
+- 完整复制 `3x3_unit.svg` 的底座/端口/箭头/指示灯层
+- 新增 `layer-equipment`，放置精炼炉专属**液体输入/输出端口**
+- 新增 `layer-logo`，放置精炼炉**中央徽标**（billboard，保持屏幕朝上）
+
+**T1.7 收尾：精炼炉专属视觉元素**:
+
+在通用 3×3 底座基础上叠加：
+
+1. **中央 logo**（`layer-logo`，使用 `src/assets/svg/LOGO/Refining_Unit_Logo.svg`）
+   - 正常大小 logo 居中放置
+   - 在其下方（z 轴下层）叠加一个放大 1.5 倍、透明度 0.3 的同 logo，形成背景光晕/阴影效果
+   - 该层默认 `display:none`，完整设备帧中不包含 logo；运行时会作为 billboard 子 Sprite 单独叠加，并在旋转（Ctrl+R / R）时保持屏幕朝上
+2. **左侧液体输出端口**（`layer-equipment`，使用 `src/assets/svg/liquid_export.svg`），距离左边缘 7px
+3. **右侧液体输入端口**（`layer-equipment`，使用 `src/assets/svg/liquid_import.svg`），距离右边缘 7px
+
+**构建输出**（`npm run pack-assets` 后 devices 图集新增）:
+| key | 内容 |
+|-----|------|
+| `refining_unit.png` | 完整设备主体（不含 logo） |
+| `refining_unit/base.png` | 仅底盘/边框/占位框 |
+| `refining_unit/ports.png` | 仅端口面板 |
+| `refining_unit/arrows.png` | 仅箭头 |
+| `refining_unit/indicators.png` | 空层占位 |
+| `refining_unit/equipment.png` | 液体输入/输出端口 |
+| `refining_unit/logo.png` | 精炼炉徽标（billboard） |
+| `refining_unit_arrow_mask.png` | T1.7 预览 mask（兼容用，未来可迁移到 `/arrows`） |
+
+所有层子帧 `sourceSize` 与完整帧一致（768×768），PixiJS 中可直接按同一 `width/height` 叠加。
+
+**对 T1.7 预览的影响**: `refining_unit_arrow_mask.png` 仍然保留，当前 `PreviewTintFilter` 继续使用它；`refining_unit/arrows.png` 作为新规范产物，供 Phase 2 组合渲染使用。
+
+### ⚠️ 剩余遗留项
+
+- **工具栏高亮 activeBtn**：`setActive` 本身正常，但按钮点击后高亮链路待排查（main.ts onSelect 闭包 / InventoryUI 事件链路）。
+- **`placementFromMouse` 用 round 吸附**：奇数 footprint（3×3/5×5）的几何中心天然落在格子中心，网格吸附锚定在格子顶点，二者差半格——这是网格吸附的固有特性。当前用 `round`（向最近取整）使偏移对称化，不再系统性偏左上，但鼠标恰在格点边界时设备中心仍可能偏移半格。若用户对"鼠标=设备精确中心"有更高要求，需评估是否脱离网格自由放置（会破坏网格对齐规则）。
+- **占位图设备无 mask**：shredding/fitting/seed_picking 等用程序化占位图（`PlaceholderTextureFactory`），没有对应的 `_arrow_mask` 帧，预览时这些设备的箭头权重恒为 0（不显示白色箭头）。补正式 SVG 后 pack-assets 自动生成 mask。
+
+---
+
+## T1.8 — 基础交互系统
 
 ### 目标
 点击地图上的设备时，设备被选中并高亮。
@@ -309,7 +510,6 @@ WASD 平移和滚轮缩放已在 T1.2 实现。边缘滚动是相机平移的便
 - 选中框跟随相机缩放/平移
 
 ### 验收标准（你在浏览器看到的效果）
-- **（前提：AI 先放置几个设备用于测试）**
 - **鼠标左键点击设备** → 设备周围出现白色选中框（矩形描边）
 - **点击空白区域** → 选中框消失
 - **选中状态下拖拽缩放** → 选中框跟随设备位置变化
@@ -330,46 +530,15 @@ Phase 2 的 T2.14 会给设备加上"长按进入移动态"的交互——**短�
 
 ---
 
-## T1.8 — 设备放置系统
-
-### 目标
-从工具栏选择设备，放置到地图网格上；放置前可旋转朝向（相对视图）。
-
-### 需求
-- 底部显示工具栏，有 4 种设备图标按钮
-- 点击按钮 → 鼠标变成半透明设备预览（跟随鼠标，吸附网格）
-- 左键点击地图 → 设备放置到网格交叉点
-- 右键或 ESC → 取消放置模式
-- **放置前按 R 键** → 预览设备顺时针旋转 90°（0°→90°→180°→270°→0°），Port 朝向跟随
-- 旋转后的 footprint 占位检查随之更新（3×3 等正方形占地不变，仅朝向/Port 变化）
-
-> **R 键参考系约定（相对视图）**：A3 §3.3 的方向（0°=右）是世界相对定义，但玩家按 R 的手感是**屏幕相对**的——视图旋转后，按 R 让设备在屏幕上看起来转 90°。实现上：玩家按 R 时，设备的"屏幕显示朝向"加 90°，再换算回世界朝向存入 `BuildingComponent.direction`（世界朝向 = 屏幕朝向 − viewRotation）。Phase 2 的 T2.14 移动态旋转同理。详见 A6 Camera 的 `viewRotation`。
-
-### 验收标准（你在浏览器看到的效果）
-- **打开浏览器** → 底部看到一排按钮，上面有设备图标
-- **点击一个设备按钮** → 鼠标位置出现半透明的设备轮廓
-- **移动鼠标** → 预览轮廓吸附到最近的网格交叉点，一跳一跳地移动
-- **按 R 键** → 预览设备顺时针旋转 90°，每次按键转一次，能转满一圈
-- **左键点击** → 设备按当前朝向固定在地图上，显示为 SVG 绘制的图形
-- **左键点另一个位置** → 第二个设备出现
-- **右键 或 ESC** → 预览消失，退出放置模式
-- **点击放置好的设备** → 出现选中框（上一任务的功能）
-- 设备位置正好在网格交叉点上，不偏移
-
-### 预估工时
-2 次会话（UI 占主要时间）
-
----
-
 ## T1.9 — 设备删除
 
 ### 目标
 删除已放置的设备，补齐设备生命周期的逆操作。
 
 ### 背景
-T1.8 只做了"放置"。删除是放置的逆操作（`OccupancyMap.release` + `destroyEntity`），做完才算占位表生命周期闭环，避免 Phase 2 接生产逻辑时出现"删了实体但忘了 release cell"这类泄漏 bug。Phase 1 不实现建造成本（A3 §1 的 `buildCost` 是后期功能），所以"放错朝向 → 删除重建"零代价，删除足够覆盖 Phase 1 的试错需求。
+T1.7 只做了"放置"。删除是放置的逆操作（`OccupancyMap.release` + `destroyEntity`），做完才算占位表生命周期闭环，避免 Phase 2 接生产逻辑时出现"删了实体但忘了 release cell"这类泄漏 bug。Phase 1 不实现建造成本（A3 §1 的 `buildCost` 是后期功能），所以"放错朝向 → 删除重建"零代价，删除足够覆盖 Phase 1 的试错需求。
 
-> **交互约定**：删除统一走 `Delete` 键，**不用右键**。右键语义专留给"取消放置模式"（T1.8），两套语义不重叠。
+> **交互约定**：删除统一走 `Delete` 键，**不用右键**。右键语义专留给"取消放置模式"（T1.7），两套语义不重叠。
 
 ### 需求
 - 选中已放置的设备 → 按 `Delete` 键 → 设备销毁
@@ -415,9 +584,9 @@ T1.8 只做了"放置"。删除是放置的逆操作（`OccupancyMap.release` + 
   会话 4: T1.6 渲染系统（主体）
 
 第 2 周
-  会话 5: T1.6 渲染系统（视口剔除 + 旋转回归） + T1.7 基础交互
-  会话 6: T1.8 设备放置系统（UI + 放置逻辑 + 放置前旋转，R 键相对视图）
-  会话 7: T1.8 设备放置系统（完善 + 测试）
+  会话 5: T1.6 渲染系统（视口剔除 + 旋转回归） + T1.7 设备放置系统（UI 工具栏 + 放置逻辑 + 放置前旋转，R 键相对视图）
+  会话 6: T1.7 设备放置系统（完善 + 测试）
+  会话 7: T1.8 基础交互（点击选中 + 选中框）
   会话 8: T1.9 设备删除
   会话 9: T1.10 性能基准 + 收尾
 ```
@@ -455,7 +624,7 @@ T1.8 只做了"放置"。删除是放置的逆操作（`OccupancyMap.release` + 
 
 ## 附录 A：PixiJS v8 踩坑记录
 
-> T1.4 开发中遇到的三个 PixiJS v8 陷阱。T1.5/T1.6（渲染系统、选中框）涉及渲染管线，
+> T1.4 开发中遇到的三个 PixiJS v8 陷阱。T1.5/T1.6/T1.8（渲染系统、选中框）涉及渲染管线，
 > 开发前务必阅读，避免重复踩坑。每条都附了**正确的替代方案**。
 
 ### A.1 FillGradient 的 global space 坐标映射不可靠
