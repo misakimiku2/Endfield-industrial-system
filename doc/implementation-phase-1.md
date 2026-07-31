@@ -17,7 +17,7 @@
 | T1.5 视图操作 | ✅ 完成 | 边缘滚动、Ctrl+R 视图旋转(屏幕相对参考系+平滑过渡)、`screenDirToWorld`/`panByScreen`、GridRenderer 旋转感知。**修正**：`rotateClockwise` 旋转目标重锚定到 `viewRotation` 离散精确值（`nextClockwiseTarget`），消除连旋漂移导致"转 4 次不回正"的 bug |
 | T1.6 渲染系统 | ✅ 完成 | `RenderSystem`（query diff 实体↔Sprite 绑定、视口剔除、层映射）、`MapInstance`（WORLD_* 常量→地图实例属性，A11 WV-003 §4.4） |
 | T1.7 设备放置系统 | ✅ 完成 | 核心闭环完成（工具栏选设备→左键放网格交叉点→R 键旋转预览→右键/ESC 取消）。`BuildingDefinition`(DD-003)、`BuildingComponent`(DD-002)、`OccupancyMap`(A2 §7)、`InventoryUI`(PixiJS Container 挂 overlayLayer)、`PlacementSystem`(鼠标=设备中心 + R 键相对视图换算/A6 §4.0)、`PreviewTintFilter`(双纹理 mask 方案：主体纯色 + 箭头白)。预览染色经 4 轮迭代已稳定；用户反馈的箭头方向、R 键旋转跟随问题已修复。设备 SVG 已按 `layer-*` 功能层规范化，`pack-assets.ts` 同步输出 `/base`、`/ports`、`/arrows`、`/indicators`、`/equipment` 子帧；精炼炉已叠加 logo 与液体输入/输出端口视觉，为 Phase 2 动态表现奠基。 |
-| T1.8 基础交互系统 | ✅ 完成 | `SelectionSystem.ts`（pointerdown/pointerup 短按选中 + 屏幕空间白色选中框，跟随相机缩放/平移/旋转） |
+| T1.8 基础交互系统 | ✅ 完成 | `SelectionSystem.ts`（pointerdown/pointerup 短按选中 + 黄色高亮填充 + 白色选中框，跟随相机缩放/平移/旋转） |
 | T1.9 设备删除 | ⬜ 待开发 | 删除已放置设备(Delete键)、占位释放 |
 | T1.10 性能基准测试 | ⬜ 待开发 | 100 设备 FPS ≥ 55 |
 
@@ -622,7 +622,7 @@ T1.7 只做了"放置"。删除是放置的逆操作（`OccupancyMap.release` + 
 - **底部工具栏**有设备图标按钮 → 点击后鼠标变为半透明预览
 - **按 R 键** → 放置预览顺时针旋转（屏幕相对），能转满一圈
 - **点击地图** → 设备按当前朝向放置在网格交叉点上
-- **点击已放置的设备** → 白色选中框出现
+- **点击已放置的设备** → 黄色高亮填充 + 白色选中框出现（点击空白取消）
 - **选中设备 + Delete** → 设备被删除，格子空出来
 - **地图上有 100 个设备**时依然流畅（FPS ≥ 55）
 
