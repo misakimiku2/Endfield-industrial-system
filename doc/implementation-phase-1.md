@@ -535,7 +535,7 @@ Phase 2 的 T2.14 会给设备加上"长按进入移动态"的交互——**短�
   - pointerdown → 只记录按下时间戳 + 命中设备，**不 commit、不 preventDefault/stopPropagation**（Phase 2 长按检测可直接叠加）
   - pointerup → 判定短按（<300ms）：命中设备=选中、命中空白=取消；长按（≥300ms）Phase 1 无移动语义，不改变选中态——Phase 2 只需在 pointerdown 后挂 300ms 定时器接管为移动态，无需改动本任务逻辑
 - **命中测试**: 遍历 `Position+SpriteComp+BuildingComp` 实体，footprint 世界 AABB 点包含（Phase 1 footprint 全正方形，旋转不改变 AABB，A3 §6）；尊重 `BuildingDefinition.selectable`（A3 §1，Phase 1 全 true）；非 BuildingComp 的 Sprite 实体（传送带/敌人/测试 Sprite）天然不参与选中
-- **选中框渲染**: 屏幕空间 `Graphics` 挂 `overlayLayer`（zIndex −10，工具栏之下）；每帧用 `worldToScreen` 求 footprint 四角 → **纯白 4px 矩形描边**（用户要求加粗并去掉黑色外描边）；线宽恒定屏幕像素，不随 zoom 变粗/变细；顶点像素取整避免半像素发糊；视图旋转下画旋转四边形，跟随相机平移/缩放/旋转过渡动画（worldToScreen 用 displayRotation）
+- **选中框渲染**: 屏幕空间 `Graphics` 挂 `overlayLayer`（zIndex −10，工具栏之下）；每帧用 `worldToScreen` 求 footprint 四角 → **纯白矩形描边**（用户要求无黑边）；线宽随 zoom **等比缩放**——zoom=1 基准 4px、zoom=4 时 16px、zoom=0.25 时下限 1.5px，相对设备的视觉比例恒定（用户反馈"缩小太明显/放大太细"的修正）；顶点像素取整避免半像素发糊；视图旋转下画旋转四边形，跟随相机平移/缩放/旋转过渡动画（worldToScreen 用 displayRotation）
 - **输入接线**: main.ts 非放置态左键 pointerdown/pointerup 转发；放置态点击不进选中逻辑；工具栏包围盒排除（与 T1.7 同机制）；中键拖拽/右键不受影响
 - **验证**: `scripts/verify-t1.8.ts` → 33 条断言全通过（命中/状态机/长按预留/投影几何/Graphics 生命周期）；`tsc --noEmit` 零错误；`npm run build` 通过
 - **浏览器验收钩子**: `__game.placeAt("refining_unit",5,5)` 放设备 → `__game.selectFirstBuilding()` 选中 → `selection.getSelected()` 查询；HUD 显示"选中=设备"
@@ -545,7 +545,7 @@ Phase 2 的 T2.14 会给设备加上"长按进入移动态"的交互——**短�
 ### ⚠️ 剩余遗留项
 - **长按（≥300ms）在 Phase 1 不产生任何效果**（不选中也不移动）：这是为 T2.14 预留的语义——长按 = 移动态。若想在 Phase 1 长按也选中，需在 T2.14 前回退调整此判定
 - **命中用 footprint AABB**：设备纹理透明边角也算命中（网格游戏标准语义）；Phase 1 footprint 全正方形，引入非正方形 footprint 时命中与选中框需按 direction 旋转多边形
-- **选中框为纯白 4px 线**：浅灰地面 (#E6E4E4) 上对比度足够；若将来地图换更浅/白色底色，需重新评估描边可见性（可临时加外描边或改色，但用户当前明确不要黑边）
+- **选中框线宽随 zoom 等比缩放**：缩放基准/下限集中在 `SELECTION_LINE_WIDTH_AT_ZOOM_1` / `SELECTION_LINE_WIDTH_MIN` 两个常量；若最大缩放时 16px 偏粗或最小缩放时偏淡，可调这两个值（或改 sqrt 曲线）
 
 ---
 

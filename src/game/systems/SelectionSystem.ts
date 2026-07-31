@@ -15,9 +15,11 @@
 //
 // 选中框渲染: 屏幕空间 Graphics（挂 overlayLayer，zIndex 负数 = 工具栏之下）。
 //   每帧用 camera.worldToScreen 求设备 footprint 四角 → 白色矩形描边。
-//   屏幕空间画法保证线宽恒定屏幕像素（不随 zoom 变粗/变细），
+//   线宽随 zoom 等比缩放（zoom=1 时 4px）: 缩小画布时线相对设备不再"喧宾夺主"，
+//   放大到 zoom=4 时线同步变粗，相对设备的视觉比例恒定（用户反馈修正）。
+//   带最小线宽下限，避免缩到最小时线条消失。顶点像素取整保持锐利，
 //   并天然跟随相机平移/缩放/旋转过渡（worldToScreen 用 displayRotation）。
-//   纯白色 4px 主线（用户要求: 粗一些、不要黑色描边）。
+//   纯白主线（用户要求: 粗一些、不要黑色描边）。
 
 import { Graphics } from 'pixi.js';
 import type { World, EntityHandle } from '../ECS';
@@ -31,8 +33,10 @@ import { getBuildingDefinition } from '../data/buildings';
 /** 短按阈值 (ms)。pointerup 时按下时长 < 此值 → 选中；≥ 此值 = 长按（Phase 2 移动态用）。 */
 export const SELECTION_SHORT_PRESS_MS = 300;
 
-/** 选中框主线宽（屏幕像素，用户要求加粗）。 */
-const SELECTION_LINE_WIDTH = 4;
+/** 选中框主线宽基准（屏幕像素，zoom=1 时的线宽；随 zoom 等比缩放）。 */
+const SELECTION_LINE_WIDTH_AT_ZOOM_1 = 4;
+/** 选中框最小线宽（屏幕像素），防止缩到最小时线条消失/过糊。 */
+const SELECTION_LINE_WIDTH_MIN = 1.5;
 /** 选中框主线颜色（纯白，T1.8 验收标准）。 */
 const SELECTION_LINE_COLOR = 0xffffff;
 
@@ -240,7 +244,12 @@ export class SelectionSystem {
     const g = this.graphics;
     g.clear();
     // 纯白主线 (验收标准: 白色选中框，矩形描边；用户要求无黑边、线加粗)
-    g.poly(snapped).stroke({ width: SELECTION_LINE_WIDTH, color: SELECTION_LINE_COLOR, alpha: 1 });
+    // 线宽 = 基准 × zoom（下限保护），使线相对设备在任何缩放级别下观感一致
+    const lineWidth = Math.max(
+      SELECTION_LINE_WIDTH_MIN,
+      SELECTION_LINE_WIDTH_AT_ZOOM_1 * this.camera.zoom,
+    );
+    g.poly(snapped).stroke({ width: lineWidth, color: SELECTION_LINE_COLOR, alpha: 1 });
     g.visible = true;
     this.lastBoxTopLeft = { x: snapped[0].x, y: snapped[0].y };
   }
