@@ -17,7 +17,7 @@
 | T1.5 视图操作 | ✅ 完成 | 边缘滚动、Ctrl+R 视图旋转(屏幕相对参考系+平滑过渡)、`screenDirToWorld`/`panByScreen`、GridRenderer 旋转感知。**修正**：`rotateClockwise` 旋转目标重锚定到 `viewRotation` 离散精确值（`nextClockwiseTarget`），消除连旋漂移导致"转 4 次不回正"的 bug |
 | T1.6 渲染系统 | ✅ 完成 | `RenderSystem`（query diff 实体↔Sprite 绑定、视口剔除、层映射）、`MapInstance`（WORLD_* 常量→地图实例属性，A11 WV-003 §4.4） |
 | T1.7 设备放置系统 | ✅ 完成 | 核心闭环完成（工具栏选设备→左键放网格交叉点→R 键旋转预览→右键/ESC 取消）。`BuildingDefinition`(DD-003)、`BuildingComponent`(DD-002)、`OccupancyMap`(A2 §7)、`InventoryUI`(PixiJS Container 挂 overlayLayer)、`PlacementSystem`(鼠标=设备中心 + R 键相对视图换算/A6 §4.0)、`PreviewTintFilter`(双纹理 mask 方案：主体纯色 + 箭头白)。预览染色经 4 轮迭代已稳定；用户反馈的箭头方向、R 键旋转跟随问题已修复。设备 SVG 已按 `layer-*` 功能层规范化，`pack-assets.ts` 同步输出 `/base`、`/ports`、`/arrows`、`/indicators`、`/equipment` 子帧；精炼炉已叠加 logo 与液体输入/输出端口视觉，为 Phase 2 动态表现奠基。 |
-| T1.8 基础交互系统 | ⬜ 待开发 | 点击选中、选中框 |
+| T1.8 基础交互系统 | ✅ 完成 | `SelectionSystem.ts`（pointerdown/pointerup 短按选中 + 屏幕空间白色选中框，跟随相机缩放/平移/旋转） |
 | T1.9 设备删除 | ⬜ 待开发 | 删除已放置设备(Delete键)、占位释放 |
 | T1.10 性能基准测试 | ⬜ 待开发 | 100 设备 FPS ≥ 55 |
 
@@ -528,6 +528,22 @@ Phase 2 的 T2.14 会给设备加上"长按进入移动态"的交互——**短�
 
 ### 预估工时
 1 次会话
+
+### ✅ 实现备注（已完成）
+- **产出文件**: `src/game/systems/SelectionSystem.ts`（新）、`scripts/verify-t1.8.ts`（新）、`src/main.ts`（输入转发 + 验收钩子）
+- **交互结构（前瞻约束逐条落实）**:
+  - pointerdown → 只记录按下时间戳 + 命中设备，**不 commit、不 preventDefault/stopPropagation**（Phase 2 长按检测可直接叠加）
+  - pointerup → 判定短按（<300ms）：命中设备=选中、命中空白=取消；长按（≥300ms）Phase 1 无移动语义，不改变选中态——Phase 2 只需在 pointerdown 后挂 300ms 定时器接管为移动态，无需改动本任务逻辑
+- **命中测试**: 遍历 `Position+SpriteComp+BuildingComp` 实体，footprint 世界 AABB 点包含（Phase 1 footprint 全正方形，旋转不改变 AABB，A3 §6）；尊重 `BuildingDefinition.selectable`（A3 §1，Phase 1 全 true）；非 BuildingComp 的 Sprite 实体（传送带/敌人/测试 Sprite）天然不参与选中
+- **选中框渲染**: 屏幕空间 `Graphics` 挂 `overlayLayer`（zIndex −10，工具栏之下）；每帧用 `worldToScreen` 求 footprint 四角 → 白色 2px 矩形描边 + 深色外描边（浅灰地面 #E6E4E4 上保证对比度）；线宽恒定屏幕像素，不随 zoom 变粗/变细；顶点像素取整避免半像素发糊；视图旋转下画旋转四边形，跟随相机平移/缩放/旋转过渡动画（worldToScreen 用 displayRotation）
+- **输入接线**: main.ts 非放置态左键 pointerdown/pointerup 转发；放置态点击不进选中逻辑；工具栏包围盒排除（与 T1.7 同机制）；中键拖拽/右键不受影响
+- **验证**: `scripts/verify-t1.8.ts` → 33 条断言全通过（命中/状态机/长按预留/投影几何/Graphics 生命周期）；`tsc --noEmit` 零错误；`npm run build` 通过
+- **浏览器验收钩子**: `__game.placeAt("refining_unit",5,5)` 放设备 → `__game.selectFirstBuilding()` 选中 → `selection.getSelected()` 查询；HUD 显示"选中=设备"
+
+### ⚠️ 剩余遗留项
+- **长按（≥300ms）在 Phase 1 不产生任何效果**（不选中也不移动）：这是为 T2.14 预留的语义——长按 = 移动态。若想在 Phase 1 长按也选中，需在 T2.14 前回退调整此判定
+- **命中用 footprint AABB**：设备纹理透明边角也算命中（网格游戏标准语义）；Phase 1 footprint 全正方形，引入非正方形 footprint 时命中与选中框需按 direction 旋转多边形
+- **选中框白线对比度依赖深色外描边**：当前在浅灰地面已可辨；若地图换更浅底色，可调整 `SelectionSystem` 的 `SELECTION_OUTLINE_ALPHA`
 
 ---
 

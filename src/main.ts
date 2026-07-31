@@ -1,5 +1,5 @@
-// 入口文件 — T1.2 相机 + T1.3 资源 + T1.4 世界网格 + T1.5 视图操作 + T1.6 渲染 + T1.7 设备放置
-// 依据: implementation-phase-1.md T1.2 / T1.3 / T1.4 / T1.5 / T1.6 / T1.7
+// 入口文件 — T1.2 相机 + T1.3 资源 + T1.4 世界网格 + T1.5 视图操作 + T1.6 渲染 + T1.7 设备放置 + T1.8 基础交互
+// 依据: implementation-phase-1.md T1.2 / T1.3 / T1.4 / T1.5 / T1.6 / T1.7 / T1.8
 //   - 中键拖拽平移 / WASD 平移(屏幕相对) / 滚轮以鼠标为中心缩放
 //   - 边缘滚动 (T1.5): 鼠标到窗口边缘自动平移，8 方向，与 WASD 叠加
 //   - Ctrl+R 视图旋转 (T1.5): 顺时针 90°，4 态循环，以屏幕中心为枢轴
@@ -8,6 +8,7 @@
 //            旋转感知 (T1.5): 网格线随视图旋转正确投影到屏幕
 //   - 渲染系统 (T1.6): ECS 实体(Position+SpriteComp) ↔ PixiJS Sprite 绑定 + 视口剔除
 //   - 设备放置 (T1.7): 工具栏选设备 → 左键放网格交叉点 → R 键旋转预览(相对视图) → 右键/ESC 取消
+//   - 基础交互 (T1.8): 左键点设备=选中(白色选中框) → 点空白=取消；选中框跟随相机
 //   - 世界边界 (A11 WV-003 §4.4): 尺寸来自 MapInstance（不再读全局常量）
 
 import { Application, Text } from 'pixi.js';
@@ -19,6 +20,9 @@ import { loadAllAssets, getTexture } from './game/render/AssetsLoader';
 import { InventoryUI } from './game/ui/InventoryUI';
 import { getBuildingDefinition, type BuildingDefinition } from './game/data/buildings';
 import type { Direction } from './game/components/BuildingComp';
+import { SelectionSystem } from './game/systems/SelectionSystem';
+import type { Position } from './game/components/Position';
+import type { SpriteComp } from './game/components/SpriteComp';
 import { CELL_SIZE } from './game/render/constants';
 import type { EntityHandle } from './game/ECS';
 
@@ -86,7 +90,7 @@ async function main() {
   app.stage.addChild(hud);
 
   const help = new Text({
-    text: '中键拖拽: 平移  |  WASD/方向键: 平移(屏幕相对)  |  鼠标靠边: 边缘滚动  |  滚轮: 以鼠标为中心缩放  |  Ctrl+R: 视图旋转  |  T1.7: 工具栏选设备→左键放置→R旋转→右键/ESC取消',
+    text: '中键拖拽: 平移  |  WASD/方向键: 平移(屏幕相对)  |  鼠标靠边: 边缘滚动  |  滚轮: 以鼠标为中心缩放  |  Ctrl+R: 视图旋转  |  左键点设备=选中(点空白取消)  |  T1.7: 工具栏选设备→左键放置→R旋转→右键/ESC取消',
     style: { fontFamily: 'system-ui, sans-serif', fontSize: 13, fill: 0x444444 },
   });
   help.x = 10;
@@ -96,6 +100,9 @@ async function main() {
   // ── T1.7 设备放置: 工具栏 + 放置系统输入转发 ──
   const placement = game.placement;
   const occupancy = game.occupancy;
+
+  // ── T1.8 基础交互: 点击选中 + 屏幕空间选中框 ──
+  const selection = new SelectionSystem(game.world, camera, scene.layers);
 
   // 工具栏: 挂 overlayLayer(屏幕空间层 6)，钉死屏幕底部，不受 Ctrl+R/相机影响。
   // onSelect 回调 → 进入放置模式 + 高亮选中按钮。
@@ -128,15 +135,15 @@ async function main() {
       p.y <= app.canvas.clientHeight + tol;
     placement.setMouse(p.x, p.y, inside);
   };
-  // 鼠标按下: 左键(0)=确认放置, 右键(2)=取消。只在 placing 态消费。
+  // 鼠标按下: 放置态 → 左键(0)=确认放置, 右键(2)=取消；
+  //           非放置态 → 左键(0)转发给 T1.8 选中系统（pointerdown 只记录，pointerup 提交）。
   // 中键(1)留给相机拖拽（CameraController 处理），不转发。
   //
   // ⚠️ 工具栏区域排除: 点击工具栏按钮（选设备）时，不能误触发地图放置。
   //   InventoryUI 按钮 pointerdown 调了 PixiJS 的 stopPropagation，但那只挡 PixiJS 事件系统
   //   内的冒泡；本监听是加在 app.canvas 上的原生 DOM 监听，两者是独立事件流。
-  //   故此处用 InventoryUI 的屏幕包围盒判断：落在工具栏上的点击不转发给 placement。
+  //   故此处用 InventoryUI 的屏幕包围盒判断：落在工具栏上的点击不转发（放置/选中都不转发）。
   const onPointerDownMain = (e: PointerEvent): void => {
-    if (!placement.isPlacing()) return; // 非放置态左键留给 T1.8 选中（本会话不实现）
     if (e.button !== 0 && e.button !== 2) return;
     const p = toCanvasPos(e);
     // 落在工具栏上 → 不转发（让 InventoryUI 的 PixiJS 事件处理按钮选中）
@@ -144,12 +151,29 @@ async function main() {
     if (p.x >= bar.x && p.x <= bar.x + bar.width && p.y >= bar.y && p.y <= bar.y + bar.height) {
       return;
     }
-    placement.onPointerDown(p.x, p.y, e.button);
-    // 放置后或取消后，若退出了 placing 态，清除工具栏高亮
-    if (!placement.isPlacing()) inventoryUI.setActive(null);
+    if (placement.isPlacing()) {
+      placement.onPointerDown(p.x, p.y, e.button);
+      // 放置后或取消后，若退出了 placing 态，清除工具栏高亮
+      if (!placement.isPlacing()) inventoryUI.setActive(null);
+      return; // 放置点击不进入选中逻辑
+    }
+    if (e.button === 0) {
+      // 非放置态左键 → T1.8 选中（pointerdown 记录时间戳+命中设备，pointerup 提交）
+      selection.onPointerDown(p.x, p.y, e.button, performance.now());
+    }
+  };
+  // 鼠标抬起: 只处理左键，挂在 window 上（松开时指针可能已移出 canvas）。
+  //   T1.8 pointerup 结构（前瞻约束）——
+  //   pointerdown 记了时间戳+命中设备，这里判定"短按 → 选中/取消"。
+  //   放置态/工具栏的 pointerdown 未进入 selection（无 pending），此处天然 no-op。
+  //   从 canvas 外按下的 pointerup 也没有 pending，同样 no-op。
+  const onPointerUpMain = (e: PointerEvent): void => {
+    if (e.button !== 0) return;
+    selection.onPointerUp(performance.now());
   };
   app.canvas.addEventListener('pointermove', onPointerMoveMain);
   app.canvas.addEventListener('pointerdown', onPointerDownMain);
+  window.addEventListener('pointerup', onPointerUpMain);
 
   // 键盘: 裸 KeyR(旋转预览) + Escape(取消放置)，仅在 placing 态响应。
   // CameraController 已拦截 Ctrl/Cmd+KeyR（视图旋转），裸 R 不触发视图旋转。
@@ -182,6 +206,7 @@ async function main() {
     camera.updateTransform();
     gridRenderer.update();
     placement.update(ticker.deltaMS); // T1.7: 放置预览跟随鼠标
+    selection.update(); // T1.8: 选中框跟随相机（每帧重绘）
     game.update(); // T1.6: RenderSystem（实体↔Sprite 同步 + 视口剔除）
     hud.text =
       `FPS: ${Math.round(ticker.FPS)}` +
@@ -189,6 +214,7 @@ async function main() {
       `  zoom=${camera.zoom.toFixed(2)}${camera.isZooming ? '↗' : ''}` +
       `  rot=${camera.viewRotation}°` +
       `  |  实体=${game.world.entityCount()}` +
+      (selection.getSelected() !== null ? `  |  选中=设备` : '') +
       (placement.isPlacing()
         ? `  |  放置: ${placement.getCurrentDefinitionId()} (R=旋转, 左键=放, 右键/ESC=取消)`
         : '');
@@ -198,6 +224,7 @@ async function main() {
   camera.updateTransform();
   gridRenderer.update();
   placement.update(0);
+  selection.update();
   game.update();
 
   // ── T1.6 验收用的测试钩子: 控制台生成/清除测试设备 ──
@@ -269,8 +296,28 @@ async function main() {
     const handles = game.world.query('BuildingComp');
     for (const h of handles) game.world.destroyEntity(h);
     occupancy.clear();
+    selection.clearSelection(); // 实体清空后选中框必须消失（T1.9 删除同样依赖此路径）
     game.update();
     console.log(`[T1.7] 清除全部已放置设备 (${handles.length} 个)，占用表清空`);
+  };
+
+  // ── T1.8 验收钩子: 程序化选中第一个设备（绕过鼠标交互，便于自动验收）──
+  // 走与真实鼠标相同的 pointerdown → pointerup 短按路径，不直接改内部状态。
+  const selectFirstBuilding = (): boolean => {
+    const handles = game.world.query('BuildingComp');
+    if (handles.length === 0) {
+      console.warn('selectFirstBuilding: 没有任何已放置设备');
+      return false;
+    }
+    const h = handles[0];
+    const pos = game.world.getComponent<Position>(h, 'Position')!;
+    const spr = game.world.getComponent<SpriteComp>(h, 'SpriteComp')!;
+    const screen = camera.worldToScreen(pos.x + spr.width / 2, pos.y + spr.height / 2);
+    const t0 = performance.now();
+    selection.onPointerDown(screen.x, screen.y, 0, t0);
+    selection.onPointerUp(t0 + 10); // 10ms < 300ms = 短按
+    selection.update(); // 立即画一次选中框
+    return selection.getSelected() !== null;
   };
 
   // 开发期调试钩子: 暴露关键对象到 window，便于控制台验证与测试。
@@ -286,19 +333,22 @@ async function main() {
     placement,
     occupancy,
     inventoryUI,
+    selection,
     getTexture,
     spawnTestDevices,
     clearTestDevices,
     placeAt,
     getOccupiedCells,
     clearAllPlaced,
+    selectFirstBuilding,
   };
 
-  console.log('[集成工业系统] T1.7 设备放置系统就绪');
+  console.log('[集成工业系统] T1.7 设备放置 + T1.8 基础交互就绪');
   console.log(`  世界: ${MAP.widthCells}×${MAP.heightCells} cells (MapInstance), CELL_SIZE=${CELL_SIZE}`);
   console.log('  操作: 中键拖拽/WASD(屏幕相对)/边缘滚动 平移, 滚轮以鼠标为中心缩放, Ctrl+R 视图旋转');
   console.log('  放置: 底部工具栏选设备 → 左键放网格 → R 旋转(相对视图) → 右键/ESC 取消');
-  console.log('  验收: __game.placeAt("refining_unit",5,5) 程序化放置, getOccupiedCells() 查占用, clearAllPlaced() 清空');
+  console.log('  交互: 左键点设备=选中(白色选中框, 跟随相机), 点空白=取消');
+  console.log('  验收: __game.placeAt("refining_unit",5,5) 放设备 → selectFirstBuilding() 选中 → selection.getSelected() 查询');
 }
 
 main().catch((err) => {
