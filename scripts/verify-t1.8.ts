@@ -179,6 +179,11 @@ console.log('\n[B] SelectionSystem 状态机 (T1.8 前瞻约束)');
   sel.onPointerDown(empty.x, empty.y, 0, 3000);
   sel.onPointerUp(3010);
   assert(sel.getSelected() === null, '点空白短按 → 取消选中');
+  const gB = (sel as unknown as { graphics: Graphics }).graphics;
+  assert(gB.visible === false, '点空白取消后选中框 Graphics 立即隐藏（不印在画布上）');
+  assert(sel.getBoxTopLeft() === null, '点空白取消后 lastBoxTopLeft 清空');
+  sel.update();
+  assert(gB.visible === false, '取消后 update() 不再绘制/恢复选中框（回归: 印在画布上）');
 
   // 长按(≥300ms) 不产生选中变更（Phase 2 由定时器接管为移动态）
   sel.onPointerDown(aCenter.x, aCenter.y, 0, 4000);
@@ -291,6 +296,13 @@ console.log('\n[D] 选中框 Graphics 生命周期');
   sel.clearSelection();
   assert(g.visible === false, 'clearSelection → 选中框隐藏');
   assert(sel.getSelected() === null, 'clearSelection → 选中态清空');
+
+  // 点空白取消（不经 clearSelection）后 update 不抛错且框保持隐藏
+  const empty2 = camera.worldToScreen(800, 800);
+  sel.onPointerDown(empty2.x, empty2.y, 0, 200);
+  sel.onPointerUp(210);
+  sel.update();
+  assert(g.visible === false, '点空白取消 + update → 框保持隐藏（不残留几何）');
 
   // 未选中时 update 不抛错
   sel.update();

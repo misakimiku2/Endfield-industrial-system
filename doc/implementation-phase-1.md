@@ -540,6 +540,7 @@ Phase 2 的 T2.14 会给设备加上"长按进入移动态"的交互——**短�
 - **验证**: `scripts/verify-t1.8.ts` → 33 条断言全通过（命中/状态机/长按预留/投影几何/Graphics 生命周期）；`tsc --noEmit` 零错误；`npm run build` 通过
 - **浏览器验收钩子**: `__game.placeAt("refining_unit",5,5)` 放设备 → `__game.selectFirstBuilding()` 选中 → `selection.getSelected()` 查询；HUD 显示"选中=设备"
 - **浏览器复测（agent-browser）**: 真实鼠标点击/中键拖拽/滚轮缩放/视图旋转/DPR 1~2/1280×720 与 1920×1080 下，选中框每帧经 `worldToScreen` 重算，均精确跟随设备（像素级验证，画面顶部无残留白色矩形）。防御性修正: 顶点非有限值时隐藏选中框并告警；HUD 增加 `选中=设备@(x,y)` 实时屏幕坐标，便于排查"选中框钉住不动"类问题
+- **Bug 修复（点空白后选中框"印在画布上"）**: 根因是 pointerup 点空白只置 `selected=null`，未隐藏/清除 Graphics，而 `update()` 对 null 直接 return——最后一张几何永远留在 overlayLayer，位置大小冻结在点击时刻。修复: 取消选中路径统一走 `hideBox()`（隐藏 + clear + 清 lastBoxTopLeft），`update()` 对 null 兜底隐藏；新增回归断言（点空白后 graphics 立即隐藏、update 不复活），verify-t1.8 现 37 项全通过
 
 ### ⚠️ 剩余遗留项
 - **长按（≥300ms）在 Phase 1 不产生任何效果**（不选中也不移动）：这是为 T2.14 预留的语义——长按 = 移动态。若想在 Phase 1 长按也选中，需在 T2.14 前回退调整此判定

@@ -152,6 +152,12 @@ export class SelectionSystem {
     this.pendingPress = null; // 一次性消费
     if (now - time < SELECTION_SHORT_PRESS_MS) {
       this.selected = hit;
+      if (hit === null) {
+        // 点空白 → 取消选中: 必须立即隐藏并清除已绘制的选中框。
+        // 否则 Graphics 会保留最后一张几何，框"印在画布上"，
+        // 且 update() 因 selected===null 直接 return，永远不会清掉它。
+        this.hideBox();
+      }
     }
   }
 
@@ -160,13 +166,16 @@ export class SelectionSystem {
    *   选中实体存活 → 重绘选中框（跟随相机）；已销毁 → 清空选中态。
    */
   update(): void {
-    if (this.selected === null) return;
+    if (this.selected === null) {
+      // 防御: 未选中时确保不残留旧几何（正常路径已在 onPointerUp/clearSelection 隐藏，
+      // 这里兜底，防止任何遗漏路径把框留在画布上）。
+      this.hideBox();
+      return;
+    }
     if (!this.world.isAlive(this.selected)) {
       // 实体被销毁（如 T1.9 删除）→ 选中态清空，选中框消失
       this.selected = null;
-      this.lastBoxTopLeft = null;
-      this.graphics.visible = false;
-      this.graphics.clear();
+      this.hideBox();
       return;
     }
     this.drawBox();
@@ -188,6 +197,14 @@ export class SelectionSystem {
   /** 清空选中态（T1.9 删除设备后调用，或外部重置）。 */
   clearSelection(): void {
     this.selected = null;
+    this.hideBox();
+  }
+
+  /**
+   * 隐藏并清除选中框图形（清空 lastBoxTopLeft）。
+   * selected===null 时的所有出口都必须经过这里。
+   */
+  private hideBox(): void {
     this.lastBoxTopLeft = null;
     this.graphics.visible = false;
     this.graphics.clear();
@@ -206,8 +223,7 @@ export class SelectionSystem {
     const pts = buildingScreenPolygon(this.camera, this.world, this.selected!);
     if (!pts) {
       // 实体刚被销毁但 update 尚未跑（防御），隐藏即可
-      this.graphics.visible = false;
-      this.graphics.clear();
+      this.hideBox();
       return;
     }
 
