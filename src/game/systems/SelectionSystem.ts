@@ -113,6 +113,8 @@ export class SelectionSystem {
   private selected: EntityHandle | null = null;
   /** pointerdown 记录的按压上下文（T1.8 前瞻约束）。 */
   private pendingPress: { hit: EntityHandle | null; time: number } | null = null;
+  /** 最近一次绘制时选中框的屏幕左上角（HUD/调试用，未选中时为 null）。 */
+  private lastBoxTopLeft: { x: number; y: number } | null = null;
 
   constructor(world: World, camera: Camera, layers: SceneLayers) {
     this.world = world;
@@ -162,6 +164,7 @@ export class SelectionSystem {
     if (!this.world.isAlive(this.selected)) {
       // 实体被销毁（如 T1.9 删除）→ 选中态清空，选中框消失
       this.selected = null;
+      this.lastBoxTopLeft = null;
       this.graphics.visible = false;
       this.graphics.clear();
       return;
@@ -174,9 +177,18 @@ export class SelectionSystem {
     return this.selected;
   }
 
+  /**
+   * 最近一次绘制的选中框屏幕左上角（调试/HUD 用）。
+   * 未选中或坐标非法时返回 null。
+   */
+  getBoxTopLeft(): { x: number; y: number } | null {
+    return this.lastBoxTopLeft;
+  }
+
   /** 清空选中态（T1.9 删除设备后调用，或外部重置）。 */
   clearSelection(): void {
     this.selected = null;
+    this.lastBoxTopLeft = null;
     this.graphics.visible = false;
     this.graphics.clear();
   }
@@ -197,6 +209,18 @@ export class SelectionSystem {
       this.graphics.visible = false;
       this.graphics.clear();
       return;
+    }
+
+    // 防御: 任一顶点非有限值（NaN/Infinity）时跳过绘制并隐藏，
+    // 避免脏坐标渲染出异常位置/形状的图形。
+    for (const p of pts) {
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) {
+        console.warn('[SelectionSystem] 选中框坐标非有限值，已隐藏:', pts);
+        this.lastBoxTopLeft = null;
+        this.graphics.visible = false;
+        this.graphics.clear();
+        return;
+      }
     }
 
     // 像素对齐（取整）→ 线条更锐利，避免落在半像素上发糊
@@ -223,5 +247,6 @@ export class SelectionSystem {
     // 白色主线 (验收标准: 白色选中框，矩形描边)
     g.poly(snapped).stroke({ width: SELECTION_LINE_WIDTH, color: SELECTION_LINE_COLOR, alpha: 1 });
     g.visible = true;
+    this.lastBoxTopLeft = { x: snapped[0].x, y: snapped[0].y };
   }
 }

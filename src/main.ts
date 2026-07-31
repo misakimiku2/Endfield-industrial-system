@@ -208,13 +208,15 @@ async function main() {
     placement.update(ticker.deltaMS); // T1.7: 放置预览跟随鼠标
     selection.update(); // T1.8: 选中框跟随相机（每帧重绘）
     game.update(); // T1.6: RenderSystem（实体↔Sprite 同步 + 视口剔除）
+    // 选中框屏幕坐标（调试用）: 相机移动时该坐标应随之变化；若钉住不动即异常
+    const boxTL = selection.getSelected() !== null ? selection.getBoxTopLeft() : null;
     hud.text =
       `FPS: ${Math.round(ticker.FPS)}` +
       `  |  cam(${camera.x.toFixed(0)}, ${camera.y.toFixed(0)})` +
       `  zoom=${camera.zoom.toFixed(2)}${camera.isZooming ? '↗' : ''}` +
       `  rot=${camera.viewRotation}°` +
       `  |  实体=${game.world.entityCount()}` +
-      (selection.getSelected() !== null ? `  |  选中=设备` : '') +
+      (boxTL ? `  |  选中=设备@(${boxTL.x},${boxTL.y})` : '') +
       (placement.isPlacing()
         ? `  |  放置: ${placement.getCurrentDefinitionId()} (R=旋转, 左键=放, 右键/ESC=取消)`
         : '');
