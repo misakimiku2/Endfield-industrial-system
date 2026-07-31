@@ -17,7 +17,7 @@
 //   每帧用 camera.worldToScreen 求设备 footprint 四角 → 白色矩形描边。
 //   屏幕空间画法保证线宽恒定屏幕像素（不随 zoom 变粗/变细），
 //   并天然跟随相机平移/缩放/旋转过渡（worldToScreen 用 displayRotation）。
-//   白色主线 + 深色外描边，保证在浅灰地面 (#E6E4E4) 上清晰可见。
+//   纯白色 4px 主线（用户要求: 粗一些、不要黑色描边）。
 
 import { Graphics } from 'pixi.js';
 import type { World, EntityHandle } from '../ECS';
@@ -31,14 +31,9 @@ import { getBuildingDefinition } from '../data/buildings';
 /** 短按阈值 (ms)。pointerup 时按下时长 < 此值 → 选中；≥ 此值 = 长按（Phase 2 移动态用）。 */
 export const SELECTION_SHORT_PRESS_MS = 300;
 
-/** 选中框主线宽（屏幕像素）。 */
-const SELECTION_LINE_WIDTH = 2;
-/** 选中框深色外描边宽（屏幕像素，自适应缩放）。 */
-const SELECTION_OUTLINE_MAX_WIDTH = 4;
-/** 外描边颜色与透明度。 */
-const SELECTION_OUTLINE_COLOR = 0x000000;
-const SELECTION_OUTLINE_ALPHA = 0.45;
-/** 选中框主线颜色（白色，T1.8 验收标准）。 */
+/** 选中框主线宽（屏幕像素，用户要求加粗）。 */
+const SELECTION_LINE_WIDTH = 4;
+/** 选中框主线颜色（纯白，T1.8 验收标准）。 */
 const SELECTION_LINE_COLOR = 0xffffff;
 
 /**
@@ -242,25 +237,9 @@ export class SelectionSystem {
     // 像素对齐（取整）→ 线条更锐利，避免落在半像素上发糊
     const snapped = pts.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) }));
 
-    // 外描边宽度自适应: 选中框很小时（缩到最小 zoom）外描边不能反客为主
-    const minDim = Math.min(
-      Math.abs(snapped[1].x - snapped[0].x),
-      Math.abs(snapped[2].y - snapped[1].y),
-    );
-    const outlineWidth = Math.min(
-      SELECTION_OUTLINE_MAX_WIDTH,
-      Math.max(1.5, minDim * 0.18),
-    );
-
     const g = this.graphics;
     g.clear();
-    // 深色外描边: 浅灰地面 (#E6E4E4) 上保证白色主线有对比度
-    g.poly(snapped).stroke({
-      width: outlineWidth,
-      color: SELECTION_OUTLINE_COLOR,
-      alpha: SELECTION_OUTLINE_ALPHA,
-    });
-    // 白色主线 (验收标准: 白色选中框，矩形描边)
+    // 纯白主线 (验收标准: 白色选中框，矩形描边；用户要求无黑边、线加粗)
     g.poly(snapped).stroke({ width: SELECTION_LINE_WIDTH, color: SELECTION_LINE_COLOR, alpha: 1 });
     g.visible = true;
     this.lastBoxTopLeft = { x: snapped[0].x, y: snapped[0].y };
