@@ -19,6 +19,8 @@
 //   放大到 zoom=4 时线同步变粗，相对设备的视觉比例恒定（用户反馈修正）。
 //   带最小线宽下限，避免缩到最小时线条消失。顶点像素取整保持锐利，
 //   并天然跟随相机平移/缩放/旋转过渡（worldToScreen 用 displayRotation）。
+//   高亮方案: **黄色半透明填充 + 纯白描边**——浅灰地面 (#E6E4E4) 上白线不易
+//   一眼锁定，填充层直接把设备区域染黄，选中目标一目了然（用户反馈修正）。
 //   纯白主线（用户要求: 粗一些、不要黑色描边）。
 
 import { Graphics } from 'pixi.js';
@@ -37,6 +39,10 @@ export const SELECTION_SHORT_PRESS_MS = 300;
 const SELECTION_LINE_WIDTH_AT_ZOOM_1 = 4;
 /** 选中框最小线宽（屏幕像素），防止缩到最小时线条消失/过糊。 */
 const SELECTION_LINE_WIDTH_MIN = 1.5;
+/** 选中框填充色（黄色，选中区域整体染色，浅色地面上高可见）。 */
+const SELECTION_FILL_COLOR = 0xffd500;
+/** 选中框填充透明度（越高越醒目，但会盖住设备细节）。 */
+const SELECTION_FILL_ALPHA = 0.25;
 /** 选中框主线颜色（纯白，T1.8 验收标准）。 */
 const SELECTION_LINE_COLOR = 0xffffff;
 
@@ -243,6 +249,8 @@ export class SelectionSystem {
 
     const g = this.graphics;
     g.clear();
+    // 填充层: 半透明黄色铺满 footprint，选中设备一眼可辨
+    g.poly(snapped).fill({ color: SELECTION_FILL_COLOR, alpha: SELECTION_FILL_ALPHA });
     // 纯白主线 (验收标准: 白色选中框，矩形描边；用户要求无黑边、线加粗)
     // 线宽 = 基准 × zoom（下限保护），使线相对设备在任何缩放级别下观感一致
     const lineWidth = Math.max(
