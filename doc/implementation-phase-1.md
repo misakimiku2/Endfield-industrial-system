@@ -18,7 +18,7 @@
 | T1.6 渲染系统 | ✅ 完成 | `RenderSystem`（query diff 实体↔Sprite 绑定、视口剔除、层映射）、`MapInstance`（WORLD_* 常量→地图实例属性，A11 WV-003 §4.4） |
 | T1.7 设备放置系统 | ✅ 完成 | 核心闭环完成（工具栏选设备→左键放网格交叉点→R 键旋转预览→右键/ESC 取消）。`BuildingDefinition`(DD-003)、`BuildingComponent`(DD-002)、`OccupancyMap`(A2 §7)、`InventoryUI`(PixiJS Container 挂 overlayLayer)、`PlacementSystem`(鼠标=设备中心 + R 键相对视图换算/A6 §4.0)、`PreviewTintFilter`(双纹理 mask 方案：主体纯色 + 箭头白)。预览染色经 4 轮迭代已稳定；用户反馈的箭头方向、R 键旋转跟随问题已修复。设备 SVG 已按 `layer-*` 功能层规范化，`pack-assets.ts` 同步输出 `/base`、`/ports`、`/arrows`、`/indicators`、`/equipment` 子帧；精炼炉已叠加 logo 与液体输入/输出端口视觉，为 Phase 2 动态表现奠基。 |
 | T1.8 基础交互系统 | ✅ 完成 | `SelectionSystem.ts`（pointerdown/pointerup 短按选中 + 黄色高亮填充 + 白色选中框，跟随相机缩放/平移/旋转） |
-| T1.9 设备删除 | ⬜ 待开发 | 删除已放置设备(Delete键)、占位释放 |
+| T1.9 设备删除 | ✅ 完成 | `DeleteSystem.ts`（Delete 键删除选中设备、释放 footprint 占用、RenderSystem 自动移除 Sprite、无选中无反应） |
 | T1.10 性能基准测试 | ⬜ 待开发 | 100 设备 FPS ≥ 55 |
 
 > **文档修订**: DD-008 已修订（设备 SVG / 物品 PNG 双格式，见 core-decisions.md）。  
@@ -575,6 +575,23 @@ T1.7 只做了"放置"。删除是放置的逆操作（`OccupancyMap.release` + 
 
 ### 预估工时
 0.5 次会话
+
+### ✅ 实现备注（已完成）
+- **产出文件**: `src/game/systems/DeleteSystem.ts`（新）、`scripts/verify-t1.9.ts`（新）、`src/main.ts`（Delete 键接线 + 验收钩子）
+- **删除流程**（放置的逆操作，A3 §5 逆）:
+  1. `OccupancyMap.releaseFootprint(gx, gy, def, direction)` — 释放 footprint 内全部 Cell（幂等）
+  2. `world.destroyEntity(handle)` — 销毁实体；RenderSystem 每帧 query diff，下一帧自动移除并销毁对应 Sprite（T1.6 路径，无手动清理）
+  3. `selection.clearSelection()` — 选中态清空、选中框立即隐藏；即使调用方遗漏，`SelectionSystem.update()` 也会在实体销毁后兜底清空（T1.8 已实现）
+- **交互约定落实**: Delete 键只在**非放置态**响应（放置模式下 Delete 无动作，与"右键=取消放置"两套语义不重叠）；无选中时 `deleteBuilding(null)` 返回 false 天然无反应
+- **幂等/防御**: null handle、已销毁实体、无 `BuildingComp` 实体（T1.6 测试 Sprite）、未知 `definitionId` → 返回 false 且无任何副作用
+- **验证**: `scripts/verify-t1.9.ts` → 40 条断言全通过（基础删除/幂等防御/多次删除零泄漏/RenderSystem Sprite 自动移除/T1.8 选中联动）；`tsc --noEmit` 零错误；`npm run build` 通过
+- **浏览器复测（agent-browser 真实输入）**: 放 2 个设备 → 真实点击选中 → 真实 Delete 键 → 设备消失、占用 18→9、选中框隐藏；原格子可立即重新放置；无选中按 Delete 无反应。截图见 `gui-test-screenshots/t19_before_delete.png` / `t19_after_delete.png`
+- **验收钩子**: `__game.placeAt("refining_unit",5,5)` 放设备 → `selectFirstBuilding()` 选中 → `deleteSelectedBuilding()` 删除 → `getOccupiedCells()` 查占用；`deleteSystem` 已暴露到 `__game`
+
+### ⚠️ 剩余遗留项
+- **Phase 1 无建造成本**：删除零代价（放错朝向 → 删除重建），符合 T1.9 背景设计
+- **删除时无确认提示**：误删需重新放置（Phase 1 无成本，可接受）；若后续引入成本/缓冲物品（Phase 2），删除前需确认或返还逻辑
+- **删除不撤销相机/网格状态**：只销毁实体与占用，不影响其他系统（验收已覆盖）
 
 ---
 

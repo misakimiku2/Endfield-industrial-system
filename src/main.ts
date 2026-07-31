@@ -1,5 +1,5 @@
-// 入口文件 — T1.2 相机 + T1.3 资源 + T1.4 世界网格 + T1.5 视图操作 + T1.6 渲染 + T1.7 设备放置 + T1.8 基础交互
-// 依据: implementation-phase-1.md T1.2 / T1.3 / T1.4 / T1.5 / T1.6 / T1.7 / T1.8
+// 入口文件 — T1.2 相机 + T1.3 资源 + T1.4 世界网格 + T1.5 视图操作 + T1.6 渲染 + T1.7 设备放置 + T1.8 基础交互 + T1.9 设备删除
+// 依据: implementation-phase-1.md T1.2 / T1.3 / T1.4 / T1.5 / T1.6 / T1.7 / T1.8 / T1.9
 //   - 中键拖拽平移 / WASD 平移(屏幕相对) / 滚轮以鼠标为中心缩放
 //   - 边缘滚动 (T1.5): 鼠标到窗口边缘自动平移，8 方向，与 WASD 叠加
 //   - Ctrl+R 视图旋转 (T1.5): 顺时针 90°，4 态循环，以屏幕中心为枢轴
@@ -9,6 +9,7 @@
 //   - 渲染系统 (T1.6): ECS 实体(Position+SpriteComp) ↔ PixiJS Sprite 绑定 + 视口剔除
 //   - 设备放置 (T1.7): 工具栏选设备 → 左键放网格交叉点 → R 键旋转预览(相对视图) → 右键/ESC 取消
 //   - 基础交互 (T1.8): 左键点设备=选中(白色选中框) → 点空白=取消；选中框跟随相机
+//   - 设备删除 (T1.9): 选中设备 + Delete 键 → 销毁实体 + 释放 footprint 占用；无选中按 Delete 无反应
 //   - 世界边界 (A11 WV-003 §4.4): 尺寸来自 MapInstance（不再读全局常量）
 
 import { Application, Text } from 'pixi.js';
@@ -21,6 +22,7 @@ import { InventoryUI } from './game/ui/InventoryUI';
 import { getBuildingDefinition, type BuildingDefinition } from './game/data/buildings';
 import type { Direction } from './game/components/BuildingComp';
 import { SelectionSystem } from './game/systems/SelectionSystem';
+import { DeleteSystem } from './game/systems/DeleteSystem';
 import type { Position } from './game/components/Position';
 import type { SpriteComp } from './game/components/SpriteComp';
 import { CELL_SIZE } from './game/render/constants';
@@ -90,7 +92,7 @@ async function main() {
   app.stage.addChild(hud);
 
   const help = new Text({
-    text: '中键拖拽: 平移  |  WASD/方向键: 平移(屏幕相对)  |  鼠标靠边: 边缘滚动  |  滚轮: 以鼠标为中心缩放  |  Ctrl+R: 视图旋转  |  左键点设备=选中(点空白取消)  |  T1.7: 工具栏选设备→左键放置→R旋转→右键/ESC取消',
+    text: '中键拖拽: 平移  |  WASD/方向键: 平移(屏幕相对)  |  鼠标靠边: 边缘滚动  |  滚轮: 以鼠标为中心缩放  |  Ctrl+R: 视图旋转  |  左键点设备=选中(点空白取消)  |  选中+Delete=删除  |  T1.7: 工具栏选设备→左键放置→R旋转→右键/ESC取消',
     style: { fontFamily: 'system-ui, sans-serif', fontSize: 13, fill: 0x444444 },
   });
   help.x = 10;
@@ -103,6 +105,9 @@ async function main() {
 
   // ── T1.8 基础交互: 点击选中 + 屏幕空间选中框 ──
   const selection = new SelectionSystem(game.world, camera, scene.layers);
+
+  // ── T1.9 设备删除: 选中 + Delete 键 → 销毁实体 + 释放占用 ──
+  const deleteSystem = new DeleteSystem(game.world, occupancy);
 
   // 工具栏: 挂 overlayLayer(屏幕空间层 6)，钉死屏幕底部，不受 Ctrl+R/相机影响。
   // onSelect 回调 → 进入放置模式 + 高亮选中按钮。
@@ -189,6 +194,20 @@ async function main() {
     }
   };
   window.addEventListener('keydown', onKeyPlacing);
+
+  // 键盘: Delete 键 = 删除选中设备（T1.9）。只在**非放置态**响应——
+  // 放置模式下 Delete 无动作，与"右键=取消放置"两套语义不重叠。
+  // 无选中时 deleteBuilding(null) 返回 false，天然无反应。
+  const onKeyDelete = (e: KeyboardEvent): void => {
+    if (e.code !== 'Delete') return;
+    if (placement.isPlacing()) return; // 放置态不响应删除
+    if (deleteSystem.deleteBuilding(selection.getSelected())) {
+      e.preventDefault();
+      selection.clearSelection(); // 选中态清空，选中框消失
+      game.update(); // 立即刷新一帧，让 Sprite 移除
+    }
+  };
+  window.addEventListener('keydown', onKeyDelete);
 
   // ── 主循环 (A5 §2: PixiJS Ticker) ──
   app.ticker.add((ticker) => {
@@ -322,6 +341,16 @@ async function main() {
     return selection.getSelected() !== null;
   };
 
+  // ── T1.9 验收钩子: 删除当前选中的设备（走与真实 Delete 键相同的逻辑路径）──
+  const deleteSelectedBuilding = (): boolean => {
+    const ok = deleteSystem.deleteBuilding(selection.getSelected());
+    if (ok) {
+      selection.clearSelection();
+      game.update();
+    }
+    return ok;
+  };
+
   // 开发期调试钩子: 暴露关键对象到 window，便于控制台验证与测试。
   (window as unknown as { __game: unknown }).__game = {
     app,
@@ -336,6 +365,7 @@ async function main() {
     occupancy,
     inventoryUI,
     selection,
+    deleteSystem,
     getTexture,
     spawnTestDevices,
     clearTestDevices,
@@ -343,14 +373,15 @@ async function main() {
     getOccupiedCells,
     clearAllPlaced,
     selectFirstBuilding,
+    deleteSelectedBuilding,
   };
 
-  console.log('[集成工业系统] T1.7 设备放置 + T1.8 基础交互就绪');
+  console.log('[集成工业系统] T1.7 设备放置 + T1.8 基础交互 + T1.9 设备删除就绪');
   console.log(`  世界: ${MAP.widthCells}×${MAP.heightCells} cells (MapInstance), CELL_SIZE=${CELL_SIZE}`);
   console.log('  操作: 中键拖拽/WASD(屏幕相对)/边缘滚动 平移, 滚轮以鼠标为中心缩放, Ctrl+R 视图旋转');
   console.log('  放置: 底部工具栏选设备 → 左键放网格 → R 旋转(相对视图) → 右键/ESC 取消');
-  console.log('  交互: 左键点设备=选中(白色选中框, 跟随相机), 点空白=取消');
-  console.log('  验收: __game.placeAt("refining_unit",5,5) 放设备 → selectFirstBuilding() 选中 → selection.getSelected() 查询');
+  console.log('  交互: 左键点设备=选中(黄色填充+白色选中框), 点空白=取消, 选中+Delete=删除');
+  console.log('  验收: __game.placeAt("refining_unit",5,5) 放设备 → selectFirstBuilding() 选中 → deleteSelectedBuilding() 删除 → getOccupiedCells() 查占用');
 }
 
 main().catch((err) => {
