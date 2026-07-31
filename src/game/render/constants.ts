@@ -27,10 +27,24 @@ export const CAMERA_ZOOM_MAX = 4.0;
 /** 默认缩放。 */
 export const CAMERA_ZOOM_DEFAULT = 1.0;
 
-/** 滚轮缩放灵敏度（每次滚动的缩放因子指数底数）。 */
-export const CAMERA_ZOOM_WHEEL_STEP = 1.15;
-/** 滚轮缩放前后允许的最大单次变化（防止一次滚动跳太多）。 */
-export const CAMERA_ZOOM_WHEEL_MIN_STEP = 0.02;
+/**
+ * 滚轮缩放（target lerp 模型，移植自旧 Flutter 项目 canvas_editor.dart）。
+ *
+ * 手感模型: 滚轮按 deltaY 线性比例累乘出 targetZoom（滚得快=缩放快，触控板丝滑），
+ * 显示 zoom 向 targetZoom 做帧率无关的指数趋近（display 持续追 target，连滚不冻结、
+ * 停手平滑追上无猛冲）。锚点固定保证鼠标点屏幕位置恒定。
+ *
+ * 相对旧项目的改进: 旧项目用每帧固定 lerpFactor=0.2（60fps 与 144fps 手感不同），
+ * 这里用 k = 1 − exp(−dt/TAU) 做帧率无关的指数趋近。
+ */
+/** 滚轮缩放: deltaY 归一化分母。newZoom = targetZoom × (1 − deltaY / 此值)。
+ *  200 = 每格鼠标滚轮(|deltaY|≈100)缩放约 ×1.5；触控板连续小增量则丝滑变化。
+ *  值越大单次缩放越温和。 */
+export const CAMERA_ZOOM_WHEEL_DELTA_DIVISOR = 200;
+/** 显示 zoom 向 targetZoom 趋近的时间常数(秒)。越小越跟手；0.08≈80ms 衰减到 1/e，较快跟手。 */
+export const CAMERA_ZOOM_SMOOTH_TAU = 0.08;
+/** display 与 target 差距小于此值时吸附结束动画（避免无限趋近）。 */
+export const CAMERA_ZOOM_SNAP_EPSILON = 0.0005;
 
 /** 键盘平移速度（世界像素/秒）。 */
 export const CAMERA_KEY_PAN_SPEED = 900;

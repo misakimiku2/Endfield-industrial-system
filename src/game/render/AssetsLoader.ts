@@ -24,6 +24,37 @@ const ATLAS_JSON_PATH: Record<AtlasGroup, string> = {
 
 const ALL_GROUPS: AtlasGroup[] = ['devices', 'items', 'ui'];
 
+/**
+ * 图集纹理源（TextureSource）的采样配置。
+ *
+ * 修复"纹理缩小锯齿"(T1.6 遗留): PixiJS v8 默认 autoGenerateMipmaps=false、mipLevelCount=1、
+ * mipmapFilter=undefined，纹理在 zoom<1 被缩小时会产生严重 aliasing（精炼炉 logo / 液体接口
+ * 等高频细节尤其明显，越小越严重）。antialias:true 只对几何多边形边缘 MSAA 生效，对纹理采样
+ * 缩小锯齿无效。这里给图集源开启 mipmap，GPU 上传时自动生成 mipmap 链，缩小时按 LOD 选合适
+ * 层级采样，aliasing 消除。
+ *
+ * 注入点说明（最可靠）: spritesheetLoader 接收 options.data.textureOptions，透传给
+ * loader.load({ data: textureOptions }) → ImageSource 构造时 `...asset.data` 展开这些
+ * TextureSource 选项。故纹理在**首次上传前**就已配好 mipmap，GPU 上传时一次生成整条 mipmap
+ * 链，无需事后 update() 强制重建（事后改 source 属性在已上传纹理上不可靠）。
+ *
+ * 取值:
+ *   - autoGenerateMipmaps + mipLevelCount=4: 覆盖到 1/8 尺寸（4096→256），
+ *     对应 zoom≈0.06，远低于 CAMERA_ZOOM_MIN=0.25；GPU 会按 floor(log2(maxDim))+1 上限截断。
+ *   - scaleMode 'linear': 放大缩小都线性（scaleMode setter 会把 mag/min/mipmapFilter 一并置 linear）。
+ *   - maxAnisotropy 4: 斜视角下进一步降噪。图集尺寸均为 POT(4096²/2048²)，WebGL2/WebGPU 无限制。
+ *
+ * ⚠️ 副作用: atlas 子帧共享大图，低层级 mipmap 会采样到相邻图块（渗色 bleeding）。
+ *    由 asset-manifest 的 ATLAS_PADDING=8 抑制（padding 每降一级等效减半，配合子帧自身缩小，
+ *    邻居渗透视觉可忽略）。若 items 图标极小 zoom 仍渗色，可改为按 group 分别配置。
+ */
+const ATLAS_TEXTURE_OPTIONS = {
+  autoGenerateMipmaps: true,
+  mipLevelCount: 4,
+  scaleMode: 'linear' as const,
+  maxAnisotropy: 4,
+};
+
 /** 加载状态，防止重复加载。 */
 let loaded = false;
 
@@ -31,12 +62,19 @@ let loaded = false;
  * 加载全部图集。启动时调用一次。
  * 用 Assets.load 加载每个 spritesheet JSON — PixiJS v8 会自动解析关联 PNG
  * 并生成 Spritesheet 对象缓存(以 JSON URL 为 key)。后续 getTexture 用同 URL 取出。
+ *
+ * textureOptions 经 spritesheetLoader 透传给底层 ImageSource，使图集源在上传前配好 mipmap
+ * （见 ATLAS_TEXTURE_OPTIONS 注释），消除 zoom<1 缩小时的纹理采样锯齿。
  */
 export async function loadAllAssets(): Promise<void> {
   if (loaded) return;
 
   // 并行加载三个 spritesheet JSON(各自自动加载关联 PNG)
-  await Promise.all(ALL_GROUPS.map((g) => Assets.load(ATLAS_JSON_PATH[g])));
+  await Promise.all(
+    ALL_GROUPS.map((g) =>
+      Assets.load({ src: ATLAS_JSON_PATH[g], data: { textureOptions: ATLAS_TEXTURE_OPTIONS } }),
+    ),
+  );
   loaded = true;
   console.log('[AssetsLoader] 图集加载完成:', ALL_GROUPS.join(', '));
 }

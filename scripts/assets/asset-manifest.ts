@@ -113,8 +113,15 @@ export const EXCLUDE_FILES: readonly string[] = [
  */
 export const MAX_ATLAS_SIZE = 4096;
 
-/** 图集中每个图块之间的 padding(像素)，避免纹理采样溢出(bleeding)。 */
-export const ATLAS_PADDING = 2;
+/**
+ * 图集中每个图块之间的 padding(像素)，避免纹理采样溢出(bleeding)。
+ *
+ * 取值 8（原 2）: 图集源已开启 mipmap（见 AssetsLoader.ATLAS_TEXTURE_OPTIONS），缩小时 GPU
+ * 采样低层级 mipmap，相邻图块会互相渗透（bleeding）。mipmap 每降一级边长减半，padding 8 在
+ * level 1 等效 4px、level 2 等效 2px，配合子帧自身在低层级已大幅缩小，邻居渗透视觉可忽略。
+ * 原 2px 在 mipmap level 1+ 即不足，会导致缩小时图块边缘渗入邻居颜色。
+ */
+export const ATLAS_PADDING = 8;
 
 /** 产物输出目录(相对项目根)。Vite 自动 serve public/ 下的静态文件。 */
 export const OUTPUT_DIR = 'public/spritesheets';

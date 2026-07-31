@@ -32,6 +32,9 @@ import {
   CAMERA_ZOOM_MAX,
   CAMERA_ZOOM_DEFAULT,
   CAMERA_ROTATE_ANIM_MS,
+  CAMERA_ZOOM_WHEEL_DELTA_DIVISOR,
+  CAMERA_ZOOM_SMOOTH_TAU,
+  CAMERA_ZOOM_SNAP_EPSILON,
 } from './constants';
 import type { Container } from 'pixi.js';
 
@@ -78,6 +81,22 @@ export class Camera {
   /** 动画已进行时间(ms)。>= _rotAnimDuration 表示动画结束。 */
   private _rotAnimElapsed = Infinity;
 
+  // ── 滚轮缩放（target lerp 模型，移植自旧 Flutter 项目）──
+  // 手感: 滚轮按 deltaY 线性比例累乘 targetZoom，显示 zoom 向 targetZoom 指数趋近。
+  // 详见 constants.ts 的 CAMERA_ZOOM_* 参数注释。
+  /**
+   * 滚轮累乘的目标 zoom。zoomByWheel 按 deltaY 更新它（连滚持续累乘），update() 每帧把
+   * 显示 zoom 向它趋近。display 与 target 差距小于 SNAP_EPSILON 时吸附结束。
+   */
+  private _targetZoom = CAMERA_ZOOM_DEFAULT;
+  /**
+   * 滚轮缩放期间的固定世界锚点（无漂移的关键）。zoomByWheel 触发时用 screenToWorld 求出
+   * 并固定，update() 每帧用当前 zoom 反解相机中心，保证该世界点屏幕位置恒定——等价于瞬时
+   * zoomAt 的锚点不变性，只是分摊到多帧。动画结束(_zoomAnchor=null)后停止趋近。
+   * 连滚时鼠标动了就刷新锚点。
+   */
+  private _zoomAnchor: { x: number; y: number } | null = null;
+
   /**
    * @param viewport 视口尺寸（屏幕像素）
    * @param bounds   世界边界（世界像素），来自 MapInstance (A11 WV-003 §4.4)
@@ -101,23 +120,45 @@ export class Camera {
   }
 
   /**
-   * 每帧驱动旋转过渡动画（在主循环里、updateTransform 之前调用）。
+   * 每帧驱动旋转过渡动画与缩放平滑过渡（在主循环里、updateTransform 之前调用）。
+   * 两个动画独立判断、可同时进行（旋转 + 缩放并行不互扰）。
    * @param deltaMS 上一帧到本帧的毫秒数
    */
   update(deltaMS: number): void {
-    if (this._rotAnimElapsed >= CAMERA_ROTATE_ANIM_MS) return; // 无动画进行中
-    this._rotAnimElapsed = Math.min(this._rotAnimElapsed + deltaMS, CAMERA_ROTATE_ANIM_MS);
-    const t = easeInOutCubic(this._rotAnimElapsed / CAMERA_ROTATE_ANIM_MS);
-    this._displayRotation = this._rotAnimFrom + (this._rotAnimTo - this._rotAnimFrom) * t;
-    if (this._rotAnimElapsed >= CAMERA_ROTATE_ANIM_MS) {
-      // 动画结束: 吸附到精确目标，避免 lerp 残差累积导致后续互逆失真
-      this._displayRotation = this._rotAnimTo;
+    // ── 旋转过渡 ──
+    if (this._rotAnimElapsed < CAMERA_ROTATE_ANIM_MS) {
+      this._rotAnimElapsed = Math.min(this._rotAnimElapsed + deltaMS, CAMERA_ROTATE_ANIM_MS);
+      const t = easeInOutCubic(this._rotAnimElapsed / CAMERA_ROTATE_ANIM_MS);
+      this._displayRotation = this._rotAnimFrom + (this._rotAnimTo - this._rotAnimFrom) * t;
+      if (this._rotAnimElapsed >= CAMERA_ROTATE_ANIM_MS) {
+        // 动画结束: 吸附到精确目标，避免 lerp 残差累积导致后续互逆失真
+        this._displayRotation = this._rotAnimTo;
+      }
+    }
+
+    // ── 滚轮缩放 target lerp（显示 zoom 向 targetZoom 指数趋近）──
+    if (this._zoomAnchor) {
+      // 帧率无关的指数趋近: k = 1 − exp(−dt/TAU)（等效"每帧 lerp k%"但与帧率无关）
+      const k = 1 - Math.exp(-(deltaMS / 1000) / CAMERA_ZOOM_SMOOTH_TAU);
+      let newZoom = this.zoom + (this._targetZoom - this.zoom) * k;
+      newZoom = clamp(newZoom, CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX);
+      this.applyZoomAtAnchor(newZoom); // 固定锚点反解相机中心（无漂移）
+      // 趋近到容差内 → 吸附到精确 target，结束动画
+      if (Math.abs(this.zoom - this._targetZoom) < CAMERA_ZOOM_SNAP_EPSILON) {
+        this.applyZoomAtAnchor(this._targetZoom);
+        this._zoomAnchor = null;
+      }
     }
   }
 
   /** 当前是否正在旋转过渡中（动画未结束）。外部可据此决定是否阻塞某些输入。 */
   get isRotating(): boolean {
     return this._rotAnimElapsed < CAMERA_ROTATE_ANIM_MS;
+  }
+
+  /** 当前是否正在缩放（滚轮趋近动画进行中）。与 isRotating 对称，供 HUD/调试用。 */
+  get isZooming(): boolean {
+    return this._zoomAnchor !== null;
   }
 
   /** 当前实际视图旋转弧度（连续，含过渡动画）。供 billboard 徽标反向旋转保持屏幕朝上。 */
@@ -224,8 +265,12 @@ export class Camera {
   }
 
   /**
-   * 以指定的屏幕坐标点为锚点缩放（滚轮缩放核心）。
+   * 以指定的屏幕坐标点为锚点**瞬时**缩放。
    * 保证锚点屏幕坐标在缩放前后不变——即"以鼠标为中心放大/缩小"。
+   *
+   * 语义是"直接设到某 zoom"，瞬时生效（无动画）。供 setZoom、verify 脚本、未来 UI 按钮
+   * （如"重置视图"）使用。**滚轮缩放不经过此方法**——滚轮用速度惯性模型（见 zoomByWheel），
+   * 因为滚轮是连续累加操作，瞬时跳变 + lerp 目标模型会有"滚时冻结/停手猛冲"的割裂感。
    *
    * @param screenAnchor 锚点的屏幕坐标（通常是鼠标位置）
    * @param newZoom      目标缩放（会先 clamp 到 [min,max]）
@@ -248,7 +293,53 @@ export class Camera {
     this.setPosition(newX, newY);
   }
 
-  /** 直接设置缩放（以视口中心为锚点）。 */
+  /**
+   * 滚轮缩放（target lerp 模型，移植自旧 Flutter 项目）。滚轮专用入口。
+   *
+   * 手感（对味的关键）:
+   *   - **deltaY 线性比例**: newTarget = targetZoom × (1 − deltaY / DIVISOR)。保留了滚轮的
+   *     "力度"信息——滚得快(|deltaY|大)=缩放快，触控板连续小增量则丝滑变化。地图类应用标准做法。
+   *   - **target 累乘 + display 指数趋近**: targetZoom 持续累乘，显示 zoom 由 update() 每帧向它
+   *     趋近（不重置、连滚不冻结），停手后平滑追上 target，无猛冲。
+   *
+   * 锚点（无漂移）: 触发时用 screenToWorld 求出鼠标指向的世界坐标并固定，update() 趋近期间
+   * 每帧用固定锚点反解相机中心（applyZoomAtAnchor），保证该世界点屏幕位置恒定。连滚时刷新锚点。
+   *
+   * @param screenAnchor 锚点的屏幕坐标（通常是鼠标位置）
+   * @param deltaY       WheelEvent.deltaY（>0 向下滚缩小，<0 向上滚放大）
+   */
+  zoomByWheel(screenAnchor: { x: number; y: number }, deltaY: number): void {
+    // 用目标值累乘（连滚时 target 持续推进，display 在 update 里追赶，不冻结）
+    const oldTarget = this._targetZoom;
+    const newTarget = clamp(
+      this._targetZoom * (1 - deltaY / CAMERA_ZOOM_WHEEL_DELTA_DIVISOR),
+      CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX,
+    );
+    if (Math.abs(newTarget - oldTarget) < 0.0001) return; // 无变化（如已撞边界）
+
+    // 刷新固定锚点（连滚时鼠标可能移动，以新鼠标位置为准；用当前显示 zoom 求世界坐标）
+    this._zoomAnchor = this.screenToWorld(screenAnchor.x, screenAnchor.y);
+    this._targetZoom = newTarget;
+  }
+
+  /**
+   * 用固定锚点（_zoomAnchor）反解相机中心，把 zoom 设为 newZoom。zoomByWheel/update 共用。
+   *
+   * 数学与瞬时 zoomAt 同式: camCenter_new = anchor − (anchor − camCenter_old) × zoomOld/zoomNew。
+   * 已数值验证整个滑行过程锚点屏幕漂移≈0（浮点误差量级）。无锚点时（防御）只改 zoom。
+   * clampPosition 保证世界边界约束生效（贴边时锚点无法精确保持，属预期）。
+   */
+  private applyZoomAtAnchor(newZoom: number): void {
+    if (this._zoomAnchor) {
+      const ratio = this.zoom / newZoom; // zoomOld / zoomNew
+      this.x = this._zoomAnchor.x - (this._zoomAnchor.x - this.x) * ratio;
+      this.y = this._zoomAnchor.y - (this._zoomAnchor.y - this.y) * ratio;
+    }
+    this.zoom = newZoom;
+    this.clampPosition();
+  }
+
+  /** 直接设置缩放（以视口中心为锚点，瞬时）。 */
   setZoom(zoom: number): void {
     const cx = this.viewport.width / 2;
     const cy = this.viewport.height / 2;

@@ -156,6 +156,21 @@ World.destroyEntity(e) → generations[e.index]++ → e 从此无效
 
 ---
 
+## DD-015: Atlas textures use mipmaps for minification anti-aliasing
+
+**决策**: 所有 spritesheet 图集（devices/items/ui）的纹理源在加载时开启 mipmap（`autoGenerateMipmaps`+`mipLevelCount`+`scaleMode:'linear'`+各向异性过滤），GPU 上传时自动生成 mipmap 链。配合 `ATLAS_PADDING=8` 抑制子帧在低层级 mipmap 的渗色（bleeding）。
+
+**理由**: PixiJS v8 默认 `autoGenerateMipmaps=false`、`mipLevelCount=1`，纹理在 zoom<1 被缩小时会产生严重 aliasing（精炼炉 logo / 液体接口等高频细节尤其明显，越小越严重）。`antialias:true` 只对几何多边形边缘 MSAA 生效，对纹理采样缩小锯齿无效。mipmap 让 GPU 在缩小时按 LOD 选合适层级采样，aliasing 消除。
+
+**互补关系（重要，避免维护时只改一侧）**:
+- **zoom>1（放大）锯齿** → 由 `DEVICE_RASTER_SCALE=4` 光栅化倍率解决（见 DD-008、implementation-phase-1 T1.3）。
+- **zoom<1（缩小）锯齿** → 由本决策的 mipmap 解决。
+- 两者互补，缺一不可。调高 `CAMERA_ZOOM_MAX` 需同步 `DEVICE_RASTER_SCALE`；关 mipmap 省显存会重新引入缩小锯齿。
+
+**代价**: mipmap 链使图集显存增加约 33%；`ATLAS_PADDING` 从 2 提升到 8 略增图集尺寸。对帧时间几乎无影响（GPU 自动生成、采样近乎免费）。
+
+---
+
 > **这些决策是"不可变"的吗？**  
 > 不是。但它们应该只在有充分理由、且已评估影响范围的情况下修改。  
 > 每次修改一条决策，需要在 commit message 中引用 DD 编号。

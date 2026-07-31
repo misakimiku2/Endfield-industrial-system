@@ -16,7 +16,6 @@
 
 import { Camera } from './Camera';
 import {
-  CAMERA_ZOOM_WHEEL_STEP,
   CAMERA_KEY_PAN_SPEED,
   CAMERA_EDGE_SCROLL_MARGIN,
   CAMERA_EDGE_SCROLL_SPEED,
@@ -152,13 +151,9 @@ export class CameraController {
 
   private onWheel = (e: WheelEvent): void => {
     e.preventDefault();
-    // 标准化 wheel delta： deltaY > 0 表示向下滚 → 缩小
-    // newZoom = zoom * (step ^ -sign)，向下滚缩小、向上滚放大
-    const dir = e.deltaY > 0 ? -1 : 1;
-    // 小幅度滚动（触控板）也至少推进 MIN_STEP，避免无感
-    const factor = Math.pow(CAMERA_ZOOM_WHEEL_STEP, dir);
-    const newZoom = this.camera.zoom * factor;
-    this.camera.zoomAt({ x: this.mouseX, y: this.mouseY }, newZoom);
+    // deltaY > 0（向下滚）→ 缩小，< 0（向上滚）→ 放大。直接传 deltaY 保留滚轮"力度"
+    // 信息（滚得快=缩放快，触控板丝滑），由 zoomByWheel 按 deltaY/DIVISOR 线性比例缩放。
+    this.camera.zoomByWheel({ x: this.mouseX, y: this.mouseY }, e.deltaY);
   };
 
   private onContextMenu = (e: MouseEvent): void => {

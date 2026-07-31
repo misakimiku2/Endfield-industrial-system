@@ -186,7 +186,7 @@ async function main() {
     hud.text =
       `FPS: ${Math.round(ticker.FPS)}` +
       `  |  cam(${camera.x.toFixed(0)}, ${camera.y.toFixed(0)})` +
-      `  zoom=${camera.zoom.toFixed(2)}` +
+      `  zoom=${camera.zoom.toFixed(2)}${camera.isZooming ? '↗' : ''}` +
       `  rot=${camera.viewRotation}°` +
       `  |  实体=${game.world.entityCount()}` +
       (placement.isPlacing()

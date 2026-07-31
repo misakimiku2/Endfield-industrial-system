@@ -12,7 +12,7 @@
 |------|------|----------|
 | T1.1 ECS 核心完善 | ✅ 完成 | `src/game/ECS.ts`（generation-based EntityHandle） |
 | T1.2 相机系统 | ✅ 完成 | `Camera.ts` / `CameraController.ts` / `SceneRenderer.ts` |
-| T1.3 SVG/PNG 资源管线 | ✅ 完成 | `scripts/pack-assets.ts` / `AssetsLoader.ts`（三图集）。**优化**：devices 图集 SVG 按 `DEVICE_RASTER_SCALE=4` 光栅化（匹配 `CAMERA_ZOOM_MAX=4.0`），zoom=4 时纹素:像素 1:1 无放大锯齿 |
+| T1.3 SVG/PNG 资源管线 | ✅ 完成 | `scripts/pack-assets.ts` / `AssetsLoader.ts`（三图集）。**优化①（放大锯齿）**：devices 图集 SVG 按 `DEVICE_RASTER_SCALE=4` 光栅化（匹配 `CAMERA_ZOOM_MAX=4.0`），zoom=4 时纹素:像素 1:1。**优化②（缩小锯齿）**：图集纹理源开 mipmap（`autoGenerateMipmaps`+`linear`+各向异性），消除 zoom<1 时的纹理采样锯齿；`ATLAS_PADDING` 2→8 抑制 mipmap 渗色 |
 | T1.4 世界网格渲染 | ✅ 完成 | `GridRenderer.ts`（分段 alpha + Canvas2D 暗角） |
 | T1.5 视图操作 | ✅ 完成 | 边缘滚动、Ctrl+R 视图旋转(屏幕相对参考系+平滑过渡)、`screenDirToWorld`/`panByScreen`、GridRenderer 旋转感知。**修正**：`rotateClockwise` 旋转目标重锚定到 `viewRotation` 离散精确值（`nextClockwiseTarget`），消除连旋漂移导致"转 4 次不回正"的 bug |
 | T1.6 渲染系统 | ✅ 完成 | `RenderSystem`（query diff 实体↔Sprite 绑定、视口剔除、层映射）、`MapInstance`（WORLD_* 常量→地图实例属性，A11 WV-003 §4.4） |
@@ -98,7 +98,7 @@ T1.4 世界网格 ────────────────────�
 - **产出文件**: `src/game/render/Camera.ts`、`CameraController.ts`、`SceneRenderer.ts`、`constants.ts`、`scripts/verify-t1.2-camera.ts`
 - **Camera**: 纯逻辑类，`worldToScreen`/`screenToWorld` 互逆、`panByWorld`、`zoomAt(anchor)`（以鼠标为锚点缩放）、边界 clamp（世界边缘贴视口边缘，世界小于视口时居中）
 - **变换同步**: `updateTransform()` 写入 `worldContainer.position/scale`（公式 `pos = viewportCenter − camCenter × zoom`）
-- **输入**: 中键拖拽（反向跟随）、WASD/方向键（帧率无关 900px/s）、滚轮（1.15^dir 以鼠标为中心）
+- **输入**: 中键拖拽（反向跟随）、WASD/方向键（帧率无关 900px/s）、滚轮（**target lerp 平滑缩放**：滚轮按 `deltaY` 线性比例累乘 `targetZoom`（`newTarget = targetZoom × (1 − deltaY/200)`，保留滚轮"力度"，触控板丝滑），显示 zoom 由 `update()` 每帧向 targetZoom 做帧率无关指数趋近（`k = 1 − exp(−dt/TAU)`，连滚不冻结、停手平滑追上无猛冲），全程以鼠标位置为固定世界锚点保证无漂移。参数见 `constants.ts` 的 `CAMERA_ZOOM_WHEEL_DELTA_DIVISOR`/`CAMERA_ZOOM_SMOOTH_TAU`/`CAMERA_ZOOM_SNAP_EPSILON`。注：`zoomAt`/`setZoom` 仍为瞬时语义，供 verify 脚本与未来 UI 按钮用，滚轮走独立的 `zoomByWheel(deltaY)` 路径）
 - **场景层**: A2 §4 七层 Container（backgroundLayer + worldContainer[6层] + overlayLayer），sortableChildren 开启
 - **验证**: 相机纯逻辑 13/13 单测通过；浏览器实测平移/缩放/拖拽/边界全正确，FPS 59
 - **调试钩子**: `window.__game = { app, camera, gridRenderer, getTexture }`（开发期保留）
@@ -125,16 +125,17 @@ T1.4 世界网格 ────────────────────�
 - **产出文件**: `scripts/assets/asset-manifest.ts`、`scripts/assets/packer.ts`、`scripts/pack-assets.ts`、`src/game/render/AssetsLoader.ts`
 - **文档修订**: DD-008 修订为"设备/UI 用 SVG、物品用 PNG"（见 core-decisions.md）
 - **管线**: 自写构建脚本 + `sharp` 光栅化 SVG → shelf-pack 打包 → `{devices,items,ui}.{png,json}`
-- **图集产出**: devices(9块,4096×1024,SVG 按 4× 光栅化) / items(93块,4096×2048) / ui(28块,2048×256)
+- **图集产出**: devices(22块,4096×4096,SVG 按 4× 光栅化) / items(93块,4096×2048) / ui(28块,2048×256)。块数含 T1.7 的功能层子帧与箭头 mask 帧；尺寸为开 mipmap + padding=8 后的实际值。
 - **图集上限 4096**: WebGL2 安全上限（原 2048 装不下 93 个 254px 物品图标）
-- **SVG 光栅化倍率（`rasterScale`）**: 地图设备随 zoom 放大显示，若按 1:1 原始尺寸栅格化（1×1 设备仅 64px 纹理），zoom=4 时被放大 4 倍会模糊锯齿。devices 图集 SVG 按 `DEVICE_RASTER_SCALE=4` 栅格化（`asset-manifest.ts`），匹配 `CAMERA_ZOOM_MAX=4.0`，保证最大缩放下纹素:屏幕像素 ≈ 1:1。1×1 设备纹理 64→256px、3×3 设备 192→768px。items（PNG 源，无矢量）/ ui（屏幕空间固定尺寸）不提倍。⚠️ 若 `CAMERA_ZOOM_MAX` 调高，`DEVICE_RASTER_SCALE` 需同步。T1.6 RenderSystem 用 `sprite.width=世界尺寸` 覆盖纹理尺寸，对分辨率变化透明，无需改。
+- **SVG 光栅化倍率（`rasterScale`，解决放大锯齿）**: 地图设备随 zoom 放大显示，若按 1:1 原始尺寸栅格化（1×1 设备仅 64px 纹理），zoom=4 时被放大 4 倍会模糊锯齿。devices 图集 SVG 按 `DEVICE_RASTER_SCALE=4` 栅格化（`asset-manifest.ts`），匹配 `CAMERA_ZOOM_MAX=4.0`，保证最大缩放下纹素:屏幕像素 ≈ 1:1。1×1 设备纹理 64→256px、3×3 设备 192→768px。items（PNG 源，无矢量）/ ui（屏幕空间固定尺寸）不提倍。⚠️ 若 `CAMERA_ZOOM_MAX` 调高，`DEVICE_RASTER_SCALE` 需同步。T1.6 RenderSystem 用 `sprite.width=世界尺寸` 覆盖纹理尺寸，对分辨率变化透明，无需改。**注意**：光栅化倍率只解决 zoom>1（放大）的锯齿；zoom<1（缩小）的锯齿由 mipmap 解决（见下文"运行时纹理采样配置"），两者互补。
 - **设备 SVG 功能层拆分（T1.7 收尾扩展）**: 设备 SVG 必须按 `layer-*` 功能层组织（详见 `doc/asset-drawing-standard.md`）。`pack-assets.ts` 会对每张设备 SVG 输出：
   - 完整设备帧 `<device_key>`（所有层可见，兼容现有单 Sprite 渲染）
   - 功能层子帧 `<device_key>/base`、`/ports`、`/arrows`、`/indicators`、`/equipment`
   - T1.7 预览用箭头 mask `<device_key>_arrow_mask`（兼容用）
   所有层子帧与完整帧 `sourceSize` 一致，运行时可直接叠加。`3x3_unit.svg` 已按标准重构为**通用 3×3 底座**，精炼炉专属 `layer-equipment` 独立到 `refining_unit.svg`。
 - **texture key 映射**: 文件名→小写→非字母数字替 `_`；手工覆盖表（`3x3_unit→3x3_unit`、`refining_unit.svg→refining_unit` 等）
-- **运行时**: `AssetsLoader.loadAll()` 加载三图集，`getTexture(group, key)` 统一访问
+- **运行时纹理采样配置（mipmap，解决缩小锯齿）**: `AssetsLoader.loadAll()` 加载三图集时经 `data.textureOptions` 注入 mipmap 配置（`autoGenerateMipmaps:true`/`mipLevelCount:4`/`scaleMode:'linear'`/`maxAnisotropy:4`），透传给底层 ImageSource 在纹理**首次上传前**配好，GPU 上传时自动生成 mipmap 链。背景：PixiJS v8 默认 `autoGenerateMipmaps=false`、`mipLevelCount=1`，纹理在 zoom<1 缩小时会产生严重 aliasing（精炼炉 logo / 液体接口等高频细节尤其明显，越小越严重）；`antialias:true` 只对几何多边形边缘 MSAA 生效，对纹理采样缩小锯齿无效。⚠️ 副作用：atlas 子帧共享大图，低层级 mipmap 会渗色（bleeding），由 `ATLAS_PADDING=8` 抑制（见下条）。`getTexture(group, key)` 统一访问，纹理源配置自动继承。
+- **图集 padding（`ATLAS_PADDING=8`，抑制 mipmap 渗色）**: 开 mipmap 后相邻图块在低层级 mipmap 会互相渗透（bleeding），padding 需随 mipmap level 递增。原 `2px` 在 level 1+ 即不足（缩小时图块边缘渗入邻居颜色），提升到 `8px`（level 1 等效 4px、level 2 等效 2px，配合子帧自身缩小，邻居渗透视觉可忽略）。改 padding 后需重跑 `npm run pack-assets`。
 - **npm script**: `npm run pack-assets`（改 SVG 后重跑）；产物在 `public/spritesheets/`（.gitignore 排除）
 - **验证**: 三个 JSON 全 200 无 404；texture key 全部正确；`tsc` 零错误
 - **设备纹理缺口**: building-spec 定义的 `shredding_unit`/`fitting_unit`/`moulding_unit` 等缺 SVG，留 T1.7 处理
