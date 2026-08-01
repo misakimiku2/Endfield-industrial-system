@@ -10,7 +10,7 @@
 
 | 图标 | 含义 |
 |------|------|
-| 🔵 | Phase 1：核心框架（ECS + 渲染 + 设备放置） |
+| 🔵 | Phase 1：核心框架（✅ 已完成：ECS + 渲染 + 设备放置/选择/删除 + 性能基准） |
 | 🟢 | Phase 2：工厂生产系统（传送带 + 机器生产） |
 | 🟠 | Phase 3：世界扩展 + 塔防 / 电力（拆分为 3a/3b/3c，见下文） |
 | 🟣 | Phase 4：性能优化（分帧） |
@@ -20,9 +20,12 @@
 
 ---
 
-## 🔵 Phase 1 开发前要读的文档
+## 🔵 Phase 1（✅ 已完成，供回顾）
 
-Phase 1 目标：建立 ECS + 渲染基础，实现设备放置、相机控制和速度调节。详见 [implementation-phase-1.md](implementation-phase-1.md)。
+Phase 1（T1.1~T1.10）已全部完成：ECS + 渲染 + 设备放置/选择/删除 + 相机控制
+（平移/缩放/边缘滚动/视图旋转）+ 性能基准（100 设备 FPS≥55 与内存监控）。
+此章节供回顾实现细节使用，新开发直接从 🟢 Phase 2 开始。详见
+[implementation-phase-1.md](implementation-phase-1.md)。
 
 ### 必读（全部内容）
 
@@ -63,6 +66,7 @@ Phase 1 的操作交互约定分散在各任务章节，此处集中速查。开
 | 设备放置 | T1.7 | 工具栏选 → 左键确定 | 放置前 R 键旋转预览，**相对视图** |
 | 设备选中 | T1.8 | 短按左键（pointerup 提交） | 为 Phase 2 长按移动预留结构 |
 | 设备删除 | T1.9 | 选中 + Delete 键 | **不用右键** |
+| 性能基准 | T1.10 | 控制台 `__game.spawnBenchmarkDevices(100)` / `fillBenchmarkDevices()` / `runFpsBenchmark()` | 重置式生成（先清空再生成）；HUD 显示 FPS/JS堆/纹理/Sprite |
 | 取消放置 | T1.7 | 放置模式右键 / ESC | 右键专留此语义 |
 
 **后续阶段相关**：
@@ -165,11 +169,12 @@ Phase 2 目标：传送带能跑物品、机器能根据配方生产、物品从
 
 ## 下个会话怎么用这个索引
 
-### 如果开始 Phase 1
+### 如果回顾 Phase 1（已完成）
 
-把下面这段话发给 AI：
+Phase 1 已全部完成，无需再走"开始"流程。如需回顾实现或排查 Phase 1 功能，可发：
 
-> 我要开始 Phase 1 开发。请先读 `doc/phase-docs-index.md` 的"🔵 Phase 1 开发前要读的文档"章节，然后加载里面列出的必读文档（A7/A1/A6/A5/A2 全部 + A3 的指定章节）。读完后我们从 T1.1 ECS 核心完善开始。
+> 我要回顾 Phase 1 的实现。请读 `doc/phase-docs-index.md` 的"🔵 Phase 1（✅ 已完成，供回顾）"
+> 章节与 `doc/implementation-phase-1.md` 各任务的「实现备注」。
 
 ### 如果开始 Phase 2
 
