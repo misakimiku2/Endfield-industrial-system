@@ -19,7 +19,7 @@
 | T1.7 设备放置系统 | ✅ 完成 | 核心闭环完成（工具栏选设备→左键放网格交叉点→R 键旋转预览→右键/ESC 取消）。`BuildingDefinition`(DD-003)、`BuildingComponent`(DD-002)、`OccupancyMap`(A2 §7)、`InventoryUI`(PixiJS Container 挂 overlayLayer)、`PlacementSystem`(鼠标=设备中心 + R 键相对视图换算/A6 §4.0)、`PreviewTintFilter`(双纹理 mask 方案：主体纯色 + 箭头白)。预览染色经 4 轮迭代已稳定；用户反馈的箭头方向、R 键旋转跟随问题已修复。设备 SVG 已按 `layer-*` 功能层规范化，`pack-assets.ts` 同步输出 `/base`、`/ports`、`/arrows`、`/indicators`、`/equipment` 子帧；精炼炉已叠加 logo 与液体输入/输出端口视觉，为 Phase 2 动态表现奠基。 |
 | T1.8 基础交互系统 | ✅ 完成 | `SelectionSystem.ts`（pointerdown/pointerup 短按选中 + 黄色高亮填充 + 白色选中框，跟随相机缩放/平移/旋转） |
 | T1.9 设备删除 | ✅ 完成 | `DeleteSystem.ts`（Delete 键删除选中设备、释放 footprint 占用、RenderSystem 自动移除 Sprite、无选中无反应） |
-| T1.10 性能基准测试 | ⬜ 待开发 | 100 设备 FPS ≥ 55 |
+| T1.10 性能基准测试 | ✅ 完成 | 100 设备 FPS ≥ 55 + 内存监控（JS 堆 / GPU 纹理内存） |
 
 > **文档修订**: DD-008 已修订（设备 SVG / 物品 PNG 双格式，见 core-decisions.md）。  
 > **PixiJS 踩坑**: 见文末 [附录 A：PixiJS v8 踩坑记录](#附录-a-pixijs-v8-踩坑记录)，T1.5/T1.6 开发前务必阅读。
@@ -598,7 +598,8 @@ T1.7 只做了"放置"。删除是放置的逆操作（`OccupancyMap.release` + 
 ## T1.10 — 性能基准测试
 
 ### 目标
-测试 100 个静态设备同时显示时，游戏是否流畅。
+测试 100 个静态设备同时显示时，游戏是否流畅；除帧率外，同时监控内存占用
+（JS 堆内存 + GPU 纹理内存），确认设备增删不造成内存泄漏。
 
 ### 验收标准（你在浏览器看到的效果）
 - **AI 执行"一键生成 100 个设备"的测试命令**
@@ -607,6 +608,55 @@ T1.7 只做了"放置"。删除是放置的逆操作（`OccupancyMap.release` + 
 - **放大查看 5 个设备** → FPS 仍是 55~60
 - **缩小到 100 个都可见** → FPS 不低于 55
 - 画面不卡顿、不闪烁
+- **内存验收**（T1.10 扩展，用户要求）:
+  - 左上角 HUD 显示 `JS堆`（Chromium `performance.memory`）与 `纹理`（GPU 纹理内存估算）
+  - 100 个设备共享同一批图集纹理 → 生成/删除设备时**纹理内存不增长**
+  - 反复"生成 100 → 清空"后 Sprite 全部销毁、占用表归零，JS 堆不持续增长
+
+### ✅ 实现备注（已完成）
+- **产出文件**: `src/game/perf/PerfMonitor.ts`（新）、`scripts/verify-t1.10.ts`（新）、
+  `src/main.ts`（HUD 内存行 + 一键 100 设备 + benchmark 钩子）、`src/game/render/Camera.ts`
+  （动态最小缩放）、`src/game/systems/RenderSystem.ts`（spriteCount/visibleSpriteCount 统计）
+- **一键 100 设备**: `__game.spawnBenchmarkDevices(100)` 走**真实放置路径**
+  （`placeAt` → BuildingComp + OccupancyMap + RenderSystem），100 个 refining_unit 随机落点、
+  占用检查防重叠（100×9 = 900 Cell 零冲突）
+- **FPS 采样**: `__game.runFpsBenchmark(durationMs)` 用 `ticker.add` 每帧采样一次
+  （⚠️ 早期版本误用 `addOnce` 链式注册导致同帧递归 4600 万次，已修复并加回归断言），
+  汇总 min/avg/max/p95 FPS、帧耗时、`met55` 判定
+- **内存监控**:
+  - JS 堆: `performance.memory.usedJSHeapSize`（Chromium 私有 API，不可用时显示 n/a）
+  - GPU 纹理: 遍历 `renderer.texture.managedTextures` 按 `宽×高×4B×mip链系数` 估算，
+    100 设备共享图集 → 实测增删设备**纹理内存零增长**（88.3MB 恒定）
+  - 压测: `__game.memoryStressCheck(3)` 反复"生成 100 → 清空"，验证 Sprite 全销毁、
+    占用零泄漏、JS 堆无单调增长（实测 3 轮堆在 ±20MB GC 噪声内波动）
+- **动态最小缩放（Camera 改动）**: 原固定 `CAMERA_ZOOM_MIN=0.25` 在 1280×720 视口下
+  只能看到 2880px 高的世界（64×64 地图 4096px²），无法满足"缩小到 100 个都可见"；
+  Camera 新增 `minZoom()` = `min(0.25, 视口短边/世界短边)`（方形世界 90° 旋转整倍态下
+  四个朝向均整图可见），滚轮/`setZoom` 共用动态下限
+- **HUD 节流（性能优化）**: FPS/内存 HUD 从每帧更新改为 250ms 节流更新，
+  避免 PixiJS `Text.text` 每帧重渲染文本纹理挤占帧预算
+- **验证**: `scripts/verify-t1.10.ts` → 49 条断言全通过（100 设备真实放置/纹理共享/
+  视口剔除/清空释放/PerfMonitor 报告）；`tsc --noEmit` 零错误；`npm run build` 通过；
+  T1.9 回归 40 条断言全通过
+- **浏览器复测（agent-browser，1264×569 窗口，144Hz 显示器）**:
+  - 整图 100 设备可见: FPS avg 144 / p95 147.1 / min 140.8，帧耗时 avg 6.9ms，
+    JS 堆 43.3MB → 26.4MB（GC 噪声，无增长），纹理内存 88.3MB 恒定
+  - 放大到 3 台设备可见: FPS avg 144 / p95 147.1，JS 堆 49MB → 41.9MB
+  - 内存压测 3 轮: 堆 1290~1320MB 波动（含 dev server/HMR 历史垃圾，GC 后回落至 ~40MB），
+    纹理内存恒定、Sprite/占用每次归零
+  - 截图: `gui-test-screenshots/t110_100_devices_full.png`（整图 100 设备）、
+    `gui-test-screenshots/t110_zoom_in.png`（放大局部）
+- **验收钩子**: `spawnBenchmarkDevices(n)` → `runFpsBenchmark(ms)` →
+  `memoryStressCheck(cycles)` → `getMemoryStats()`；HUD 左上角实时显示 FPS/JS堆/纹理/Sprite
+
+### ⚠️ 剩余遗留项
+- **FPS 数字依赖显示器刷新率**: 144Hz 显示器实测 ~144 FPS，60Hz 显示器会封顶 60；
+  验收线"FPS ≥ 55"在两档刷新率下均满足（`met55` 以 avg 与 p95 双判据）
+- **JS 堆绝对值受 dev server / HMR 影响**: 开发模式多次热更新会积累旧模块垃圾，
+  绝对堆值偏高（实测 GC 后回落至 ~40MB）；正式构建（`npm run build` + preview）
+  才是干净的基线。纹理内存（GPU）不受影响
+- **纹理内存为估算值**: 按 RGBA8 + mip 链系数估算，非 GPU 驱动上报的精确值；
+  Phase 4 性能优化时可接 DevTools/GPU 探针获取精确数据
 
 ---
 

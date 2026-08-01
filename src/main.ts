@@ -1,5 +1,5 @@
-// 入口文件 — T1.2 相机 + T1.3 资源 + T1.4 世界网格 + T1.5 视图操作 + T1.6 渲染 + T1.7 设备放置 + T1.8 基础交互 + T1.9 设备删除
-// 依据: implementation-phase-1.md T1.2 / T1.3 / T1.4 / T1.5 / T1.6 / T1.7 / T1.8 / T1.9
+// 入口文件 — T1.2 相机 + T1.3 资源 + T1.4 世界网格 + T1.5 视图操作 + T1.6 渲染 + T1.7 设备放置 + T1.8 基础交互 + T1.9 设备删除 + T1.10 性能基准
+// 依据: implementation-phase-1.md T1.2 / T1.3 / T1.4 / T1.5 / T1.6 / T1.7 / T1.8 / T1.9 / T1.10
 //   - 中键拖拽平移 / WASD 平移(屏幕相对) / 滚轮以鼠标为中心缩放
 //   - 边缘滚动 (T1.5): 鼠标到窗口边缘自动平移，8 方向，与 WASD 叠加
 //   - Ctrl+R 视图旋转 (T1.5): 顺时针 90°，4 态循环，以屏幕中心为枢轴
@@ -10,6 +10,7 @@
 //   - 设备放置 (T1.7): 工具栏选设备 → 左键放网格交叉点 → R 键旋转预览(相对视图) → 右键/ESC 取消
 //   - 基础交互 (T1.8): 左键点设备=选中(白色选中框) → 点空白=取消；选中框跟随相机
 //   - 设备删除 (T1.9): 选中设备 + Delete 键 → 销毁实体 + 释放 footprint 占用；无选中按 Delete 无反应
+//   - 性能基准 (T1.10): 一键 100 设备（真实放置路径）+ FPS/JS堆/GPU纹理内存统计
 //   - 世界边界 (A11 WV-003 §4.4): 尺寸来自 MapInstance（不再读全局常量）
 
 import { Application, Text } from 'pixi.js';
@@ -23,6 +24,7 @@ import { getBuildingDefinition, type BuildingDefinition } from './game/data/buil
 import type { Direction } from './game/components/BuildingComp';
 import { SelectionSystem } from './game/systems/SelectionSystem';
 import { DeleteSystem } from './game/systems/DeleteSystem';
+import { PerfMonitor, type BenchmarkReport, type MemoryStressRound } from './game/perf/PerfMonitor';
 import type { Position } from './game/components/Position';
 import type { SpriteComp } from './game/components/SpriteComp';
 import { CELL_SIZE } from './game/render/constants';
@@ -102,6 +104,9 @@ async function main() {
   // ── T1.7 设备放置: 工具栏 + 放置系统输入转发 ──
   const placement = game.placement;
   const occupancy = game.occupancy;
+
+  // ── T1.10 性能基准: FPS + 内存（JS 堆 + GPU 纹理估算）──
+  const perf = new PerfMonitor(app, game.world, game.renderSystem, occupancy);
 
   // ── T1.8 基础交互: 点击选中 + 屏幕空间选中框 ──
   const selection = new SelectionSystem(game.world, camera, scene.layers);
@@ -210,6 +215,10 @@ async function main() {
   window.addEventListener('keydown', onKeyDelete);
 
   // ── 主循环 (A5 §2: PixiJS Ticker) ──
+  // HUD 文本节流（T1.10 性能注意）: PixiJS Text 每帧改 text 会重渲染文本纹理，
+  // 4Hz 更新足够展示 FPS/内存趋势，避免文本重绘挤占 100 设备基准的帧预算。
+  let lastHudUpdateAt = 0;
+  let lastHudText = '';
   app.ticker.add((ticker) => {
     // 每帧轮询视口尺寸变化(绕开 resize 事件时序竞争)
     if (app.screen.width !== lastScreenW || app.screen.height !== lastScreenH) {
@@ -228,17 +237,30 @@ async function main() {
     selection.update(); // T1.8: 选中框跟随相机（每帧重绘）
     game.update(); // T1.6: RenderSystem（实体↔Sprite 同步 + 视口剔除）
     // 选中框屏幕坐标（调试用）: 相机移动时该坐标应随之变化；若钉住不动即异常
-    const boxTL = selection.getSelected() !== null ? selection.getBoxTopLeft() : null;
-    hud.text =
-      `FPS: ${Math.round(ticker.FPS)}` +
-      `  |  cam(${camera.x.toFixed(0)}, ${camera.y.toFixed(0)})` +
-      `  zoom=${camera.zoom.toFixed(2)}${camera.isZooming ? '↗' : ''}` +
-      `  rot=${camera.viewRotation}°` +
-      `  |  实体=${game.world.entityCount()}` +
-      (boxTL ? `  |  选中=设备@(${boxTL.x},${boxTL.y})` : '') +
-      (placement.isPlacing()
-        ? `  |  放置: ${placement.getCurrentDefinitionId()} (R=旋转, 左键=放, 右键/ESC=取消)`
-        : '');
+    const now = performance.now();
+    if (now - lastHudUpdateAt >= 250) {
+      lastHudUpdateAt = now;
+      const boxTL = selection.getSelected() !== null ? selection.getBoxTopLeft() : null;
+      const mem = perf.sampleMemory();
+      const heapTxt = mem.jsHeapMB > 0 ? `${mem.jsHeapMB.toFixed(1)}MB` : 'n/a';
+      const text =
+        `FPS: ${Math.round(ticker.FPS)}` +
+        `  |  JS堆 ${heapTxt}` +
+        `  |  纹理 ${mem.textureMemoryMB.toFixed(1)}MB(${mem.textureSources})` +
+        `  |  Sprite ${mem.visibleSprites}/${mem.sprites}` +
+        `  |  cam(${camera.x.toFixed(0)}, ${camera.y.toFixed(0)})` +
+        `  zoom=${camera.zoom.toFixed(2)}${camera.isZooming ? '↗' : ''}` +
+        `  rot=${camera.viewRotation}°` +
+        `  |  实体=${game.world.entityCount()}` +
+        (boxTL ? `  |  选中=设备@(${boxTL.x},${boxTL.y})` : '') +
+        (placement.isPlacing()
+          ? `  |  放置: ${placement.getCurrentDefinitionId()} (R=旋转, 左键=放, 右键/ESC=取消)`
+          : '');
+      if (text !== lastHudText) {
+        lastHudText = text;
+        hud.text = text;
+      }
+    }
   });
 
   // 首帧立即对齐一次相机变换 + 网格 + 渲染系统，避免首帧错位/缺帧
@@ -351,6 +373,66 @@ async function main() {
     return ok;
   };
 
+  // ── T1.10 验收钩子: 一键 100 设备（真实放置路径）+ FPS/内存 benchmark ──
+  // 设备类型: Phase 1 定义中唯一带真实图集纹理的是 refining_unit（3×3，含
+  // billboard logo 子 Sprite），用它压测最严苛；随机落点 + 占用检查保证不重叠。
+  const BENCH_DEF_ID = 'refining_unit' as const;
+  const spawnBenchmarkDevices = (n = 100): number => {
+    const def = getBuildingDefinition(BENCH_DEF_ID);
+    if (!def) { console.warn(`spawnBenchmarkDevices: 找不到 ${BENCH_DEF_ID}`); return 0; }
+    const { w, h } = def.footprint;
+    const maxGx = Math.max(0, MAP.widthCells - w);
+    const maxGy = Math.max(0, MAP.heightCells - h);
+    let placed = 0;
+    let attempts = 0;
+    const maxAttempts = n * 200 + 2000; // 随机拒绝采样上限（3×3 密度下足够）
+    while (placed < n && attempts < maxAttempts) {
+      attempts++;
+      const gx = Math.floor(Math.random() * (maxGx + 1));
+      const gy = Math.floor(Math.random() * (maxGy + 1));
+      if (placeAt(BENCH_DEF_ID, gx, gy)) placed++;
+    }
+    console.log(`[T1.10] 一键生成 ${placed}/${n} 个 ${BENCH_DEF_ID}（${attempts} 次尝试）`);
+    return placed;
+  };
+
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+  /** FPS/内存采样报告（不生成设备，先 spawnBenchmarkDevices 再调用）。 */
+  const runFpsBenchmark = (durationMs = 5000): Promise<BenchmarkReport> =>
+    perf.runFpsBenchmark(durationMs);
+
+  /** 内存压测: 反复 生成100 → 清空，验证 Sprite/占用无泄漏、堆内存不持续增长。 */
+  const memoryStressCheck = async (cycles = 3): Promise<MemoryStressRound[]> => {
+    const results: MemoryStressRound[] = [];
+    for (let i = 0; i < cycles; i++) {
+      clearAllPlaced();
+      await sleep(400); // 等上一轮 Sprite 销毁 + GC 尘埃落定
+      const before = perf.sampleMemory();
+      const placed = spawnBenchmarkDevices(100);
+      await sleep(600); // 渲染稳定后采样
+      const during = perf.sampleMemory();
+      clearAllPlaced();
+      await sleep(400);
+      const after = perf.sampleMemory();
+      results.push({
+        cycle: i + 1,
+        placed,
+        before,
+        during,
+        after,
+        heapAfterDeltaMB: Math.round((after.jsHeapMB - before.jsHeapMB) * 10) / 10,
+      });
+      console.log(
+        `[T1.10 内存压测] 第${i + 1}轮: 生成${placed}个, ` +
+        `堆 ${before.jsHeapMB}MB → ${during.jsHeapMB}MB → 清空后 ${after.jsHeapMB}MB ` +
+        `(净增 ${(after.jsHeapMB - before.jsHeapMB).toFixed(1)}MB), ` +
+        `纹理 ${during.textureMemoryMB.toFixed(1)}MB(${during.textureSources})`,
+      );
+    }
+    return results;
+  };
+
   // 开发期调试钩子: 暴露关键对象到 window，便于控制台验证与测试。
   (window as unknown as { __game: unknown }).__game = {
     app,
@@ -374,14 +456,20 @@ async function main() {
     clearAllPlaced,
     selectFirstBuilding,
     deleteSelectedBuilding,
+    perf,
+    getMemoryStats: () => perf.sampleMemory(),
+    spawnBenchmarkDevices,
+    runFpsBenchmark,
+    memoryStressCheck,
   };
 
-  console.log('[集成工业系统] T1.7 设备放置 + T1.8 基础交互 + T1.9 设备删除就绪');
+  console.log('[集成工业系统] T1.7 设备放置 + T1.8 基础交互 + T1.9 设备删除 + T1.10 性能基准就绪');
   console.log(`  世界: ${MAP.widthCells}×${MAP.heightCells} cells (MapInstance), CELL_SIZE=${CELL_SIZE}`);
   console.log('  操作: 中键拖拽/WASD(屏幕相对)/边缘滚动 平移, 滚轮以鼠标为中心缩放, Ctrl+R 视图旋转');
   console.log('  放置: 底部工具栏选设备 → 左键放网格 → R 旋转(相对视图) → 右键/ESC 取消');
   console.log('  交互: 左键点设备=选中(黄色填充+白色选中框), 点空白=取消, 选中+Delete=删除');
   console.log('  验收: __game.placeAt("refining_unit",5,5) 放设备 → selectFirstBuilding() 选中 → deleteSelectedBuilding() 删除 → getOccupiedCells() 查占用');
+  console.log('  T1.10: __game.spawnBenchmarkDevices(100) 一键100设备 → runFpsBenchmark() 采样FPS/内存 → memoryStressCheck() 内存压测');
 }
 
 main().catch((err) => {

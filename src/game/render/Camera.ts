@@ -141,7 +141,7 @@ export class Camera {
       // 帧率无关的指数趋近: k = 1 − exp(−dt/TAU)（等效"每帧 lerp k%"但与帧率无关）
       const k = 1 - Math.exp(-(deltaMS / 1000) / CAMERA_ZOOM_SMOOTH_TAU);
       let newZoom = this.zoom + (this._targetZoom - this.zoom) * k;
-      newZoom = clamp(newZoom, CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX);
+      newZoom = clamp(newZoom, this.minZoom(), CAMERA_ZOOM_MAX);
       this.applyZoomAtAnchor(newZoom); // 固定锚点反解相机中心（无漂移）
       // 趋近到容差内 → 吸附到精确 target，结束动画
       if (Math.abs(this.zoom - this._targetZoom) < CAMERA_ZOOM_SNAP_EPSILON) {
@@ -180,6 +180,23 @@ export class Camera {
   /** 当前视口尺寸（只读访问，供 RenderSystem 等做视口剔除）。 */
   getViewport(): ViewportSize {
     return this.viewport;
+  }
+
+  /**
+   * 动态最小缩放（T1.10 性能基准要求"缩小到全部设备可见"）。
+   *
+   * 固定下限 CAMERA_ZOOM_MIN=0.25 在 1280×720 视口下只能看到 2880px 高的世界，
+   * 64×64 地图（4096px²）无法整图可见。这里取 0.25 与"整图适配缩放"
+   * （视口短边 / 世界短边）的较小值: 世界是方形且旋转为 90° 整数倍时，
+   * 该缩放保证 0/90/180/270 四个旋转态下整个世界都落在视口内。
+   * 视口大于世界时适配缩放 >1，仍回落到 0.25 固定下限。
+   */
+  private minZoom(): number {
+    const fitZoom = Math.min(
+      this.viewport.width / this.bounds.widthPx,
+      this.viewport.height / this.bounds.heightPx,
+    );
+    return Math.min(CAMERA_ZOOM_MIN, fitZoom);
   }
 
   // ───────────────────────── 坐标转换 (A6 §4, §4.0) ─────────────────────────
@@ -276,7 +293,7 @@ export class Camera {
    * @param newZoom      目标缩放（会先 clamp 到 [min,max]）
    */
   zoomAt(screenAnchor: { x: number; y: number }, newZoom: number): void {
-    const clampedZoom = clamp(newZoom, CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX);
+    const clampedZoom = clamp(newZoom, this.minZoom(), CAMERA_ZOOM_MAX);
     if (clampedZoom === this.zoom) return;
 
     // 锚点的世界坐标在缩放前后应保持其屏幕位置不变:
@@ -313,7 +330,7 @@ export class Camera {
     const oldTarget = this._targetZoom;
     const newTarget = clamp(
       this._targetZoom * (1 - deltaY / CAMERA_ZOOM_WHEEL_DELTA_DIVISOR),
-      CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX,
+      this.minZoom(), CAMERA_ZOOM_MAX,
     );
     if (Math.abs(newTarget - oldTarget) < 0.0001) return; // 无变化（如已撞边界）
 

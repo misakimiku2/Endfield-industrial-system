@@ -141,6 +141,20 @@ export class RenderSystem {
     this.entries.clear();
   }
 
+  /** 当前管理的 Sprite entry 数（T1.10 性能/内存监控用）。 */
+  get spriteCount(): number {
+    return this.entries.size;
+  }
+
+  /** 当前视口剔除后可见的 Sprite 数（T1.10 性能/内存监控用）。 */
+  get visibleSpriteCount(): number {
+    let n = 0;
+    for (const entry of this.entries.values()) {
+      if (entry.sprite.visible) n++;
+    }
+    return n;
+  }
+
   // ───────────────────────── 内部 ─────────────────────────
 
   private createEntry(_handle: EntityHandle, spr: SpriteComp): SpriteEntry {

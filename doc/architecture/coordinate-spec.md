@@ -146,9 +146,14 @@ class Camera {
 // Phase 1 约束
 this.x = clamp(this.x, minWorldX, maxWorldX);
 this.y = clamp(this.y, minWorldY, maxWorldY);
-this.zoom = clamp(this.zoom, 0.25, 4.0);  // 最小缩放 25%, 最大 400%
-this.viewRotation ∈ {0, 90, 180, 270};     // 离散 4 态，Ctrl+R 循环递增
-```
+  this.zoom = clamp(this.zoom, minZoom, 4.0); // 最大 400%; minZoom = min(0.25, 视口/世界适配缩放)
+  this.viewRotation ∈ {0, 90, 180, 270};     // 离散 4 态，Ctrl+R 循环递增
+  ```
+  
+  > **T1.10 修订（动态最小缩放）**: 固定下限 0.25 在 1280×720 视口下只能看到 2880px 高的
+  > 世界，64×64 地图（4096px²）无法整图可见，与 T1.10"缩小到 100 个设备都可见"验收冲突。
+  > Camera 现按 `min(0.25, min(viewportW/worldW, viewportH/worldH))` 动态取下限
+  > （方形世界在 90° 整数倍旋转下四个朝向均整图可见），滚轮与 setZoom 共用。
 
 ---
 
