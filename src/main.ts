@@ -380,19 +380,25 @@ async function main() {
   const spawnBenchmarkDevices = (n = 100): number => {
     const def = getBuildingDefinition(BENCH_DEF_ID);
     if (!def) { console.warn(`spawnBenchmarkDevices: 找不到 ${BENCH_DEF_ID}`); return 0; }
+    // 一键语义: 每次执行先清空已有设备，再生成正好 n 台。
+    // （旧版是累加式，重复执行会把 100 台不断叠加上去，用户反馈刷屏）
+    clearAllPlaced();
+    // 安全上限: 64×64 地图最多容纳 ~455 台 3×3 设备；n 超出 500 直接钳制，
+    // 避免误传超大 n 导致拒绝采样循环跑很久。
+    const safeN = Math.min(Math.max(1, Math.floor(n)), 500);
     const { w, h } = def.footprint;
     const maxGx = Math.max(0, MAP.widthCells - w);
     const maxGy = Math.max(0, MAP.heightCells - h);
     let placed = 0;
     let attempts = 0;
-    const maxAttempts = n * 200 + 2000; // 随机拒绝采样上限（3×3 密度下足够）
-    while (placed < n && attempts < maxAttempts) {
+    const maxAttempts = Math.min(safeN * 200 + 2000, 100000); // 随机拒绝采样上限
+    while (placed < safeN && attempts < maxAttempts) {
       attempts++;
       const gx = Math.floor(Math.random() * (maxGx + 1));
       const gy = Math.floor(Math.random() * (maxGy + 1));
       if (placeAt(BENCH_DEF_ID, gx, gy)) placed++;
     }
-    console.log(`[T1.10] 一键生成 ${placed}/${n} 个 ${BENCH_DEF_ID}（${attempts} 次尝试）`);
+    console.log(`[T1.10] 一键生成 ${placed}/${safeN} 个 ${BENCH_DEF_ID}（${attempts} 次尝试，已先清空旧设备）`);
     return placed;
   };
 
