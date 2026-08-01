@@ -309,16 +309,21 @@ async function main() {
   };
 
   // ── T1.7 验收钩子: 程序化放置 / 查询占用 ──
-  // placeAt(defId, gx, gy, dir?): 在指定网格坐标放置设备（绕过鼠标交互，便于自动验收）。
+  // placeAt(defId, gx, gy, dir?, quiet?): 在指定网格坐标放置设备（绕过鼠标交互，便于自动验收）。
   //   返回 true=放置成功。占用检查走真实 OccupancyMap.canPlace。
+  //   quiet=true 时失败不打 console.warn（批量/采样放置用，避免刷屏；手动调用默认 false 保留提示）。
   const placeAt = (
     defId: string, gx: number, gy: number, dir: Direction = 0,
+    quiet = false,
   ): boolean => {
     const def: BuildingDefinition | undefined = getBuildingDefinition(defId);
-    if (!def) { console.warn(`placeAt: 未知设备 id '${defId}'`); return false; }
+    if (!def) {
+      if (!quiet) console.warn(`placeAt: 未知设备 id '${defId}'`);
+      return false;
+    }
     const { w, h } = def.footprint;
     if (!occupancy.canPlace(gx, gy, w, h)) {
-      console.warn(`placeAt: (${gx},${gy}) ${w}×${h} 无法放置（越界或占用冲突）`);
+      if (!quiet) console.warn(`placeAt: (${gx},${gy}) ${w}×${h} 无法放置（越界或占用冲突）`);
       return false;
     }
     const handle = game.world.createEntity();
@@ -389,16 +394,22 @@ async function main() {
     const { w, h } = def.footprint;
     const maxGx = Math.max(0, MAP.widthCells - w);
     const maxGy = Math.max(0, MAP.heightCells - h);
-    let placed = 0;
-    let attempts = 0;
-    const maxAttempts = Math.min(safeN * 200 + 2000, 100000); // 随机拒绝采样上限
-    while (placed < safeN && attempts < maxAttempts) {
-      attempts++;
-      const gx = Math.floor(Math.random() * (maxGx + 1));
-      const gy = Math.floor(Math.random() * (maxGy + 1));
-      if (placeAt(BENCH_DEF_ID, gx, gy)) placed++;
+    // 随机打乱全部候选锚点后贪心放置: 与"随机分布"等价，但没有失败重试，
+    // 不会触发 placeAt 的失败 warn（旧实现每次失败都打日志，控制台刷屏 + 页面卡顿）。
+    const anchors: { gx: number; gy: number }[] = [];
+    for (let gx = 0; gx <= maxGx; gx++) {
+      for (let gy = 0; gy <= maxGy; gy++) anchors.push({ gx, gy });
     }
-    console.log(`[T1.10] 一键生成 ${placed}/${safeN} 个 ${BENCH_DEF_ID}（${attempts} 次尝试，已先清空旧设备）`);
+    for (let i = anchors.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [anchors[i], anchors[j]] = [anchors[j], anchors[i]];
+    }
+    let placed = 0;
+    for (const a of anchors) {
+      if (placed >= safeN) break;
+      if (placeAt(BENCH_DEF_ID, a.gx, a.gy, 0, true)) placed++;
+    }
+    console.log(`[T1.10] 一键生成 ${placed}/${safeN} 个 ${BENCH_DEF_ID}（候选锚点 ${anchors.length} 个，已先清空旧设备）`);
     return placed;
   };
 

@@ -618,9 +618,12 @@ T1.7 只做了"放置"。删除是放置的逆操作（`OccupancyMap.release` + 
   `src/main.ts`（HUD 内存行 + 一键 100 设备 + benchmark 钩子）、`src/game/render/Camera.ts`
   （动态最小缩放）、`src/game/systems/RenderSystem.ts`（spriteCount/visibleSpriteCount 统计）
 - **一键 100 设备**: `__game.spawnBenchmarkDevices(100)` 走**真实放置路径**
-  （`placeAt` → BuildingComp + OccupancyMap + RenderSystem），100 个 refining_unit 随机落点、
-  占用检查防重叠（100×9 = 900 Cell 零冲突）；**每次执行先清空旧设备再生成**
-  （重置式语义，重复执行不会叠加刷屏；n 安全钳制在 1~500，防止误传超大值卡死采样循环）
+  （`placeAt` → BuildingComp + OccupancyMap + RenderSystem），100 个 refining_unit
+  **随机打乱全部候选锚点后贪心放置**（与随机分布等价，但零失败重试）；
+  **每次执行先清空旧设备再生成**（重置式语义，重复执行不会叠加刷屏）；
+  n 安全钳制在 1~500。旧版用随机拒绝采样且每次失败都打 `placeAt` warn，
+  控制台会刷几百上千条"无法放置"并拖卡页面（用户反馈），已改为静默放置
+  （`placeAt(..., quiet=true)`，手动调用仍保留失败提示）
 - **FPS 采样**: `__game.runFpsBenchmark(durationMs)` 用 `ticker.add` 每帧采样一次
   （⚠️ 早期版本误用 `addOnce` 链式注册导致同帧递归 4600 万次，已修复并加回归断言），
   汇总 min/avg/max/p95 FPS、帧耗时、`met55` 判定
