@@ -116,6 +116,7 @@ function spawnBenchmarkDevices(
     world.addComponent(hEntity, 'SpriteComp', {
       group: 'devices' as const, textureKey: def.texture,
       width: w * CELL_SIZE, height: h * CELL_SIZE, layer: 2,
+      logoTextureKey: def.logoTextureKey, // 与 main.ts placeAt / PlacementSystem 落盘一致
     });
     occ.occupyFootprint(gx, gy, def, 0);
     placed++;
@@ -201,17 +202,24 @@ console.log('\n[B] 纹理共享（100 设备只引用图集共享纹理，不产
       used.add((child as Sprite).texture);
     }
   }
-  // placeAt 路径的 SpriteComp 不带 logoTextureKey（与 T1.7 真实放置一致），
-  // 因此 100 个设备共享 1 个主体纹理。
-  assert(used.size === 1, `100 设备只引用 1 个共享主体纹理（实际 ${used.size} 个）`);
+  // 精炼炉定义带 logoTextureKey → 每个设备 = 主体 + logo 两个共享纹理
+  assert(used.size === 2, `100 设备只引用 2 个共享纹理（主体+logo，实际 ${used.size} 个）`);
   assert(
     [...used].every((t) => [...textures.values()].includes(t)),
     '所有引用纹理均来自图集共享集合（无逐设备新建纹理）',
+  );
+  assert(
+    (layers.layer2Building.children as Sprite[]).every((s) => s.children.length === 1),
+    '每个设备 Sprite 都挂载 1 个 logo 子 Sprite（精炼炉完整显示）',
   );
   // 图集共享是"增删设备不涨纹理内存"的前提: 同 key 的 Sprite 必须是同一 Texture 实例
   const first = layers.layer2Building.children[0] as Sprite;
   const last = layers.layer2Building.children[99] as Sprite;
   assert(first.texture === last.texture, '第 1 个与第 100 个设备主体共享同一纹理实例');
+  assert(
+    (first.children[0] as Sprite).texture === (last.children[0] as Sprite).texture,
+    '第 1 个与第 100 个设备 logo 也共享同一纹理实例',
+  );
 }
 
 // ───────────────────────── C. 视口剔除 ─────────────────────────

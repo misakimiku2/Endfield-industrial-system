@@ -624,6 +624,13 @@ T1.7 只做了"放置"。删除是放置的逆操作（`OccupancyMap.release` + 
   n 安全钳制在 1~500。旧版用随机拒绝采样且每次失败都打 `placeAt` warn，
   控制台会刷几百上千条"无法放置"并拖卡页面（用户反馈），已改为静默放置
   （`placeAt(..., quiet=true)`，手动调用仍保留失败提示）
+- **精炼炉完整显示**: `placeAt` 落盘的 SpriteComp 补挂 `logoTextureKey`
+  （与 PlacementSystem 的 UI 放置路径一致），benchmark 设备中间显示 billboard logo，
+  不再是无 logo 的"光板方块"
+- **铺满模式**: `__game.fillBenchmarkDevices()` 按 3×3 网格密铺整个 64×64 地图
+  （21×21 = 441 台，零缝隙，放置顺序随机），用于 21:9 宽屏观感与满载性能测试；
+  实测 441 台 + logo（882 个 Sprite）整图可见 FPS avg 144 / p95 144.9，
+  JS 堆 40.6MB → 23.2MB，纹理内存 88.3MB 零增长
 - **FPS 采样**: `__game.runFpsBenchmark(durationMs)` 用 `ticker.add` 每帧采样一次
   （⚠️ 早期版本误用 `addOnce` 链式注册导致同帧递归 4600 万次，已修复并加回归断言），
   汇总 min/avg/max/p95 FPS、帧耗时、`met55` 判定
@@ -649,7 +656,8 @@ T1.7 只做了"放置"。删除是放置的逆操作（`OccupancyMap.release` + 
   - 内存压测 3 轮: 堆 1290~1320MB 波动（含 dev server/HMR 历史垃圾，GC 后回落至 ~40MB），
     纹理内存恒定、Sprite/占用每次归零
   - 截图: `gui-test-screenshots/t110_100_devices_full.png`（整图 100 设备）、
-    `gui-test-screenshots/t110_zoom_in.png`（放大局部）
+    `gui-test-screenshots/t110_zoom_in.png`（放大局部）、
+    `gui-test-screenshots/t110_fill_441.png`（铺满 441 台）
 - **验收钩子**: `spawnBenchmarkDevices(n)` → `runFpsBenchmark(ms)` →
   `memoryStressCheck(cycles)` → `getMemoryStats()`；HUD 左上角实时显示 FPS/JS堆/纹理/Sprite
 

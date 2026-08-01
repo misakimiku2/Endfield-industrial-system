@@ -332,6 +332,7 @@ async function main() {
     game.world.addComponent(handle, 'SpriteComp', {
       group: 'devices', textureKey: def.texture,
       width: w * CELL_SIZE, height: h * CELL_SIZE, layer: 2,
+      logoTextureKey: def.logoTextureKey, // 与 PlacementSystem 落盘一致: 挂载 billboard logo（精炼炉完整显示）
     });
     occupancy.occupyFootprint(gx, gy, def, dir);
     game.update();
@@ -413,6 +414,33 @@ async function main() {
     return placed;
   };
 
+  /**
+   * 铺满模式: 64×64 地图按 3×3 网格密铺（21×21 = 441 台，零缝隙），
+   * 21:9 宽屏观感/满载性能测试用。随机打乱放置顺序保持观感变化。
+   */
+  const fillBenchmarkDevices = (): number => {
+    const def = getBuildingDefinition(BENCH_DEF_ID);
+    if (!def) { console.warn('fillBenchmarkDevices: 找不到精炼炉定义'); return 0; }
+    clearAllPlaced();
+    const { w, h } = def.footprint;
+    const cols = Math.floor(MAP.widthCells / w); // 21
+    const rows = Math.floor(MAP.heightCells / h); // 21
+    const anchors: { gx: number; gy: number }[] = [];
+    for (let i = 0; i < cols; i++) {
+      for (let j = 0; j < rows; j++) anchors.push({ gx: i * w, gy: j * h });
+    }
+    for (let i = anchors.length - 1; i > 0; i--) {
+      const k = Math.floor(Math.random() * (i + 1));
+      [anchors[i], anchors[k]] = [anchors[k], anchors[i]];
+    }
+    let placed = 0;
+    for (const a of anchors) {
+      if (placeAt(BENCH_DEF_ID, a.gx, a.gy, 0, true)) placed++;
+    }
+    console.log(`[T1.10] 铺满模式: ${placed} 台（${cols}×${rows} 网格密铺，已先清空旧设备）`);
+    return placed;
+  };
+
   const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
   /** FPS/内存采样报告（不生成设备，先 spawnBenchmarkDevices 再调用）。 */
@@ -476,6 +504,7 @@ async function main() {
     perf,
     getMemoryStats: () => perf.sampleMemory(),
     spawnBenchmarkDevices,
+    fillBenchmarkDevices,
     runFpsBenchmark,
     memoryStressCheck,
   };
@@ -486,7 +515,7 @@ async function main() {
   console.log('  放置: 底部工具栏选设备 → 左键放网格 → R 旋转(相对视图) → 右键/ESC 取消');
   console.log('  交互: 左键点设备=选中(黄色填充+白色选中框), 点空白=取消, 选中+Delete=删除');
   console.log('  验收: __game.placeAt("refining_unit",5,5) 放设备 → selectFirstBuilding() 选中 → deleteSelectedBuilding() 删除 → getOccupiedCells() 查占用');
-  console.log('  T1.10: __game.spawnBenchmarkDevices(100) 一键100设备 → runFpsBenchmark() 采样FPS/内存 → memoryStressCheck() 内存压测');
+  console.log('  T1.10: __game.spawnBenchmarkDevices(100) 一键100设备 / fillBenchmarkDevices() 铺满地图 → runFpsBenchmark() 采样FPS/内存 → memoryStressCheck() 内存压测');
 }
 
 main().catch((err) => {
