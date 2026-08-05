@@ -14,6 +14,7 @@ import { Camera, type ViewportSize } from './render/Camera';
 import type { SceneRenderer } from './render/SceneRenderer';
 import { RenderSystem } from './systems/RenderSystem';
 import { PlacementSystem } from './systems/PlacementSystem';
+import { BeltCreationSystem } from './systems/BeltCreationSystem';
 import { getTexture } from './render/AssetsLoader';
 
 export class Game {
@@ -25,6 +26,8 @@ export class Game {
   readonly occupancy: OccupancyMap;
   /** 放置系统（T1.7）。输入由 main.ts 转发，update 由主循环调用。 */
   readonly placement: PlacementSystem;
+  /** 传送带创建系统（T2.0 阶段 1）。 */
+  readonly beltCreation: BeltCreationSystem;
 
   constructor(scene: SceneRenderer, viewport: ViewportSize) {
     this.world = new World();
@@ -40,14 +43,18 @@ export class Game {
     this.placement = new PlacementSystem(
       this.world, this.occupancy, this.camera, scene.layers, getTexture,
     );
+    this.beltCreation = new BeltCreationSystem(
+      this.world, this.occupancy, this.camera, scene.layers, getTexture,
+    );
   }
 
   /**
    * 每帧驱动各 System。
    * 注意: PlacementSystem.update 需要 deltaMS，由 main 主循环单独调用并传入；
-   *       RenderSystem 在此处更新（实体↔Sprite 同步 + 视口剔除）。
+   *       RenderSystem 在此处更新（实体↔Sprite 同步 + 视口剔除 + 传送带 pointer 流动）。
+   * @param deltaMS 自上一帧的毫秒数（来自 Pixi ticker），传入 RenderSystem 累积 pointer 相位。
    */
-  update(): void {
-    this.renderSystem.update();
+  update(deltaMS = 0): void {
+    this.renderSystem.update(deltaMS);
   }
 }

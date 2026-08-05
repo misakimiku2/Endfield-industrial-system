@@ -130,6 +130,7 @@ function estimateTextureMemory(app: Application): { sources: number; memoryMB: n
   const sources = texSystem.texture?.managedTextures ?? [];
   let bytes = 0;
   for (const s of sources) {
+    if (!s) continue;
     const w = s.width ?? 0;
     const h = s.height ?? 0;
     if (w <= 0 || h <= 0) continue;

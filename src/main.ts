@@ -94,7 +94,7 @@ async function main() {
   app.stage.addChild(hud);
 
   const help = new Text({
-    text: '中键拖拽: 平移  |  WASD/方向键: 平移(屏幕相对)  |  鼠标靠边: 边缘滚动  |  滚轮: 以鼠标为中心缩放  |  Ctrl+R: 视图旋转  |  左键点设备=选中(点空白取消)  |  选中+Delete=删除  |  T1.7: 工具栏选设备→左键放置→R旋转→右键/ESC取消',
+    text: '中键拖拽: 平移  |  WASD/方向键: 平移(屏幕相对)  |  鼠标靠边: 边缘滚动  |  滚轮: 以鼠标为中心缩放  |  Ctrl+R: 视图旋转  |  E: 传送带创建模式  |  左键点设备=选中(点空白取消)  |  选中+Delete=删除  |  T1.7: 工具栏选设备→左键放置→R旋转→右键/ESC取消',
     style: { fontFamily: 'system-ui, sans-serif', fontSize: 13, fill: 0x444444 },
   });
   help.x = 10;
@@ -114,11 +114,19 @@ async function main() {
   // ── T1.9 设备删除: 选中 + Delete 键 → 销毁实体 + 释放占用 ──
   const deleteSystem = new DeleteSystem(game.world, occupancy);
 
+  // ── T2.0 传送带创建系统 ──
+  const belt = game.beltCreation;
+
   // 工具栏: 挂 overlayLayer(屏幕空间层 6)，钉死屏幕底部，不受 Ctrl+R/相机影响。
   // onSelect 回调 → 进入放置模式 + 高亮选中按钮。
   const inventoryUI = new InventoryUI(app.renderer, getTexture, (id: string) => {
     const def = getBuildingDefinition(id);
     if (!def) return;
+    // 切到设备放置模式时，先退出传送带创建模式，避免两套模式冲突
+    if (belt.isActive()) {
+      belt.exitMode();
+      selection.clearSelection();
+    }
     // enterMode 有 toggle 语义（同设备再点取消），用 placement 当前态决定高亮
     const wasPlacingThis = placement.isPlacing() && placement.getCurrentDefinitionId() === id;
     placement.enterMode(def);
@@ -144,6 +152,7 @@ async function main() {
       p.x <= app.canvas.clientWidth + tol &&
       p.y <= app.canvas.clientHeight + tol;
     placement.setMouse(p.x, p.y, inside);
+    belt.setMouse(p.x, p.y, inside);
   };
   // 鼠标按下: 放置态 → 左键(0)=确认放置, 右键(2)=取消；
   //           非放置态 → 左键(0)转发给 T1.8 选中系统（pointerdown 只记录，pointerup 提交）。
@@ -159,6 +168,11 @@ async function main() {
     // 落在工具栏上 → 不转发（让 InventoryUI 的 PixiJS 事件处理按钮选中）
     const bar = inventoryUI.container.getBounds();
     if (p.x >= bar.x && p.x <= bar.x + bar.width && p.y >= bar.y && p.y <= bar.y + bar.height) {
+      return;
+    }
+    // 传送带创建模式优先：左键选起点/确认，右键退出
+    if (belt.isActive()) {
+      belt.onPointerDown(p.x, p.y, e.button);
       return;
     }
     if (placement.isPlacing()) {
@@ -184,6 +198,29 @@ async function main() {
   app.canvas.addEventListener('pointermove', onPointerMoveMain);
   app.canvas.addEventListener('pointerdown', onPointerDownMain);
   window.addEventListener('pointerup', onPointerUpMain);
+
+  // 键盘: E 键进入/退出传送带创建模式。
+  // 放置模式激活时不响应，避免两套模式冲突。
+  const onKeyBeltMode = (e: KeyboardEvent): void => {
+    if (e.code !== 'KeyE' || e.ctrlKey || e.metaKey) return;
+    if (placement.isPlacing()) return;
+    e.preventDefault();
+    belt.toggleMode();
+    if (belt.isActive()) {
+      selection.clearSelection();
+      inventoryUI.setActive(null);
+    }
+  };
+  window.addEventListener('keydown', onKeyBeltMode);
+
+  // 键盘: 传送带创建模式下 Escape 落盘当前预览（若有）再退出，与右键一致。
+  const onKeyBeltEscape = (e: KeyboardEvent): void => {
+    if (e.code !== 'Escape') return;
+    if (!belt.isActive()) return;
+    e.preventDefault();
+    belt.onKeyDown('Escape');
+  };
+  window.addEventListener('keydown', onKeyBeltEscape);
 
   // 键盘: 裸 KeyR(旋转预览) + Escape(取消放置)，仅在 placing 态响应。
   // CameraController 已拦截 Ctrl/Cmd+KeyR（视图旋转），裸 R 不触发视图旋转。
@@ -234,8 +271,9 @@ async function main() {
     camera.updateTransform();
     gridRenderer.update();
     placement.update(ticker.deltaMS); // T1.7: 放置预览跟随鼠标
+    belt.update(ticker.deltaMS); // T2.0: 传送带创建模式高亮/预览刷新
     selection.update(); // T1.8: 选中框跟随相机（每帧重绘）
-    game.update(); // T1.6: RenderSystem（实体↔Sprite 同步 + 视口剔除）
+    game.update(ticker.deltaMS); // T1.6: RenderSystem（实体↔Sprite 同步 + 视口剔除 + T2.0 pointer 流动）
     // 选中框屏幕坐标（调试用）: 相机移动时该坐标应随之变化；若钉住不动即异常
     const now = performance.now();
     if (now - lastHudUpdateAt >= 250) {
@@ -255,6 +293,9 @@ async function main() {
         (boxTL ? `  |  选中=设备@(${boxTL.x},${boxTL.y})` : '') +
         (placement.isPlacing()
           ? `  |  放置: ${placement.getCurrentDefinitionId()} (R=旋转, 左键=放, 右键/ESC=取消)`
+          : '') +
+        (belt.isActive()
+          ? `  |  传送带模式: 点击蓝色高亮起点 → 移动鼠标预览 → 左键落盘 (右键/ESC/E=退出)`
           : '');
       if (text !== lastHudText) {
         lastHudText = text;
@@ -267,6 +308,7 @@ async function main() {
   camera.updateTransform();
   gridRenderer.update();
   placement.update(0);
+  belt.update(0);
   selection.update();
   game.update();
 
@@ -478,6 +520,70 @@ async function main() {
     return results;
   };
 
+  // ── T2.0 验收钩子: 程序化创建一条传送带链（用于目视验证直段/转角/4方向渲染）──
+  // 用法: __game.spawnBelt([[5,5],[8,5],[8,8]], 0)
+  //   cells: [[gx,gy],...] 网格序列（首格为起点）
+  //   startDir: 起点进入方向（0/90/180/270），决定首格转角判断；直链传 0 即可
+  const spawnBelt = (
+    cells: Array<[number, number]>,
+    startDir: 0 | 90 | 180 | 270 = 0,
+  ): number => {
+    const path = cells.map(([x, y]) => ({ x, y }));
+    if (path.length < 1) return 0;
+    const chainId = `chain-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    // 计算每格出方向
+    const dirCells = path.map((c, i) => {
+      let dir: 0 | 90 | 180 | 270;
+      if (i < path.length - 1) {
+        const n = path[i + 1];
+        const dx = n.x - c.x, dy = n.y - c.y;
+        dir = dx > 0 ? 0 : dx < 0 ? 180 : dy > 0 ? 90 : 270;
+      } else if (i > 0) {
+        const p = path[i - 1];
+        const dx = c.x - p.x, dy = c.y - p.y;
+        dir = dx > 0 ? 0 : dx < 0 ? 180 : dy > 0 ? 90 : 270;
+      } else {
+        dir = startDir;
+      }
+      return { ...c, direction: dir };
+    });
+    const chainIncoming = startDir;
+    let created = 0;
+    for (let i = 0; i < dirCells.length; i++) {
+      const incomingDir = i === 0 ? chainIncoming : dirCells[i - 1].direction;
+      const outgoingDir = dirCells[i].direction;
+      const isCorner = incomingDir !== outgoingDir;
+      // CW/CCW 判定
+      const dirIdx = (d: number) => (d === 270 ? 0 : d === 0 ? 1 : d === 90 ? 2 : 3);
+      const diff = (dirIdx(outgoingDir) - dirIdx(incomingDir) + 4) % 4;
+      const isCCW = diff === 3;
+      const handle = game.world.createEntity();
+      game.world.addComponent(handle, 'Position', { x: dirCells[i].x * CELL_SIZE, y: dirCells[i].y * CELL_SIZE });
+      game.world.addComponent(handle, 'SpriteComp', {
+        group: 'devices',
+        textureKey: isCorner ? 'belt_corner' : 'transport_belt',
+        width: CELL_SIZE,
+        height: CELL_SIZE,
+        layer: 2,
+      });
+      game.world.addComponent(handle, 'BeltSegmentComp', {
+        chainId,
+        direction: outgoingDir as 0 | 90 | 180 | 270,
+        isCorner,
+        entryDir: isCorner ? (incomingDir as 0 | 90 | 180 | 270) : undefined,
+        mirrorH: isCorner ? isCCW : undefined,
+        isTail: i === dirCells.length - 1,
+        incomingDirection: i === 0 ? chainIncoming : undefined,
+        segmentIndex: i,
+        phaseOffset: Math.random(),
+      });
+      occupancy.occupy(dirCells[i].x, dirCells[i].y, 'transport_belt');
+      created++;
+    }
+    game.update(); // 立即刷新一帧，让 Sprite 出现
+    return created;
+  };
+
   // 开发期调试钩子: 暴露关键对象到 window，便于控制台验证与测试。
   (window as unknown as { __game: unknown }).__game = {
     app,
@@ -493,6 +599,7 @@ async function main() {
     inventoryUI,
     selection,
     deleteSystem,
+    belt,
     getTexture,
     spawnTestDevices,
     clearTestDevices,
@@ -507,15 +614,18 @@ async function main() {
     fillBenchmarkDevices,
     runFpsBenchmark,
     memoryStressCheck,
+    spawnBelt,
   };
 
-  console.log('[集成工业系统] T1.7 设备放置 + T1.8 基础交互 + T1.9 设备删除 + T1.10 性能基准就绪');
+  console.log('[集成工业系统] T1.7 设备放置 + T1.8 基础交互 + T1.9 设备删除 + T1.10 性能基准 + T2.0 传送带创建就绪');
   console.log(`  世界: ${MAP.widthCells}×${MAP.heightCells} cells (MapInstance), CELL_SIZE=${CELL_SIZE}`);
   console.log('  操作: 中键拖拽/WASD(屏幕相对)/边缘滚动 平移, 滚轮以鼠标为中心缩放, Ctrl+R 视图旋转');
   console.log('  放置: 底部工具栏选设备 → 左键放网格 → R 旋转(相对视图) → 右键/ESC 取消');
+  console.log('  传送带: E 进入创建模式 → 点蓝色高亮端口/末端选起点 → 移动鼠标显蓝色预览(L形+BFS绕障) → 左键加中继锚点延伸折线 → 右键/ESC/E 落盘整条链');
   console.log('  交互: 左键点设备=选中(黄色填充+白色选中框), 点空白=取消, 选中+Delete=删除');
   console.log('  验收: __game.placeAt("refining_unit",5,5) 放设备 → selectFirstBuilding() 选中 → deleteSelectedBuilding() 删除 → getOccupiedCells() 查占用');
   console.log('  T1.10: __game.spawnBenchmarkDevices(100) 一键100设备 / fillBenchmarkDevices() 铺满地图 → runFpsBenchmark() 采样FPS/内存 → memoryStressCheck() 内存压测');
+  console.log('  T2.0: __game.spawnBelt([[5,5],[8,5],[8,8]],0) 程序化生成带转角传送带链 → 验证4方向转角+pointer流动');
 }
 
 main().catch((err) => {

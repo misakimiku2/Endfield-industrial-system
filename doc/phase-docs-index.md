@@ -86,7 +86,7 @@ Phase 2 目标：传送带能跑物品、机器能根据配方生产、物品从
 | [A7 core-decisions.md](architecture/core-decisions.md) | 宪法，再次通读。 |
 | [A4 item-spec.md](architecture/item-spec.md) | 物品定义、Tag 系统、Recipe 配方（多产物/副产物）。T2.3 配方加载的依据。 |
 | [A8 production-system-spec.md](architecture/production-system-spec.md) | 生产系统全部（缓冲区槽位、生产计时、端口轮询、状态机）。生产逻辑核心。 |
-| [A9 logistics-spec.md](architecture/logistics-spec.md) | 物流系统全部（传送带速度、物品移动、端口触发、堵塞传播、传送带创建系统）。物流核心。 |
+| [A9 logistics-spec.md](architecture/logistics-spec.md) | 物流系统全部（传送带速度、物品移动、端口触发、堵塞传播、传送带创建系统）。物流核心。T2.0 重点看 §6（截断/合并/物流桥属后续），§7~§8 先浏览，T2.1/T2.2 再深入。 |
 | [精炼炉设备说明.md](精炼炉设备说明.md) | 精炼炉的详细行为规范（基础设备模板，所有设备继承）。 |
 
 ### 部分阅读

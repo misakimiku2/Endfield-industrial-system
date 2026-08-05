@@ -25,6 +25,9 @@ import type { World, EntityHandle } from '../ECS';
 import type { Position } from '../components/Position';
 import type { SpriteComp } from '../components/SpriteComp';
 import type { BuildingComp } from '../components/BuildingComp';
+import type { BeltSegmentComp } from '../components/BeltSegmentComp';
+import { beltTextureRotation, beltCornerTransform } from './belt/BeltPathGeometry';
+import { BeltPointerRenderer } from '../render/BeltPointerRenderer';
 import type { AtlasGroup } from '../render/AssetsLoader';
 import type { SceneLayers } from '../render/SceneRenderer';
 import type { Camera } from '../render/Camera';
@@ -41,6 +44,9 @@ interface SpriteEntry {
   group: AtlasGroup;
   textureKey: string;
   layer: number;
+  /** 基于 SpriteComp 尺寸 / 纹理尺寸的基准缩放（避免 width/height 与 scale 混用导致拉伸）。 */
+  baseScaleX: number;
+  baseScaleY: number;
 }
 
 /** 视口剔除的安全边距（世界像素）。让刚出屏的实体多保留一段距离再剔除，避免边缘闪烁。 */
@@ -67,6 +73,10 @@ export class RenderSystem {
 
   /** handle → 渲染态。每帧 diff 维护。 */
   private entries = new Map<EntityHandle, SpriteEntry>();
+  /** 传送带 pointer 流动渲染器（T2.0 阶段1）。挂在 layer3Item，盖在带身之上。 */
+  private readonly pointerRenderer: BeltPointerRenderer;
+  /** 从游戏开始累积的总毫秒数，驱动 pointer 相位。由 update(deltaMS) 累积。 */
+  private elapsedMS = 0;
 
   constructor(
     world: World,
@@ -78,10 +88,15 @@ export class RenderSystem {
     this.layers = layers;
     this.camera = camera;
     this.getTexture = getTexture;
+    this.pointerRenderer = new BeltPointerRenderer(world, layers.layer3Item, getTexture);
   }
 
-  /** 每帧调用：同步 query 结果到 Sprite 集合，并做位置同步与视口剔除。 */
-  update(): void {
+  /**
+   * 每帧调用：同步 query 结果到 Sprite 集合，并做位置同步与视口剔除。
+   * @param deltaMS 自上一帧的毫秒数（来自 Pixi ticker），用于累积 pointer 相位。默认 0 兼容旧调用。
+   */
+  update(deltaMS = 0): void {
+    this.elapsedMS += deltaMS;
     const visible = this.world.query('Position', 'SpriteComp');
     const seen = new Set<EntityHandle>(visible);
 
@@ -118,12 +133,31 @@ export class RenderSystem {
       // 位置同步: 左上角 → 中心（anchor 0.5）
       sprite.position.set(pos.x + spr.width / 2, pos.y + spr.height / 2);
 
-      // 朝向同步: 带 BuildingComp 的实体按 direction 旋转（A3 §3.3 世界朝向）。
-      // 与 PlacementSystem 落盘的 worldAngle 同值、同符号（正值=屏幕顺时针），
-      // 故已放置设备的视觉朝向与放置预览一致（T1.7 修复#4）。
-      // 非 BuildingComp 实体（如 T1.6 测试 Sprite）不旋转。
+      // 朝向同步:
+      // - 带 BuildingComp 的实体按 direction 旋转（A3 §3.3 世界朝向）。
+      // - 带 BeltSegmentComp 的实体使用传送带纹理旋转（Transport_Belt_Move.svg 默认朝下）。
+      //   转角段用 belt_corner：CW = 按出口方向旋转；CCW = 按出口方向旋转 + scale.x 取负（水平镜像）。
+      //   预览/落盘/渲染三方共用 BeltPathGeometry 的同一套数学，保证一致。
       const building = this.world.getComponent<BuildingComp>(handle, 'BuildingComp');
-      sprite.rotation = building ? (building.direction * Math.PI) / 180 : 0;
+      const beltSeg = this.world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp');
+      if (building) {
+        sprite.scale.set(entry.baseScaleX, entry.baseScaleY);
+        sprite.rotation = (building.direction * Math.PI) / 180;
+      } else if (beltSeg) {
+        if (beltSeg.isCorner && beltSeg.entryDir !== undefined) {
+          const t = beltCornerTransform(beltSeg.entryDir, beltSeg.direction);
+          sprite.rotation = t.rotation;
+          // CCW 转角需要水平镜像：scale.x 取负值实现镜像，y 保持基准。
+          // 注意：每帧都重新 set，避免上一帧的镜像/旋转遗留。
+          sprite.scale.set(t.mirrorH ? -entry.baseScaleX : entry.baseScaleX, entry.baseScaleY);
+        } else {
+          sprite.scale.set(entry.baseScaleX, entry.baseScaleY);
+          sprite.rotation = beltTextureRotation(beltSeg.direction);
+        }
+      } else {
+        sprite.scale.set(entry.baseScaleX, entry.baseScaleY);
+        sprite.rotation = 0;
+      }
 
       // billboard 徽标：反向旋转以保持屏幕朝上
       if (entry.logo) {
@@ -133,12 +167,16 @@ export class RenderSystem {
       // 视口剔除: 实体世界 AABB 与可见范围无交集 → 隐藏
       sprite.visible = this.intersectsView(pos, spr, view);
     }
+
+    // 传送带 pointer 流动（T2.0 阶段1）：在所有带身 Sprite 同步之后，刷新 pointer 位置/朝向
+    this.pointerRenderer.update(this.elapsedMS);
   }
 
   /** 销毁所有 Sprite（场景切换/ teardown 用）。实体本身不动（由 ECS 管理）。 */
   clear(): void {
     for (const entry of this.entries.values()) this.disposeEntry(entry);
     this.entries.clear();
+    this.pointerRenderer.destroy();
   }
 
   /** 当前管理的 Sprite entry 数（T1.10 性能/内存监控用）。 */
@@ -161,10 +199,11 @@ export class RenderSystem {
     const tex = this.getTexture(spr.group, spr.textureKey) ?? Texture.EMPTY;
     const sprite = new Sprite(tex);
     sprite.anchor.set(0.5);
-    // 宽高用 SpriteComp 指定的世界像素尺寸覆盖纹理原始尺寸
-    // （图集帧可能比目标 footprint 大/小，统一以世界尺寸为准）
-    sprite.width = spr.width;
-    sprite.height = spr.height;
+    // 用 scale 而非 width/height，因为后续 update 会根据朝向/镜像调整 scale.y；
+    // width/height 与 scale 混用会导致覆盖尺寸（如 sprite.scale.y=1 把高度拉回纹理高度）。
+    const baseScaleX = tex.width > 0 ? spr.width / tex.width : 1;
+    const baseScaleY = tex.height > 0 ? spr.height / tex.height : 1;
+    sprite.scale.set(baseScaleX, baseScaleY);
     this.layerContainer(spr.layer).addChild(sprite);
 
     // 可选 billboard 徽标层：作为子 Sprite 叠加，并在 update 中反向旋转保持屏幕朝上
@@ -178,7 +217,7 @@ export class RenderSystem {
       sprite.addChild(logo);
     }
 
-    return { sprite, logo, group: spr.group, textureKey: spr.textureKey, layer: spr.layer };
+    return { sprite, logo, group: spr.group, textureKey: spr.textureKey, layer: spr.layer, baseScaleX, baseScaleY };
   }
 
   private disposeEntry(entry: SpriteEntry): void {
