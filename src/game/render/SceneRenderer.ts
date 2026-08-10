@@ -7,10 +7,10 @@
 //   ├─ worldContainer    [世界空间] 受相机变换
 //   │   ├─ layer0Terrain   (地形瓦片/矿脉，T1.4 之后为空，背景已移到屏幕层)
 //   │   ├─ layer1Grid      (留空; 网格线在 backgroundLayer 屏幕空间渲染)
-//   │   ├─ layer2Building  (已放置的建筑)
-//   │   ├─ layer3Item      (传送带上的物品/掉落物)
 //   │   ├─ layer4Enemy     (敌人实体)
-//   │   └─ layer5Effect    (子弹/粒子/伤害数字)
+//   │   ├─ layer5Effect    (子弹/粒子/伤害数字)
+//   │   ├─ layer2Building  (已放置的建筑/传送带 —— 渲染在最高层，盖住网格线等下层内容)
+//   │   └─ layer3Item      (传送带上的物品/掉落物/pointer —— 在建筑之上，pointer 盖在带身上)
 //   └─ overlayLayer      [屏幕空间] UIOverlay (选中框) + 暗角 (T1.4 GridRenderer)
 //
 // 说明: 网格背景与网格线在屏幕空间渲染(每帧按相机可见范围重绘)，而非世界空间，
@@ -56,10 +56,10 @@ export class SceneRenderer {
     worldContainer.addChild(
       layer0Terrain,
       layer1Grid,
-      layer2Building,
-      layer3Item,
       layer4Enemy,
       layer5Effect,
+      layer2Building,
+      layer3Item,
     );
 
     // ── 屏幕空间 UIOverlay + 暗角 ──
