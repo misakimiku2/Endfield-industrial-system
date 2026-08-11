@@ -345,7 +345,9 @@ export class BeltCreationSystem {
   /**
    * 构造阻挡判定函数：
    *   - 当前已确认 fullPath 格（防新预览段与自身交叉）；但 lastAnchor 本身允许（它是新段起点）。
-   *   - 被设备占用的格；但链首格（端口/断头段）允许（它是合法起点）。
+   *   - 被设备占用的格；仅 port 起点时豁免链首格（端口格本身已占用但合法），
+   *     tail 起点**不豁免**——startCell 是原 chain 的尾段（已存在的传送带），
+   *     新路径绝不能穿回它（否则会在原传送带格上创建重叠段，T2.0 重叠 bug 根因）。
    * 越界由 canPlace 在 checkPathValid 兜底（BFS 不主动越界，因为设备占用通常贴边）。
    */
   private makeIsBlocked(): IsBlocked {
@@ -353,20 +355,23 @@ export class BeltCreationSystem {
     const lastAnchor = this.anchors[this.anchors.length - 1];
     const startCell = this.anchors[0];
     const occupancy = this.occupancy;
+    // tail 延长时 startCell 是已存在传送带，必须阻挡；port 起点时 startCell 是端口格，可豁免
+    const isPortStart = this.startPoint?.kind === 'port';
+    const isStartCellAllowed = (cell: GridCell): boolean =>
+      isPortStart && cell.x === startCell.x && cell.y === startCell.y;
     return (cell: GridCell): boolean => {
       // lastAnchor 是新预览段的起点，允许（它可能在 fullPath 末尾）
       if (cell.x === lastAnchor.x && cell.y === lastAnchor.y) return false;
-      // 已确认路径上的格阻挡（防止自交），链首格除外
+      // 已确认路径上的格阻挡（防止自交）
       for (const c of fullPath) {
         if (c.x === cell.x && c.y === cell.y) {
-          // 链首格（端口/断头）不阻挡
-          if (cell.x === startCell.x && cell.y === startCell.y) return false;
+          if (isStartCellAllowed(cell)) return false;
           return true;
         }
       }
-      // 设备占用格阻挡，链首格除外（端口本身已占用但合法）
+      // 设备占用格阻挡（tail 起点不豁免，防穿回原 chain）
       if (occupancy.isOccupied(cell.x, cell.y)) {
-        if (cell.x === startCell.x && cell.y === startCell.y) return false;
+        if (isStartCellAllowed(cell)) return false;
         return true;
       }
       return false;
@@ -423,7 +428,10 @@ export class BeltCreationSystem {
 
   /**
    * 检查预览段（raw，相对本次锚点）是否全部可放置。
-   * 跳过起点格（anchors[0]）和当前锚点（lastAnchor）——两者已合法占用。
+   * - raw[0] 是本次预览段起点（lastAnchor），跳过。
+   * - 起点格（anchors[0]，即原 chain 的尾段 / 设备端口格）出现在 raw[1:] 中即判非法：
+   *   路径绕回起点会在原 chain / 建筑端口格上创建重叠段（T2.0 重叠 bug 根因）。
+   *   BFS 即使把 startCell 当终点也会返回该路径（终点豁免占用），所以这里必须拒绝。
    */
   private checkPathValid(raw: GridCell[], lastAnchor: GridCell): boolean {
     const startCell = this.anchors[0];
@@ -431,7 +439,8 @@ export class BeltCreationSystem {
       const c = raw[i];
       // raw[0] 永远是起点格（端口/锚点），不检查
       if (i === 0) continue;
-      if (c.x === startCell.x && c.y === startCell.y) continue;
+      // 起点格出现在非首格位置 → 路径绕回起点会与原 chain / 端口格重叠，判非法
+      if (c.x === startCell.x && c.y === startCell.y) return false;
       if (c.x === lastAnchor.x && c.y === lastAnchor.y) continue;
       if (!this.occupancy.canPlace(c.x, c.y, 1, 1)) return false;
     }

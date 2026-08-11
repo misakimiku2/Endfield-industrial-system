@@ -5,6 +5,7 @@ src-tauri/target/
 *.log
 .env
 .env.local
+.playwright-cli
 
 # T1.3: 构建脚本产物(由 npm run pack-assets 生成，不入库)
 public/spritesheets/
