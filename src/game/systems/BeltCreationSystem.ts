@@ -12,11 +12,10 @@
 //
 // 创建模式下普通设备选中逻辑由 main.ts 暂停转发，避免冲突。
 
-import { Container, Graphics, Sprite, Texture } from 'pixi.js';
+import { Container, Graphics } from 'pixi.js';
 import type { World, EntityHandle } from '../ECS';
 import type { Camera } from '../render/Camera';
 import type { SceneLayers } from '../render/SceneRenderer';
-import type { TextureLookup } from './RenderSystem';
 import type { OccupancyMap } from '../world/OccupancyMap';
 import type { Port } from '../data/buildings';
 import { getBuildingDefinition } from '../data/buildings';
@@ -24,7 +23,7 @@ import type { BuildingComp, Direction } from '../components/BuildingComp';
 import type { Position } from '../components/Position';
 import type { BeltSegmentComp } from '../components/BeltSegmentComp';
 import { CELL_SIZE } from '../render/constants';
-import { BeltPreviewTintFilter } from '../render/BeltPreviewTintFilter';
+import { drawStraightBelt, drawCornerBelt } from '../render/BeltVectorGeometry';
 import {
   beltCornerTransform,
   beltTextureRotation,
@@ -71,6 +70,10 @@ interface PathCell extends GridCell {
 const COLOR_START = 0x76bbea;
 /** 预览半透明度。 */
 const PREVIEW_ALPHA = 0.7;
+/** 预览可放置颜色（蓝，与 BeltPreviewTintFilter VALID 一致）。 */
+const COLOR_PREVIEW_VALID = 0x76bbea;
+/** 预览不可放置颜色（红）。 */
+const COLOR_PREVIEW_INVALID = 0xe45050;
 
 /** chainId 计数器，避免纯时间戳冲突。 */
 let chainCounter = 0;
@@ -89,7 +92,6 @@ export class BeltCreationSystem {
   private occupancy: OccupancyMap;
   private camera: Camera;
   private layers: SceneLayers;
-  private getTexture: TextureLookup;
 
   /** 当前模式。 */
   private mode: BeltMode = 'idle';
@@ -112,10 +114,8 @@ export class BeltCreationSystem {
 
   /** 起点高亮 Graphics（挂 layer5Effect，在世界坐标绘制）。 */
   private highlightGraphics: Graphics;
-  /** 预览路径 Sprite 容器（挂 layer2Building）。 */
+  /** 预览路径 Graphics 容器（挂 layer2Building）。 */
   private previewContainer: Container;
-  /** 预览染色 Filter（所有预览 Sprite 共享）。 */
-  private previewFilter: BeltPreviewTintFilter;
   /** 当前预览路径（live，未提交）。 */
   private previewPath: PathCell[] = [];
   /** 当前预览是否可放置。 */
@@ -126,13 +126,11 @@ export class BeltCreationSystem {
     occupancy: OccupancyMap,
     camera: Camera,
     layers: SceneLayers,
-    getTexture: TextureLookup,
   ) {
     this.world = world;
     this.occupancy = occupancy;
     this.camera = camera;
     this.layers = layers;
-    this.getTexture = getTexture;
 
     this.highlightGraphics = new Graphics({ label: 'beltHighlights' });
     this.highlightGraphics.visible = false;
@@ -142,8 +140,6 @@ export class BeltCreationSystem {
     this.previewContainer.visible = false;
     this.previewContainer.zIndex = 20000;
     this.layers.layer2Building.addChild(this.previewContainer);
-
-    this.previewFilter = new BeltPreviewTintFilter();
   }
 
   // ───────────────────────── 模式控制 ─────────────────────────
@@ -542,7 +538,8 @@ export class BeltCreationSystem {
       mirrorH: info.isTurn ? info.isCCW : undefined,
       isTail,
     });
-    // 纹理在直段/转角之间切换时，RenderSystem 靠 textureKey diff 重建 Sprite
+    // 带身已由 BeltVectorRenderer 矢量渲染（不再依赖 SpriteComp 纹理），
+    // 保留 SpriteComp 仅作占位（其他系统如占用表可能读取）；textureKey 无需再切换。
     const spr = this.world.getComponent<import('../components/SpriteComp').SpriteComp>(handle, 'SpriteComp');
     if (spr) {
       const newKey = info.isTurn ? 'belt_corner' : 'transport_belt';
@@ -640,34 +637,29 @@ export class BeltCreationSystem {
     }
 
     // 预览路径非空: 整条按 previewValid 染色(蓝/红),含转角正确渲染
-    this.previewFilter.setValid(this.previewValid);
+    // 方案A：用矢量 Graphics 绘制（与落盘带身同构），缩小 zoom 无缝无接缝。
+    const previewColor = this.previewValid ? COLOR_PREVIEW_VALID : COLOR_PREVIEW_INVALID;
     const startDir = this.startPoint!.direction;
     const infos = computeTurnInfos(this.previewPath, startDir);
 
     for (let i = startIdx; i < this.previewPath.length; i++) {
       const cell = this.previewPath[i];
       const info = infos[i];
-      const texKey = info.isTurn ? 'belt_corner' : 'transport_belt';
-      const tex = this.getTexture('devices', texKey) ?? Texture.EMPTY;
-      const sprite = new Sprite(tex);
-      sprite.anchor.set(0.5);
-      sprite.position.set(cell.x * CELL_SIZE + CELL_SIZE / 2, cell.y * CELL_SIZE + CELL_SIZE / 2);
-      // 用 scale 而非 width/height，避免后续 scale.x 镜像把宽度拉回纹理宽度造成拉伸
-      const baseScaleX = tex.width > 0 ? CELL_SIZE / tex.width : 1;
-      const baseScaleY = tex.height > 0 ? CELL_SIZE / tex.height : 1;
-      sprite.alpha = PREVIEW_ALPHA;
-      sprite.filters = [this.previewFilter];
+      const g = new Graphics();
+      g.position.set(cell.x * CELL_SIZE + CELL_SIZE / 2, cell.y * CELL_SIZE + CELL_SIZE / 2);
+      g.alpha = PREVIEW_ALPHA;
 
       if (info.isTurn) {
         const t = beltCornerTransform(info.incomingDir, info.outgoingDir);
-        sprite.rotation = t.rotation;
-        sprite.scale.set(t.mirrorH ? -baseScaleX : baseScaleX, baseScaleY);
+        g.rotation = t.rotation;
+        g.scale.set(t.mirrorH ? -1 : 1, 1);
+        drawCornerBelt(g, CELL_SIZE, previewColor);
       } else {
-        sprite.rotation = beltTextureRotation(info.outgoingDir);
-        sprite.scale.set(baseScaleX, baseScaleY);
+        g.rotation = beltTextureRotation(info.outgoingDir);
+        drawStraightBelt(g, CELL_SIZE, previewColor);
       }
 
-      this.previewContainer.addChild(sprite);
+      this.previewContainer.addChild(g);
     }
 
     this.previewContainer.visible = true;
@@ -675,19 +667,13 @@ export class BeltCreationSystem {
 
   /** 在鼠标当前格渲染单格红色警示块(BFS 无路径时提示"此处不可达")。 */
   private drawInvalidMarker(): void {
-    this.previewFilter.setValid(false);
     const gx = this.mouseGrid.x;
     const gy = this.mouseGrid.y;
-    const tex = this.getTexture('devices', 'transport_belt') ?? Texture.EMPTY;
-    const sprite = new Sprite(tex);
-    sprite.anchor.set(0.5);
-    sprite.position.set(gx * CELL_SIZE + CELL_SIZE / 2, gy * CELL_SIZE + CELL_SIZE / 2);
-    const baseScaleX = tex.width > 0 ? CELL_SIZE / tex.width : 1;
-    const baseScaleY = tex.height > 0 ? CELL_SIZE / tex.height : 1;
-    sprite.scale.set(baseScaleX, baseScaleY);
-    sprite.alpha = PREVIEW_ALPHA;
-    sprite.filters = [this.previewFilter];
-    this.previewContainer.addChild(sprite);
+    const g = new Graphics();
+    g.position.set(gx * CELL_SIZE + CELL_SIZE / 2, gy * CELL_SIZE + CELL_SIZE / 2);
+    g.alpha = PREVIEW_ALPHA;
+    drawStraightBelt(g, CELL_SIZE, COLOR_PREVIEW_INVALID);
+    this.previewContainer.addChild(g);
     this.previewContainer.visible = true;
   }
 

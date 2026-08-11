@@ -44,7 +44,7 @@ export class Game {
       this.world, this.occupancy, this.camera, scene.layers, getTexture,
     );
     this.beltCreation = new BeltCreationSystem(
-      this.world, this.occupancy, this.camera, scene.layers, getTexture,
+      this.world, this.occupancy, this.camera, scene.layers,
     );
   }
 

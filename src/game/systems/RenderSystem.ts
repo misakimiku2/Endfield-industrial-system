@@ -28,6 +28,7 @@ import type { BuildingComp } from '../components/BuildingComp';
 import type { BeltSegmentComp } from '../components/BeltSegmentComp';
 import { beltTextureRotation, beltCornerTransform } from './belt/BeltPathGeometry';
 import { BeltPointerRenderer } from '../render/BeltPointerRenderer';
+import { BeltVectorRenderer } from '../render/BeltVectorRenderer';
 import type { AtlasGroup } from '../render/AssetsLoader';
 import type { SceneLayers } from '../render/SceneRenderer';
 import type { Camera } from '../render/Camera';
@@ -53,6 +54,19 @@ interface SpriteEntry {
 const CULL_PADDING = 128;
 
 /**
+ * 传送带 sprite 是否对齐屏幕整数像素。
+ *
+ * 修复"传送带外侧灰线"(grid 隐藏时仍可见)：之前用 BELT_OVERLAP=1.02 让相邻 sprite
+ * 在 cell 边界重叠 1.28 world px 来盖住亚像素缝隙。但 sprite 内 source [0,40]/[216,256]
+ * 朝 cell 边界方向是**透明边距**，重叠区两边都透明 → 显示背景色 #E6E4E4 米白 = 灰线。
+ * 改用 roundPixels：sprite 严格 64 world px，但 sprite.position 对齐到屏幕整数像素。
+ * 在非整数 zoom(如 1.37/1.91)下，sprite 边界不再落在亚像素上抗锯齿出"半像素透明"，
+ * 而是吸收为半个像素的整体偏移，缝隙由透明背景与相邻 sprite 的实际色彩过渡自然覆盖。
+ * 整数 zoom(1/4)本来就对齐，roundPixels 是无副作用的恒等变换。
+ */
+const BELT_ROUND_PIXELS = true;
+
+/**
  * 把场景层（layer0~5）按层号取出来，供 Sprite 挂载。
  * SceneLayers 里 layer0~5 是固定数组顺序，此处显式列出保持可读性。
  */
@@ -75,6 +89,8 @@ export class RenderSystem {
   private entries = new Map<EntityHandle, SpriteEntry>();
   /** 传送带 pointer 流动渲染器（T2.0 阶段1）。挂在 layer3Item，盖在带身之上。 */
   private readonly pointerRenderer: BeltPointerRenderer;
+  /** 传送带带身矢量渲染器（T2.0 方案A）。挂在 layer2Building，替代传送带 Sprite。 */
+  private readonly beltVectorRenderer: BeltVectorRenderer;
   /** 从游戏开始累积的总毫秒数，驱动 pointer 相位。由 update(deltaMS) 累积。 */
   private elapsedMS = 0;
 
@@ -89,6 +105,7 @@ export class RenderSystem {
     this.camera = camera;
     this.getTexture = getTexture;
     this.pointerRenderer = new BeltPointerRenderer(world, layers.layer3Item, getTexture);
+    this.beltVectorRenderer = new BeltVectorRenderer(world, layers.layer2Building);
   }
 
   /**
@@ -115,6 +132,9 @@ export class RenderSystem {
     for (const handle of visible) {
       const pos = this.world.getComponent<Position>(handle, 'Position')!;
       const spr = this.world.getComponent<SpriteComp>(handle, 'SpriteComp')!;
+      // 传送带段：带身由 BeltVectorRenderer 矢量渲染（替代 Sprite，消除缩放接缝）。
+      // 这里跳过 Sprite 创建；SpriteComp 仍保留（占位/一致性），但不再被本系统渲染。
+      if (this.world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp')) continue;
       let entry = this.entries.get(handle);
 
       // 新实体 或 纹理/层级变更 → (重新)绑定 Sprite
@@ -149,6 +169,7 @@ export class RenderSystem {
           sprite.rotation = t.rotation;
           // CCW 转角需要水平镜像：scale.x 取负值实现镜像，y 保持基准。
           // 注意：每帧都重新 set，避免上一帧的镜像/旋转遗留。
+          // 严格 64 world px 精灵：避免朝 cell 外溢出造成"外侧灰线"（详见 BELT_ROUND_PIXELS 注释）。
           sprite.scale.set(t.mirrorH ? -entry.baseScaleX : entry.baseScaleX, entry.baseScaleY);
         } else {
           sprite.scale.set(entry.baseScaleX, entry.baseScaleY);
@@ -168,6 +189,8 @@ export class RenderSystem {
       sprite.visible = this.intersectsView(pos, spr, view);
     }
 
+    // 传送带带身矢量渲染（T2.0 方案A）：在 Sprite 同步之后，刷新带身 Graphics 位置/朝向
+    this.beltVectorRenderer.update();
     // 传送带 pointer 流动（T2.0 阶段1）：在所有带身 Sprite 同步之后，刷新 pointer 位置/朝向
     this.pointerRenderer.update(this.elapsedMS);
   }
@@ -176,6 +199,7 @@ export class RenderSystem {
   clear(): void {
     for (const entry of this.entries.values()) this.disposeEntry(entry);
     this.entries.clear();
+    this.beltVectorRenderer.destroy();
     this.pointerRenderer.destroy();
   }
 
@@ -199,6 +223,8 @@ export class RenderSystem {
     const tex = this.getTexture(spr.group, spr.textureKey) ?? Texture.EMPTY;
     const sprite = new Sprite(tex);
     sprite.anchor.set(0.5);
+    // sprite 屏幕变换对齐到整数像素：非整数 zoom 下消除亚像素接缝（整数 zoom 无副作用）。
+    sprite.roundPixels = BELT_ROUND_PIXELS;
     // 用 scale 而非 width/height，因为后续 update 会根据朝向/镜像调整 scale.y；
     // width/height 与 scale 混用会导致覆盖尺寸（如 sprite.scale.y=1 把高度拉回纹理高度）。
     const baseScaleX = tex.width > 0 ? spr.width / tex.width : 1;
