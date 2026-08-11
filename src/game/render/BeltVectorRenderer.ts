@@ -18,8 +18,14 @@ import type { World, EntityHandle } from '../ECS';
 import type { Position } from '../components/Position';
 import type { BeltSegmentComp } from '../components/BeltSegmentComp';
 import { beltTextureRotation, beltCornerTransform } from '../systems/belt/BeltPathGeometry';
+import type { BeltSelection } from '../systems/belt/BeltSelection';
 import { CELL_SIZE } from './constants';
-import { drawStraightBelt, drawCornerBelt } from './BeltVectorGeometry';
+import {
+  drawStraightBelt,
+  drawCornerBelt,
+  drawStraightBeltSelectionUnderlay,
+  drawCornerBeltSelectionBorder,
+} from './BeltVectorGeometry';
 
 /** 单个传送带段的渲染态。 */
 interface VectorEntry {
@@ -42,6 +48,8 @@ function segShapeKey(seg: BeltSegmentComp): string {
 export class BeltVectorRenderer {
   private world: World;
   private layer: Container;
+  /** 选中态（SelectionSystem 写）；选中段在 body 上叠白边。由 RenderSystem 注入。 */
+  private beltSelection: BeltSelection | null = null;
 
   /** handle → entry，用于 diff。 */
   private entries = new Map<EntityHandle, VectorEntry>();
@@ -49,6 +57,11 @@ export class BeltVectorRenderer {
   constructor(world: World, layer: Container) {
     this.world = world;
     this.layer = layer;
+  }
+
+  /** 注入选中态（由 RenderSystem.setBeltSelection 转发）。 */
+  setBeltSelection(bs: BeltSelection): void {
+    this.beltSelection = bs;
   }
 
   /** 每帧同步所有传送带段的矢量带身。 */
@@ -93,13 +106,16 @@ export class BeltVectorRenderer {
         entry.g.scale.set(1, 1);
       }
 
-      // 形状重绘（仅方向/转角变化时）
-      const key = segShapeKey(seg);
+      // 形状重绘（方向/转角/选中态变化时）
+      const selected = this.beltSelection?.has(handle) ?? false;
+      const key = segShapeKey(seg) + (selected ? '|sel' : '');
       if (entry.lastKey !== key) {
         entry.g.clear();
         if (seg.isCorner) {
           drawCornerBelt(entry.g, CELL_SIZE);
+          if (selected) drawCornerBeltSelectionBorder(entry.g, CELL_SIZE); // 白边描边（带身之后）
         } else {
+          if (selected) drawStraightBeltSelectionUnderlay(entry.g, CELL_SIZE); // 白底（灰壳之前）
           drawStraightBelt(entry.g, CELL_SIZE);
         }
         entry.lastKey = key;

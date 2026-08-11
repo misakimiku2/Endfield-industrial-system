@@ -21,6 +21,7 @@ import type { Position } from '../components/Position';
 import type { BeltSegmentComp } from '../components/BeltSegmentComp';
 import type { Direction } from '../components/BuildingComp';
 import type { TextureLookup } from '../systems/RenderSystem';
+import type { BeltSelection } from '../systems/belt/BeltSelection';
 import { CELL_SIZE } from './constants';
 import { turnInfoFromDirections } from '../systems/belt/BeltPathGeometry';
 
@@ -90,11 +91,18 @@ export class BeltPointerRenderer {
 
   /** handle → entry 映射，用于 diff。 */
   private entries = new Map<EntityHandle, PointerEntry>();
+  /** 选中态（SelectionSystem 写）；选中段不显示 pointer（逻辑不变，仅隐藏）。 */
+  private beltSelection: BeltSelection | null = null;
 
   constructor(world: World, layer: Container, getTexture: TextureLookup) {
     this.world = world;
     this.layer = layer;
     this.getTexture = getTexture;
+  }
+
+  /** 注入选中态（由 RenderSystem.setBeltSelection 转发）。 */
+  setBeltSelection(bs: BeltSelection): void {
+    this.beltSelection = bs;
   }
 
   /**
@@ -203,8 +211,9 @@ export class BeltPointerRenderer {
       entry.sprite.position.set(CELL_SIZE / 2 + x, CELL_SIZE / 2 + y);
       entry.sprite.rotation = rotation;
       entry.sprite.alpha = 1;
-      // T2.0 阶段1 无物品，pointer 始终可见；端点越界部分由单元蒙版裁掉（无 alpha 渐变）
-      entry.sprite.visible = true;
+      // 选中段不显示 pointer（逻辑不变，仅隐藏渲染）；其余段 pointer 始终可见
+      // （T2.0 阶段1 无物品；端点越界部分由单元蒙版裁掉，无 alpha 渐变）
+      entry.sprite.visible = !(this.beltSelection?.has(handle) ?? false);
     }
   }
 

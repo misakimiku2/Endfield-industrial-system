@@ -147,3 +147,79 @@ export function drawCornerBelt(g: Graphics, cellSize: number, overrideColor?: nu
     .closePath()
     .fill({ color: shell });
 }
+
+// ───────────────────────── 选中态几何（T2.0 链管理）─────────────────────────
+
+/**
+ * 选中白边宽度（viewBox 单位）= (14.2875 − 11.641667)/2。
+ * 换算: 1.3229 / 16.933 × CELL_SIZE(64) ≈ 5.0 世界像素（与用户参考图 Transport.svg 一致）。
+ */
+export const SELECTION_RIM = 1.322916;
+
+/** 选中斜杠颜色（用户参考图 Transport.svg 的 Strips1_1 pattern fill #eec213）。 */
+export const BELT_COLOR_STRIPE = 0xeec213;
+
+/**
+ * 绘制传送带的「黄色区域」形状（供选中斜杠的 StencilMask 用）。
+ * 直段 = 黄带 rect；转角 = 黄带弧环（circle5 path）。
+ * 形状与 drawStraightBelt/drawCornerBelt 的黄色部分完全一致，确保蒙版与带身黄底对齐。
+ *
+ * 调用方负责与带身相同的 rotation/scale 定位（beltTextureRotation / beltCornerTransform）。
+ * 填充色对 StencilMask 无意义（仅取形状），用白色占位。
+ */
+export function drawBeltYellowShape(g: Graphics, cellSize: number, isCorner: boolean): void {
+  const s = cellSize / BELT_SVG_SIZE;
+  if (!isCorner) {
+    g.beginPath();
+    g.rect(
+      (-STRAIGHT_BELT_W / 2) * s,
+      -cellSize / 2,
+      STRAIGHT_BELT_W * s,
+      cellSize,
+    ).fill({ color: 0xffffff });
+    return;
+  }
+  const c = BELT_CENTER * s;
+  const shellOuter = CORNER_SHELL_R_OUTER * s;
+  const beltOuter = CORNER_BELT_R_OUTER * s;
+  const inner = CORNER_R_INNER * s;
+  // 与 drawCornerBelt 的黄带环（circle5）完全相同的 path
+  g.beginPath();
+  g.moveTo(c, c - beltOuter)
+    .arcToSvg(beltOuter, beltOuter, 0, 0, 0, c - beltOuter, c)
+    .lineTo(shellOuter - c, c)
+    .arcToSvg(inner, inner, 0, 0, 1, c, c - inner)
+    .closePath()
+    .fill({ color: 0xffffff });
+}
+
+/**
+ * 绘制直段选中白边底层（filled，画在灰壳之前）。
+ * 白 rect 宽 = 灰壳宽 + 2×RIM（=14.2875，与 Transport.svg rect2 一致），全高。
+ * 灰壳(11.64)叠在上面 → 左右各露出 RIM(≈5px) 白边。
+ */
+export function drawStraightBeltSelectionUnderlay(g: Graphics, cellSize: number): void {
+  const s = cellSize / BELT_SVG_SIZE;
+  const w = (STRAIGHT_SHELL_W + 2 * SELECTION_RIM) * s;
+  g.beginPath();
+  g.rect(-w / 2, -cellSize / 2, w, cellSize).fill({ color: 0xffffff });
+}
+
+/**
+ * 绘制转角选中白边（stroked，画在带身之后）。
+ * 转角的灰壳外弧已抵格子边缘，无法用「更宽填充底」(会溢出格子角)，改用沿灰壳轮廓描白边。
+ * width = 2×RIM（≈10px，向内/外各 5px），描整个灰壳带轮廓 → 白色边框。
+ */
+export function drawCornerBeltSelectionBorder(g: Graphics, cellSize: number): void {
+  const s = cellSize / BELT_SVG_SIZE;
+  const c = BELT_CENTER * s;
+  const shellOuter = CORNER_SHELL_R_OUTER * s;
+  const inner = CORNER_R_INNER * s;
+  g.beginPath();
+  g.moveTo(c, c - shellOuter)
+    .arcToSvg(shellOuter, shellOuter, 0, 0, 0, c - shellOuter, c)
+    .lineTo(shellOuter - c, c)
+    .arcToSvg(inner, inner, 0, 0, 1, c, c - inner)
+    .closePath()
+    .stroke({ color: 0xffffff, width: 2 * SELECTION_RIM * s });
+}

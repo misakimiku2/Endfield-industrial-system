@@ -29,6 +29,8 @@ import type { BeltSegmentComp } from '../components/BeltSegmentComp';
 import { beltTextureRotation, beltCornerTransform } from './belt/BeltPathGeometry';
 import { BeltPointerRenderer } from '../render/BeltPointerRenderer';
 import { BeltVectorRenderer } from '../render/BeltVectorRenderer';
+import { BeltSelectionRenderer } from '../render/BeltSelectionRenderer';
+import type { BeltSelection } from './belt/BeltSelection';
 import type { AtlasGroup } from '../render/AssetsLoader';
 import type { SceneLayers } from '../render/SceneRenderer';
 import type { Camera } from '../render/Camera';
@@ -91,6 +93,8 @@ export class RenderSystem {
   private readonly pointerRenderer: BeltPointerRenderer;
   /** 传送带带身矢量渲染器（T2.0 方案A）。挂在 layer2Building，替代传送带 Sprite。 */
   private readonly beltVectorRenderer: BeltVectorRenderer;
+  /** 传送带选中视觉渲染器（T2.0 链管理）。屏幕常量斜杠 + 黄色遮罩 + 白边。 */
+  private readonly beltSelectionRenderer: BeltSelectionRenderer;
   /** 从游戏开始累积的总毫秒数，驱动 pointer 相位。由 update(deltaMS) 累积。 */
   private elapsedMS = 0;
 
@@ -106,6 +110,18 @@ export class RenderSystem {
     this.getTexture = getTexture;
     this.pointerRenderer = new BeltPointerRenderer(world, layers.layer3Item, getTexture);
     this.beltVectorRenderer = new BeltVectorRenderer(world, layers.layer2Building);
+    this.beltSelectionRenderer = new BeltSelectionRenderer(world, layers.layer2Building, camera);
+  }
+
+  /**
+   * 注入传送带选中态（由 main.ts 在构造 SelectionSystem 后调用）。
+   * 转发给三个带身渲染器：白边（VectorRenderer）、隐藏 pointer（PointerRenderer）、
+   * 屏幕常量斜杠（SelectionRenderer）。
+   */
+  setBeltSelection(bs: BeltSelection): void {
+    this.beltVectorRenderer.setBeltSelection(bs);
+    this.pointerRenderer.setBeltSelection(bs);
+    this.beltSelectionRenderer.setBeltSelection(bs);
   }
 
   /**
@@ -193,6 +209,8 @@ export class RenderSystem {
     this.beltVectorRenderer.update();
     // 传送带 pointer 流动（T2.0 阶段1）：在所有带身 Sprite 同步之后，刷新 pointer 位置/朝向
     this.pointerRenderer.update(this.elapsedMS);
+    // 传送带选中视觉（T2.0 链管理）：屏幕常量斜杠 + 黄色遮罩（盖在带身之上）
+    this.beltSelectionRenderer.update();
   }
 
   /** 销毁所有 Sprite（场景切换/ teardown 用）。实体本身不动（由 ECS 管理）。 */
@@ -201,6 +219,7 @@ export class RenderSystem {
     this.entries.clear();
     this.beltVectorRenderer.destroy();
     this.pointerRenderer.destroy();
+    this.beltSelectionRenderer.destroy();
   }
 
   /** 当前管理的 Sprite entry 数（T1.10 性能/内存监控用）。 */

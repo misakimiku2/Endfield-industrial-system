@@ -24,6 +24,8 @@ import { getBuildingDefinition, type BuildingDefinition } from './game/data/buil
 import type { Direction } from './game/components/BuildingComp';
 import { SelectionSystem } from './game/systems/SelectionSystem';
 import { DeleteSystem } from './game/systems/DeleteSystem';
+import { deleteChain, deleteSegment, queryChain } from './game/systems/belt/BeltChainOps';
+import { BeltSelection } from './game/systems/belt/BeltSelection';
 import { PerfMonitor, type BenchmarkReport, type MemoryStressRound } from './game/perf/PerfMonitor';
 import type { Position } from './game/components/Position';
 import type { SpriteComp } from './game/components/SpriteComp';
@@ -109,7 +111,10 @@ async function main() {
   const perf = new PerfMonitor(app, game.world, game.renderSystem, occupancy);
 
   // ── T1.8 基础交互: 点击选中 + 屏幕空间选中框 ──
-  const selection = new SelectionSystem(game.world, camera, scene.layers);
+  // 传送带选中态共享对象：SelectionSystem 每帧写，带身渲染器（白边/隐指针/屏幕常量斜杠）读。
+  const beltSelection = new BeltSelection();
+  const selection = new SelectionSystem(game.world, camera, scene.layers, beltSelection);
+  game.renderSystem.setBeltSelection(beltSelection);
 
   // ── T1.9 设备删除: 选中 + Delete 键 → 销毁实体 + 释放占用 ──
   const deleteSystem = new DeleteSystem(game.world, occupancy);
@@ -237,12 +242,27 @@ async function main() {
   };
   window.addEventListener('keydown', onKeyPlacing);
 
-  // 键盘: Delete 键 = 删除选中设备（T1.9）。只在**非放置态**响应——
+  // 键盘: Delete 键 = 删除选中目标（T1.9 设备 / T2.0 传送带）。只在**非放置态**响应——
   // 放置模式下 Delete 无动作，与"右键=取消放置"两套语义不重叠。
-  // 无选中时 deleteBuilding(null) 返回 false，天然无反应。
+  //   - 传送带整链选中 → 整链删除；单格选中 → 单段删除（下游重拆为断头链）
+  //   - 设备选中 → 走 deleteBuilding（保持 T1.9 行为）
+  // 无选中时各删除函数返回 false/null，天然无反应。
   const onKeyDelete = (e: KeyboardEvent): void => {
     if (e.code !== 'Delete') return;
     if (placement.isPlacing()) return; // 放置态不响应删除
+    // 传送带选中: 删当前所选（整链→整链删；单格→单段删，下游重拆断头链）
+    const chain = selection.getSelectedChain();
+    if (chain) {
+      e.preventDefault();
+      if (chain.wholeChain) {
+        deleteChain(game.world, occupancy, chain.chainId);
+      } else {
+        deleteSegment(game.world, occupancy, chain.handle);
+      }
+      selection.clearSelection(); // 选中态清空，链高亮消失
+      game.update(); // 立即刷新一帧，让带身 Graphics 移除
+      return;
+    }
     if (deleteSystem.deleteBuilding(selection.getSelected())) {
       e.preventDefault();
       selection.clearSelection(); // 选中态清空，选中框消失
@@ -278,7 +298,9 @@ async function main() {
     const now = performance.now();
     if (now - lastHudUpdateAt >= 250) {
       lastHudUpdateAt = now;
-      const boxTL = selection.getSelected() !== null ? selection.getBoxTopLeft() : null;
+      const devHandle = selection.getSelected();
+      const chainSel = selection.getSelectedChain();
+      const boxTL = selection.getBoxTopLeft();
       const mem = perf.sampleMemory();
       const heapTxt = mem.jsHeapMB > 0 ? `${mem.jsHeapMB.toFixed(1)}MB` : 'n/a';
       const text =
@@ -290,7 +312,11 @@ async function main() {
         `  zoom=${camera.zoom.toFixed(2)}${camera.isZooming ? '↗' : ''}` +
         `  rot=${camera.viewRotation}°` +
         `  |  实体=${game.world.entityCount()}` +
-        (boxTL ? `  |  选中=设备@(${boxTL.x},${boxTL.y})` : '') +
+        (devHandle !== null && boxTL ? `  |  选中=设备@(${boxTL.x},${boxTL.y})` : '') +
+        (chainSel && boxTL
+          ? `  |  选中=传送带${chainSel.wholeChain ? '链' : '段'}@(${boxTL.x},${boxTL.y}) ` +
+            `${chainSel.wholeChain ? queryChain(game.world, chainSel.chainId).length + '段' : '单段'} [Delete=删除]`
+          : '') +
         (placement.isPlacing()
           ? `  |  放置: ${placement.getCurrentDefinitionId()} (R=旋转, 左键=放, 右键/ESC=取消)`
           : '') +
@@ -419,6 +445,46 @@ async function main() {
       game.update();
     }
     return ok;
+  };
+
+  // ── T2.0 验收钩子: 程序化选中第一个传送带段（绕过鼠标，走真实 pointerdown→up 短按路径）──
+  // doubleClick=false → 单击选单格（白边+斜杠+隐指针）; =true → 连续两次短按选整条链。
+  const selectFirstBelt = (doubleClick = false): boolean => {
+    const handles = game.world.query('BeltSegmentComp');
+    if (handles.length === 0) {
+      console.warn('selectFirstBelt: 没有任何传送带段');
+      return false;
+    }
+    const h = handles[0];
+    const pos = game.world.getComponent<Position>(h, 'Position')!;
+    const spr = game.world.getComponent<SpriteComp>(h, 'SpriteComp')!;
+    const screen = camera.worldToScreen(pos.x + spr.width / 2, pos.y + spr.height / 2);
+    const t0 = performance.now();
+    selection.onPointerDown(screen.x, screen.y, 0, t0);
+    selection.onPointerUp(t0 + 10); // 10ms < 300ms = 短按
+    if (doubleClick) {
+      // 模拟双击：紧接第二次短按同段（间隔 20ms < DOUBLE_CLICK_MS=350）→ 升级整链
+      const t1 = t0 + 20;
+      selection.onPointerDown(screen.x, screen.y, 0, t1);
+      selection.onPointerUp(t1 + 10);
+    }
+    selection.update(); // 立即刷新选中态 + 高亮
+    return selection.getSelectedChain() !== null;
+  };
+
+  // ── T2.0 验收钩子: 删除当前选中的传送带（走与真实 Delete 键相同的逻辑路径）──
+  // 整链选中→整链删；单格选中→单段删（下游重拆为断头链）。
+  const deleteSelectedBelt = (): boolean => {
+    const chain = selection.getSelectedChain();
+    if (!chain) return false;
+    if (chain.wholeChain) {
+      deleteChain(game.world, occupancy, chain.chainId);
+    } else {
+      deleteSegment(game.world, occupancy, chain.handle);
+    }
+    selection.clearSelection();
+    game.update();
+    return true;
   };
 
   // ── T1.10 验收钩子: 一键 100 设备（真实放置路径）+ FPS/内存 benchmark ──
@@ -608,6 +674,8 @@ async function main() {
     clearAllPlaced,
     selectFirstBuilding,
     deleteSelectedBuilding,
+    selectFirstBelt,
+    deleteSelectedBelt,
     perf,
     getMemoryStats: () => perf.sampleMemory(),
     spawnBenchmarkDevices,
@@ -622,10 +690,11 @@ async function main() {
   console.log('  操作: 中键拖拽/WASD(屏幕相对)/边缘滚动 平移, 滚轮以鼠标为中心缩放, Ctrl+R 视图旋转');
   console.log('  放置: 底部工具栏选设备 → 左键放网格 → R 旋转(相对视图) → 右键/ESC 取消');
   console.log('  传送带: E 进入创建模式 → 点蓝色高亮端口/末端选起点 → 移动鼠标显蓝色预览(L形+BFS绕障) → 左键加中继锚点延伸折线 → 右键/ESC/E 落盘整条链');
-  console.log('  交互: 左键点设备=选中(黄色填充+白色选中框), 点空白=取消, 选中+Delete=删除');
+  console.log('  交互: 左键点设备=选中(黄色填充+白色选中框); 左键点传送带段=选中该格(白边+斜杠+隐pointer), 双击同段=选中整条链; 点空白=取消; Delete=删当前所选(单格→单段/整链→整链)');
   console.log('  验收: __game.placeAt("refining_unit",5,5) 放设备 → selectFirstBuilding() 选中 → deleteSelectedBuilding() 删除 → getOccupiedCells() 查占用');
   console.log('  T1.10: __game.spawnBenchmarkDevices(100) 一键100设备 / fillBenchmarkDevices() 铺满地图 → runFpsBenchmark() 采样FPS/内存 → memoryStressCheck() 内存压测');
   console.log('  T2.0: __game.spawnBelt([[5,5],[8,5],[8,8]],0) 程序化生成带转角传送带链 → 验证4方向转角+pointer流动');
+  console.log('  T2.0 链管理: spawnBelt后 selectFirstBelt() 单击选单格 / selectFirstBelt(true) 双击选整链 → deleteSelectedBelt() 删当前所选');
 }
 
 main().catch((err) => {
