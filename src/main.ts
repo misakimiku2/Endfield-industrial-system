@@ -188,8 +188,9 @@ async function main() {
       return; // 放置点击不进入选中逻辑
     }
     if (e.button === 0) {
-      // 非放置态左键 → T1.8 选中（pointerdown 记录时间戳+命中设备，pointerup 提交）
-      selection.onPointerDown(p.x, p.y, e.button, performance.now());
+      // 非放置态左键 → 选中（pointerdown 记录时间戳+命中+修饰键，pointerup 提交）。
+      // Shift=范围连选、Ctrl=点选切换（SelectionSystem.onPointerUp 按 mods 分支）。
+      selection.onPointerDown(p.x, p.y, e.button, performance.now(), { shift: e.shiftKey, ctrl: e.ctrlKey });
     }
   };
   // 鼠标抬起: 只处理左键，挂在 window 上（松开时指针可能已移出 canvas）。
@@ -212,7 +213,8 @@ async function main() {
     if (placement.isPlacing()) return;
     e.preventDefault();
     belt.toggleMode();
-    game.renderSystem.setBeltHoverEnabled(!belt.isActive());
+    // hover 的 enabled 改由主循环每帧按 belt.isActive() 同步（见 ticker），此处不再手动设，
+    // 避免 ESC/右键退出创建模式时漏调 setBeltHoverEnabled(true) 导致 hover 永久禁用。
     if (belt.isActive()) {
       selection.clearSelection();
       inventoryUI.setActive(null);
@@ -252,23 +254,22 @@ async function main() {
   const onKeyDelete = (e: KeyboardEvent): void => {
     if (e.code !== 'Delete') return;
     if (placement.isPlacing()) return; // 放置态不响应删除
-    // 传送带选中: 删当前所选（整链→整链删；单格→单段删，下游重拆断头链）
-    const chain = selection.getSelectedChain();
-    if (chain) {
+    // 传送带：删除所有选中段（多选批量；逐个 deleteSegment，下游自动重拆为断头链）
+    const beltHandles = beltSelection.getHandles();
+    if (beltHandles.length > 0) {
       e.preventDefault();
-      if (chain.wholeChain) {
-        deleteChain(game.world, occupancy, chain.chainId);
-      } else {
-        deleteSegment(game.world, occupancy, chain.handle);
+      for (const h of beltHandles) {
+        if (game.world.isAlive(h)) deleteSegment(game.world, occupancy, h);
       }
       selection.clearSelection(); // 选中态清空，链高亮消失
       game.update(); // 立即刷新一帧，让带身 Graphics 移除
       return;
     }
+    // 设备
     if (deleteSystem.deleteBuilding(selection.getSelected())) {
       e.preventDefault();
-      selection.clearSelection(); // 选中态清空，选中框消失
-      game.update(); // 立即刷新一帧，让 Sprite 移除
+      selection.clearSelection();
+      game.update();
     }
   };
   window.addEventListener('keydown', onKeyDelete);
@@ -294,6 +295,9 @@ async function main() {
     gridRenderer.update();
     placement.update(ticker.deltaMS); // T1.7: 放置预览跟随鼠标
     belt.update(ticker.deltaMS); // T2.0: 传送带创建模式高亮/预览刷新
+    // 每帧同步 hover 启用态：创建模式（E 进 / ESC / 右键 任一方式）下禁用 hover，
+    // 普通模式下启用。集中在此同步，避免分散在各退出入口导致漏调（曾使 hover 永久禁用）。
+    game.renderSystem.setBeltHoverEnabled(!belt.isActive());
     selection.update(); // T1.8: 选中框跟随相机（每帧重绘）
     game.update(ticker.deltaMS); // T1.6: RenderSystem（实体↔Sprite 同步 + 视口剔除 + T2.0 pointer 流动）
     // 选中框屏幕坐标（调试用）: 相机移动时该坐标应随之变化；若钉住不动即异常

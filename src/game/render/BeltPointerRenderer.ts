@@ -245,8 +245,16 @@ export class BeltPointerRenderer {
       if (selected) {
         entry.whiteSprite.position.set(px, py);
         entry.whiteSprite.rotation = rotation;
-        // globalPhase=0.5 时 cos(0)=1（格中间，全白）；=0/1 时 cos(±π)=-1→max 0（格边界，透明）
-        entry.whiteSprite.alpha = Math.max(0, Math.cos((globalPhase - 0.5) * Math.PI * 2));
+        // 白色 pointer 在格内大部分全白，仅入口/出口附近窄区渐变（贴近 Transport_2.svg：
+        // pointer 一进入选中格就变白、即将离开时才褪回黄）。globalPhase∈[0,FADE] 入口渐入，
+        // [FADE,1-FADE] 格内全白，[1-FADE,1] 出口渐出。黄色底层始终在 → 跨格衔接不断层。
+        const FADE = 0.18;
+        const gp = globalPhase;
+        entry.whiteSprite.alpha = gp < FADE
+          ? gp / FADE
+          : gp > 1 - FADE
+            ? (1 - gp) / FADE
+            : 1;
         entry.whiteSprite.visible = true;
       } else {
         entry.whiteSprite.visible = false;

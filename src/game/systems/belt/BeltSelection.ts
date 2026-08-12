@@ -36,4 +36,15 @@ export class BeltSelection {
   clear(): void {
     this.selected.clear();
   }
+
+  /** 切换某段的选中态（有则移除、无则加入）—— Ctrl 点选用。 */
+  toggle(handle: EntityHandle): void {
+    if (this.selected.has(handle)) this.selected.delete(handle);
+    else this.selected.add(handle);
+  }
+
+  /** 当前所有选中段（Delete 批量删用）。 */
+  getHandles(): EntityHandle[] {
+    return Array.from(this.selected);
+  }
 }

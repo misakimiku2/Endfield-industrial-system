@@ -55,6 +55,12 @@ export type SelectionTarget =
   | { kind: 'device'; handle: EntityHandle }
   | { kind: 'belt'; handle: EntityHandle; chainId: string; wholeChain: boolean };
 
+/** 鼠标修饰键状态（main.ts 从 PointerEvent.shiftKey/ctrlKey 透传）。 */
+export interface PointerMods {
+  shift: boolean;
+  ctrl: boolean;
+}
+
 /**
  * 命中测试: 屏幕点对应世界坐标 (wx,wy) 落在哪个设备的 footprint AABB 内。
  *
@@ -168,12 +174,14 @@ export class SelectionSystem {
   private camera: Camera;
   /** 屏幕空间选中框（overlayLayer 子节点，工具栏之下）。 */
   private graphics: Graphics;
-  /** 当前选中的目标（设备或传送带段）；null = 未选中。 */
+  /** 当前选中的目标（设备或传送带段 anchor）；null = 未选中。多选时为最近点击的段/设备。 */
   private selected: SelectionTarget | null = null;
-  /** pointerdown 记录的按压上下文（T1.8 前瞻约束）。 */
-  private pendingPress: { target: SelectionTarget | null; time: number } | null = null;
+  /** pointerdown 记录的按压上下文（含修饰键，T1.8 前瞻约束）。 */
+  private pendingPress: { target: SelectionTarget | null; time: number; mods: PointerMods } | null = null;
   /** 上一次单击传送带段的记录（双击检测用）。 */
   private lastBeltClick: { handle: EntityHandle; time: number } | null = null;
+  /** Shift 范围连选的起点（= 上次普通单击的传送带段）；Ctrl/Shift 操作不更新它（与文件选择一致）。 */
+  private anchorBelt: EntityHandle | null = null;
   /** 最近一次绘制时选中框的屏幕左上角（HUD/调试用，未选中时为 null）。 */
   private lastBoxTopLeft: { x: number; y: number } | null = null;
   /** 传送带选中态共享对象（渲染器读）；可选，未注入时带身选中视觉不渲染。 */
@@ -196,12 +204,13 @@ export class SelectionSystem {
    * 只消费左键；中键拖拽/右键由相机/放置系统处理。
    * 这里只记录，不 commit、不 preventDefault/stopPropagation（前瞻约束）。
    */
-  onPointerDown(screenX: number, screenY: number, button: number, now: number): void {
+  onPointerDown(screenX: number, screenY: number, button: number, now: number, mods: PointerMods = { shift: false, ctrl: false }): void {
     if (button !== 0) return;
     const w = this.camera.screenToWorld(screenX, screenY);
     this.pendingPress = {
       target: pickTargetAt(this.world, w.x, w.y),
       time: now,
+      mods,
     };
   }
 
@@ -215,42 +224,96 @@ export class SelectionSystem {
    */
   onPointerUp(now: number): void {
     if (!this.pendingPress) return;
-    const { target, time } = this.pendingPress;
+    const { target, time, mods } = this.pendingPress;
     this.pendingPress = null; // 一次性消费
     if (now - time >= SELECTION_SHORT_PRESS_MS) return; // 长按不选中
 
     if (target === null) {
-      // 点空白 → 取消选中（含清 belt 双击记忆）
-      this.commitSelect(null);
+      // 点空白：无修饰键 → 清空所有选中；Ctrl/Shift 保留现有选中（便于继续多选）
+      if (!mods.shift && !mods.ctrl) this.commitClear();
       return;
     }
     if (target.kind === 'belt') {
-      const last = this.lastBeltClick;
-      const isDouble =
-        last !== null &&
-        last.handle === target.handle &&
-        now - last.time < DOUBLE_CLICK_MS;
-      if (isDouble) {
-        this.commitSelect({ ...target, wholeChain: true });
-        this.lastBeltClick = null; // 双击后清空，避免三连击误判
+      if (mods.shift) {
+        // Shift：范围连选（anchor → target，同链）；anchor 不变（与文件选择一致）
+        this.selectRange(target);
+        this.selected = target;
+      } else if (mods.ctrl) {
+        // Ctrl：切换该格选中态；anchor 不变
+        this.beltSelection?.toggle(target.handle);
+        this.selected = target;
       } else {
-        this.commitSelect({ ...target, wholeChain: false });
-        this.lastBeltClick = { handle: target.handle, time: now };
+        // 普通单击/双击：替换选中，并更新 Shift 起点
+        const last = this.lastBeltClick;
+        const isDouble =
+          last !== null &&
+          last.handle === target.handle &&
+          now - last.time < DOUBLE_CLICK_MS;
+        if (isDouble) {
+          // 双击 → 整链
+          this.beltSelection?.set(queryChain(this.world, target.chainId));
+          this.selected = { ...target, wholeChain: true };
+          this.lastBeltClick = null; // 双击后清空，避免三连击误判
+        } else {
+          this.beltSelection?.set([target.handle]);
+          this.selected = { ...target, wholeChain: false };
+          this.lastBeltClick = { handle: target.handle, time: now };
+        }
+        this.anchorBelt = target.handle;
       }
     } else {
-      // 设备 → 清 belt 双击记忆
+      // 设备 → 清 belt 选中 + 双击记忆 + anchor
       this.lastBeltClick = null;
-      this.commitSelect(target);
+      this.anchorBelt = null;
+      this.beltSelection?.clear();
+      this.selected = target;
     }
   }
 
-  /** 提交选中目标（统一入口，处理 hideHighlight）。 */
-  private commitSelect(target: SelectionTarget | null): void {
-    this.selected = target;
-    if (target === null) {
-      // 点空白 → 立即隐藏并清除已绘制的选中框，否则 Graphics 保留最后几何"印在画布上"。
-      this.hideHighlight();
+  /** 清空所有选中（belt 多选 + 设备 anchor + Shift 起点 + 双击记忆）。 */
+  private commitClear(): void {
+    this.selected = null;
+    this.anchorBelt = null;
+    this.lastBeltClick = null;
+    this.beltSelection?.clear();
+    this.hideHighlight();
+  }
+
+  /**
+   * Shift 范围连选：选中 anchorBelt → target 之间（同链）的所有段。
+   * 同链时按 segmentIndex 升序取闭区间 [anchor, target]；不同链/无 anchor → 退化为只选 target。
+   * anchorBelt 不变（下次 Shift 仍从同一 anchor 起，与文件选择一致）。
+   */
+  private selectRange(target: Extract<SelectionTarget, { kind: 'belt' }>): void {
+    if (this.anchorBelt === null || !this.world.isAlive(this.anchorBelt)) {
+      this.beltSelection?.set([target.handle]);
+      this.anchorBelt = target.handle;
+      return;
     }
+    const anchorSeg = this.world.getComponent<BeltSegmentComp>(this.anchorBelt, 'BeltSegmentComp');
+    if (!anchorSeg || anchorSeg.chainId !== target.chainId) {
+      // 不同链：退化为只选 target，并把 anchor 移到 target
+      this.beltSelection?.set([target.handle]);
+      this.anchorBelt = target.handle;
+      return;
+    }
+    const chain = queryChain(this.world, target.chainId);
+    // 按 segmentIndex 升序（链首→链尾）定链内顺序
+    chain.sort((a, b) => {
+      const sa = this.world.getComponent<BeltSegmentComp>(a, 'BeltSegmentComp')!;
+      const sb = this.world.getComponent<BeltSegmentComp>(b, 'BeltSegmentComp')!;
+      return sa.segmentIndex - sb.segmentIndex;
+    });
+    const ai = chain.indexOf(this.anchorBelt);
+    const ti = chain.indexOf(target.handle);
+    if (ai < 0 || ti < 0) {
+      this.beltSelection?.set([target.handle]);
+      this.anchorBelt = target.handle;
+      return;
+    }
+    const lo = Math.min(ai, ti);
+    const hi = Math.max(ai, ti);
+    this.beltSelection?.set(chain.slice(lo, hi + 1));
   }
 
   /**
@@ -260,41 +323,26 @@ export class SelectionSystem {
    *   - 目标已销毁/链已空 → 清空选中态。
    */
   update(): void {
-    // 每帧重算传送带选中态（渲染器 BeltVectorRenderer/PointerRenderer/SelectionRenderer 读）
-    this.beltSelection?.clear();
-    if (this.selected === null) {
-      this.hideHighlight();
-      return;
-    }
-    if (this.selected.kind === 'device') {
+    // 设备选中：重绘 screen-space 选中框（跟随相机）；已销毁则清空
+    if (this.selected?.kind === 'device') {
       if (!this.world.isAlive(this.selected.handle)) {
-        this.selected = null;
-        this.hideHighlight();
+        this.commitClear();
         return;
       }
       this.drawDeviceBox(this.selected.handle);
       return;
     }
-    // belt：选中段已销毁 → 清空
-    if (!this.world.isAlive(this.selected.handle)) {
-      this.selected = null;
-      this.hideHighlight();
+    // belt：beltSelection 由交互（onPointerUp/selectRange）直接维护，这里不再每帧 clear+set
+    // （多选需要持久集合）。只做 anchor/选中段销毁清理 + HUD 参考坐标。
+    if (this.selected?.kind === 'belt' && !this.world.isAlive(this.selected.handle)) {
+      this.commitClear();
       return;
     }
-    const handles = this.selected.wholeChain
-      ? queryChain(this.world, this.selected.chainId)
-      : [this.selected.handle];
-    if (handles.length === 0) {
-      this.selected = null;
-      this.hideHighlight();
-      return;
-    }
-    this.beltSelection?.set(handles);
-    // 带身选中视觉（屏幕常量斜杠+白边）由 BeltSelectionRenderer/BeltVectorRenderer 负责；
-    // 本系统不画 screen-space 框，仅给 HUD 一个参考坐标（点击段的屏幕左上）。
+    // 非 device 时不画 screen 框（带身选中视觉在 BeltVectorRenderer/BeltPointerRenderer）
     this.graphics.visible = false;
     this.graphics.clear();
-    const pos = this.world.getComponent<Position>(this.selected.handle, 'Position');
+    const beltHandle = this.selected?.kind === 'belt' ? this.selected.handle : null;
+    const pos = beltHandle !== null ? this.world.getComponent<Position>(beltHandle, 'Position') : null;
     this.lastBoxTopLeft = pos ? this.camera.worldToScreen(pos.x, pos.y) : null;
   }
 
@@ -331,10 +379,7 @@ export class SelectionSystem {
 
   /** 清空选中态（删除设备/链后调用，或外部重置）。同步清 BeltSelection 与双击记忆。 */
   clearSelection(): void {
-    this.selected = null;
-    this.lastBeltClick = null;
-    this.beltSelection?.clear();
-    this.hideHighlight();
+    this.commitClear();
   }
 
   /**
