@@ -158,6 +158,7 @@ async function main() {
       p.y <= app.canvas.clientHeight + tol;
     placement.setMouse(p.x, p.y, inside);
     belt.setMouse(p.x, p.y, inside);
+    game.renderSystem.setBeltHoverMouse(p.x, p.y, inside);
   };
   // 鼠标按下: 放置态 → 左键(0)=确认放置, 右键(2)=取消；
   //           非放置态 → 左键(0)转发给 T1.8 选中系统（pointerdown 只记录，pointerup 提交）。
@@ -211,6 +212,7 @@ async function main() {
     if (placement.isPlacing()) return;
     e.preventDefault();
     belt.toggleMode();
+    game.renderSystem.setBeltHoverEnabled(!belt.isActive());
     if (belt.isActive()) {
       selection.clearSelection();
       inventoryUI.setActive(null);

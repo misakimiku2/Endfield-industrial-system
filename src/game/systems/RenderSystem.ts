@@ -29,7 +29,7 @@ import type { BeltSegmentComp } from '../components/BeltSegmentComp';
 import { beltTextureRotation, beltCornerTransform } from './belt/BeltPathGeometry';
 import { BeltPointerRenderer } from '../render/BeltPointerRenderer';
 import { BeltVectorRenderer } from '../render/BeltVectorRenderer';
-import { BeltSelectionRenderer } from '../render/BeltSelectionRenderer';
+import { BeltHoverRenderer } from '../render/BeltHoverRenderer';
 import type { BeltSelection } from './belt/BeltSelection';
 import type { AtlasGroup } from '../render/AssetsLoader';
 import type { SceneLayers } from '../render/SceneRenderer';
@@ -93,9 +93,9 @@ export class RenderSystem {
   private readonly pointerRenderer: BeltPointerRenderer;
   /** 传送带带身矢量渲染器（T2.0 方案A）。挂在 layer2Building，替代传送带 Sprite。 */
   private readonly beltVectorRenderer: BeltVectorRenderer;
-  /** 传送带选中视觉渲染器（T2.0 链管理）。屏幕常量斜杠 + 黄色遮罩 + 白边。 */
-  private readonly beltSelectionRenderer: BeltSelectionRenderer;
-  /** 从游戏开始累积的总毫秒数，驱动 pointer 相位。由 update(deltaMS) 累积。 */
+  /** 传送带悬停高亮渲染器（橙色四角 L 形 + 呼吸）。挂在 layer2Building。 */
+  private readonly beltHoverRenderer: BeltHoverRenderer;
+  /** 从游戏开始累积的总毫秒数，驱动 pointer 相位与 hover 呼吸。由 update(deltaMS) 累积。 */
   private elapsedMS = 0;
 
   constructor(
@@ -110,7 +110,7 @@ export class RenderSystem {
     this.getTexture = getTexture;
     this.pointerRenderer = new BeltPointerRenderer(world, layers.layer3Item, getTexture);
     this.beltVectorRenderer = new BeltVectorRenderer(world, layers.layer2Building);
-    this.beltSelectionRenderer = new BeltSelectionRenderer(world, layers.layer2Building, camera);
+    this.beltHoverRenderer = new BeltHoverRenderer(world, camera, layers.layer2Building);
   }
 
   /**
@@ -121,7 +121,16 @@ export class RenderSystem {
   setBeltSelection(bs: BeltSelection): void {
     this.beltVectorRenderer.setBeltSelection(bs);
     this.pointerRenderer.setBeltSelection(bs);
-    this.beltSelectionRenderer.setBeltSelection(bs);
+  }
+
+  /** 转发鼠标位置给悬停渲染器（main.ts onPointerMove 调用）。 */
+  setBeltHoverMouse(screenX: number, screenY: number, inside: boolean): void {
+    this.beltHoverRenderer.setMouse(screenX, screenY, inside);
+  }
+
+  /** 启用/禁用悬停高亮（创建模式 E 下禁用，避免与起点高亮冲突）。 */
+  setBeltHoverEnabled(enabled: boolean): void {
+    this.beltHoverRenderer.setEnabled(enabled);
   }
 
   /**
@@ -205,12 +214,12 @@ export class RenderSystem {
       sprite.visible = this.intersectsView(pos, spr, view);
     }
 
-    // 传送带带身矢量渲染（T2.0 方案A）：在 Sprite 同步之后，刷新带身 Graphics 位置/朝向
+    // 传送带带身矢量渲染（T2.0 方案A）：在 Sprite 同步之后，刷新带身 Graphics 位置/朝向/选中变色
     this.beltVectorRenderer.update();
-    // 传送带 pointer 流动（T2.0 阶段1）：在所有带身 Sprite 同步之后，刷新 pointer 位置/朝向
+    // 传送带 pointer 流动（T2.0 阶段1）：刷新 pointer 位置/朝向/选中 tint
     this.pointerRenderer.update(this.elapsedMS);
-    // 传送带选中视觉（T2.0 链管理）：屏幕常量斜杠 + 黄色遮罩（盖在带身之上）
-    this.beltSelectionRenderer.update();
+    // 传送带悬停高亮（橙色四角 L 形 + 呼吸）
+    this.beltHoverRenderer.update(this.elapsedMS);
   }
 
   /** 销毁所有 Sprite（场景切换/ teardown 用）。实体本身不动（由 ECS 管理）。 */
@@ -219,7 +228,7 @@ export class RenderSystem {
     this.entries.clear();
     this.beltVectorRenderer.destroy();
     this.pointerRenderer.destroy();
-    this.beltSelectionRenderer.destroy();
+    this.beltHoverRenderer.destroy();
   }
 
   /** 当前管理的 Sprite entry 数（T1.10 性能/内存监控用）。 */

@@ -7,20 +7,14 @@
 //
 // 本模块为纯函数：把传送带一格的矢量形状画进给定的 Graphics。
 // 坐标系统：以格子中心为原点、单位=世界像素（由调用方传入 cellSize）。
-// 素材参考：旧项目 Transport_Belt_Move.svg / Transport_Belt_rotate.svg（viewBox 0 0 16.933 16.933）。
+// 素材参考：Transport_Belt_Move.svg / Transport_Belt_rotate.svg（viewBox 0 0 16.933334）。
 //
-// 为什么无缝：
-//  - 直段：灰壳/黄带在**流动方向全高填满格子**（SVG rect 高度 = viewBox 全高），
-//    相邻格沿流动方向边缘完全连续；仅宽度方向收窄（带身造型）。
-//  - 转角：外弧半径 = 84.4% 格子（> 半格），弧延伸到格子角落，与相邻直段/转角在
-//    格子边界处重叠覆盖 → 角落连续。
-//
-// 预览染色：旧项目 _makePreviewSvg 把 #ffef00 和 #cecccc 都替换成预览色（整体单色），
-// 本模块用 overrideColor 实现同样语义：提供时灰壳/黄带/内角全部用该色。
+// 染色：colors 指定 shellColor/beltColor（选中态 #B1B1B1/#FFF56A、预览整体单色）；
+//       缺省时用素材原色 #CECCCC/#FFEF00。
 
 import type { Graphics } from 'pixi.js';
 
-// ───────────────────────── 素材几何常量（viewBox 0 0 16.933 16.933）─────────────────────────
+// ───────────────────────── 素材几何常量（viewBox 0 0 16.933334）─────────────────────────
 
 /** SVG viewBox 尺寸（素材逻辑单位）。 */
 export const BELT_SVG_SIZE = 16.933333;
@@ -42,19 +36,21 @@ const CORNER_CORNER_R = 3.96875;
 /** 格子中心在 viewBox 坐标系中的坐标（viewBox/2）。 */
 const BELT_CENTER = BELT_SVG_SIZE / 2;
 
-// ───────────────────────── 落盘颜色（与素材一致）─────────────────────────
+// ───────────────────────── 颜色 ─────────────────────────
 
-/** 灰壳颜色（rect3/path5 fill）。 */
+/** 灰壳默认色（rect3/path5 fill = #CECCCC）。 */
 export const BELT_COLOR_SHELL = 0xcecccc;
-/** 黄带颜色（rect4/circle5 fill）。 */
+/** 黄带默认色（rect4/circle5 fill = #FFEF00）。 */
 export const BELT_COLOR_BELT = 0xffef00;
+/** 选中态灰壳色（Transport_1.svg rect3 = #B1B1B1）。 */
+export const BELT_COLOR_SHELL_SELECTED = 0xb1b1b1;
+/** 选中态黄带色（Transport_1.svg rect4 = #FFF56A）。 */
+export const BELT_COLOR_BELT_SELECTED = 0xfff56a;
 
-/** 解析颜色：overrideColor 提供则整体用该色（预览），否则用素材灰壳/黄带。 */
-function resolveShellColor(overrideColor?: number): number {
-  return overrideColor ?? BELT_COLOR_SHELL;
-}
-function resolveBeltColor(overrideColor?: number): number {
-  return overrideColor ?? BELT_COLOR_BELT;
+/** 带身染色选项。shellColor/beltColor 缺省时用素材原色；选中态/预览染色均通过此传入。 */
+export interface BeltColors {
+  shellColor?: number;
+  beltColor?: number;
 }
 
 // ───────────────────────── 绘制函数 ─────────────────────────
@@ -65,12 +61,12 @@ function resolveBeltColor(overrideColor?: number): number {
  *
  * @param g 目标 Graphics（应已 clear()）。
  * @param cellSize 一个格子的世界像素边长。
- * @param overrideColor 预览用：整体单色（旧项目 _makePreviewSvg 语义）；省略=素材原色。
+ * @param colors 染色；缺省 shell=#CECCCC、belt=#FFEF00。选中态传 #B1B1B1/#FFF56A。
  */
-export function drawStraightBelt(g: Graphics, cellSize: number, overrideColor?: number): void {
+export function drawStraightBelt(g: Graphics, cellSize: number, colors?: BeltColors): void {
   const s = cellSize / BELT_SVG_SIZE; // viewBox → world 缩放
-  const shell = resolveShellColor(overrideColor);
-  const belt = resolveBeltColor(overrideColor);
+  const shell = colors?.shellColor ?? BELT_COLOR_SHELL;
+  const belt = colors?.beltColor ?? BELT_COLOR_BELT;
   // 灰壳：全高矩形，宽度收窄，居中
   g.beginPath();
   g.rect(
@@ -101,13 +97,13 @@ export function drawStraightBelt(g: Graphics, cellSize: number, overrideColor?: 
  *
  * @param g 目标 Graphics（应已 clear()）。
  * @param cellSize 一个格子的世界像素边长。
- * @param overrideColor 预览用：整体单色（旧项目 _makePreviewSvg 语义）；省略=素材原色。
+ * @param colors 染色；缺省用素材原色。
  */
-export function drawCornerBelt(g: Graphics, cellSize: number, overrideColor?: number): void {
+export function drawCornerBelt(g: Graphics, cellSize: number, colors?: BeltColors): void {
   const s = cellSize / BELT_SVG_SIZE;
   const c = BELT_CENTER * s; // 半格（world px）
-  const shell = resolveShellColor(overrideColor);
-  const belt = resolveBeltColor(overrideColor);
+  const shell = colors?.shellColor ?? BELT_COLOR_SHELL;
+  const belt = colors?.beltColor ?? BELT_COLOR_BELT;
 
   // viewBox → world 的常见点（相对格子中心）：
   //   shellOuter = 14.2875*s（灰壳外半径），beltOuter = 12.9646*s，inner = 2.6458*s，cornerR = 3.9688*s
@@ -117,10 +113,6 @@ export function drawCornerBelt(g: Graphics, cellSize: number, overrideColor?: nu
   const cornerR = CORNER_CORNER_R * s;
 
   // ── 灰壳环（path5）：外弧 14.2875 → H 14.2875 → 内弧 2.6458 ──
-  // 外弧：M (16.933,2.646) A r14.2875 → (2.646,16.933)。相对中心：
-  //   起点 (c, c - shellOuter)，终点 (c - shellOuter, c)。sweep=0（SVG 逆时针）。
-  // H 14.2875 → x 到 viewBox 14.2875 → world (shellOuter - c)。
-  // 内弧：A r2.6458 sweep=1 → 终点 (c, c - inner)。
   g.beginPath();
   g.moveTo(c, c - shellOuter)
     .arcToSvg(shellOuter, shellOuter, 0, 0, 0, c - shellOuter, c)
@@ -146,80 +138,4 @@ export function drawCornerBelt(g: Graphics, cellSize: number, overrideColor?: nu
     .arcToSvg(inner, inner, 0, 0, 1, c, c - inner)
     .closePath()
     .fill({ color: shell });
-}
-
-// ───────────────────────── 选中态几何（T2.0 链管理）─────────────────────────
-
-/**
- * 选中白边宽度（viewBox 单位）= (14.2875 − 11.641667)/2。
- * 换算: 1.3229 / 16.933 × CELL_SIZE(64) ≈ 5.0 世界像素（与用户参考图 Transport.svg 一致）。
- */
-export const SELECTION_RIM = 1.322916;
-
-/** 选中斜杠颜色（用户参考图 Transport.svg 的 Strips1_1 pattern fill #eec213）。 */
-export const BELT_COLOR_STRIPE = 0xeec213;
-
-/**
- * 绘制传送带的「黄色区域」形状（供选中斜杠的 StencilMask 用）。
- * 直段 = 黄带 rect；转角 = 黄带弧环（circle5 path）。
- * 形状与 drawStraightBelt/drawCornerBelt 的黄色部分完全一致，确保蒙版与带身黄底对齐。
- *
- * 调用方负责与带身相同的 rotation/scale 定位（beltTextureRotation / beltCornerTransform）。
- * 填充色对 StencilMask 无意义（仅取形状），用白色占位。
- */
-export function drawBeltYellowShape(g: Graphics, cellSize: number, isCorner: boolean): void {
-  const s = cellSize / BELT_SVG_SIZE;
-  if (!isCorner) {
-    g.beginPath();
-    g.rect(
-      (-STRAIGHT_BELT_W / 2) * s,
-      -cellSize / 2,
-      STRAIGHT_BELT_W * s,
-      cellSize,
-    ).fill({ color: 0xffffff });
-    return;
-  }
-  const c = BELT_CENTER * s;
-  const shellOuter = CORNER_SHELL_R_OUTER * s;
-  const beltOuter = CORNER_BELT_R_OUTER * s;
-  const inner = CORNER_R_INNER * s;
-  // 与 drawCornerBelt 的黄带环（circle5）完全相同的 path
-  g.beginPath();
-  g.moveTo(c, c - beltOuter)
-    .arcToSvg(beltOuter, beltOuter, 0, 0, 0, c - beltOuter, c)
-    .lineTo(shellOuter - c, c)
-    .arcToSvg(inner, inner, 0, 0, 1, c, c - inner)
-    .closePath()
-    .fill({ color: 0xffffff });
-}
-
-/**
- * 绘制直段选中白边底层（filled，画在灰壳之前）。
- * 白 rect 宽 = 灰壳宽 + 2×RIM（=14.2875，与 Transport.svg rect2 一致），全高。
- * 灰壳(11.64)叠在上面 → 左右各露出 RIM(≈5px) 白边。
- */
-export function drawStraightBeltSelectionUnderlay(g: Graphics, cellSize: number): void {
-  const s = cellSize / BELT_SVG_SIZE;
-  const w = (STRAIGHT_SHELL_W + 2 * SELECTION_RIM) * s;
-  g.beginPath();
-  g.rect(-w / 2, -cellSize / 2, w, cellSize).fill({ color: 0xffffff });
-}
-
-/**
- * 绘制转角选中白边（stroked，画在带身之后）。
- * 转角的灰壳外弧已抵格子边缘，无法用「更宽填充底」(会溢出格子角)，改用沿灰壳轮廓描白边。
- * width = 2×RIM（≈10px，向内/外各 5px），描整个灰壳带轮廓 → 白色边框。
- */
-export function drawCornerBeltSelectionBorder(g: Graphics, cellSize: number): void {
-  const s = cellSize / BELT_SVG_SIZE;
-  const c = BELT_CENTER * s;
-  const shellOuter = CORNER_SHELL_R_OUTER * s;
-  const inner = CORNER_R_INNER * s;
-  g.beginPath();
-  g.moveTo(c, c - shellOuter)
-    .arcToSvg(shellOuter, shellOuter, 0, 0, 0, c - shellOuter, c)
-    .lineTo(shellOuter - c, c)
-    .arcToSvg(inner, inner, 0, 0, 1, c, c - inner)
-    .closePath()
-    .stroke({ color: 0xffffff, width: 2 * SELECTION_RIM * s });
 }

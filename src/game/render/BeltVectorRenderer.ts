@@ -23,8 +23,8 @@ import { CELL_SIZE } from './constants';
 import {
   drawStraightBelt,
   drawCornerBelt,
-  drawStraightBeltSelectionUnderlay,
-  drawCornerBeltSelectionBorder,
+  BELT_COLOR_SHELL_SELECTED,
+  BELT_COLOR_BELT_SELECTED,
 } from './BeltVectorGeometry';
 
 /** 单个传送带段的渲染态。 */
@@ -48,7 +48,7 @@ function segShapeKey(seg: BeltSegmentComp): string {
 export class BeltVectorRenderer {
   private world: World;
   private layer: Container;
-  /** 选中态（SelectionSystem 写）；选中段在 body 上叠白边。由 RenderSystem 注入。 */
+  /** 选中态（SelectionSystem 写）；选中段带身染选中色（#B1B1B1/#FFF56A）。由 RenderSystem 注入。 */
   private beltSelection: BeltSelection | null = null;
 
   /** handle → entry，用于 diff。 */
@@ -111,12 +111,14 @@ export class BeltVectorRenderer {
       const key = segShapeKey(seg) + (selected ? '|sel' : '');
       if (entry.lastKey !== key) {
         entry.g.clear();
+        // 选中态：带身整体染选中色（灰壳#B1B1B1/黄带#FFF56A）；否则用素材原色
+        const colors = selected
+          ? { shellColor: BELT_COLOR_SHELL_SELECTED, beltColor: BELT_COLOR_BELT_SELECTED }
+          : undefined;
         if (seg.isCorner) {
-          drawCornerBelt(entry.g, CELL_SIZE);
-          if (selected) drawCornerBeltSelectionBorder(entry.g, CELL_SIZE); // 白边描边（带身之后）
+          drawCornerBelt(entry.g, CELL_SIZE, colors);
         } else {
-          if (selected) drawStraightBeltSelectionUnderlay(entry.g, CELL_SIZE); // 白底（灰壳之前）
-          drawStraightBelt(entry.g, CELL_SIZE);
+          drawStraightBelt(entry.g, CELL_SIZE, colors);
         }
         entry.lastKey = key;
       }

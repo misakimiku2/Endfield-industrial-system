@@ -118,12 +118,15 @@ export function pickBeltSegmentAt(
  * 统一命中: 先设备后传送带（两者格互斥，顺序不影响正确性；设备优先保留 T1.8 语义）。
  * 返回的 belt 目标 wholeChain 恒为 false（单格）；双击升级由 onPointerUp 处理。
  * @returns SelectionTarget 或 null（点空白）。
+ *
+ * 注意：EntityHandle 是 number（encodeHandle 生成，首个实体可能为 0），必须用 `!== null`
+ *       判空——`if (handle)` 会把 handle=0 误判为未命中（曾导致第一个传送带段无法选中）。
  */
 export function pickTargetAt(world: World, wx: number, wy: number): SelectionTarget | null {
   const dev = pickBuildingAt(world, wx, wy);
-  if (dev) return { kind: 'device', handle: dev };
+  if (dev !== null) return { kind: 'device', handle: dev };
   const belt = pickBeltSegmentAt(world, wx, wy);
-  if (belt) {
+  if (belt !== null) {
     const seg = world.getComponent<BeltSegmentComp>(belt, 'BeltSegmentComp')!;
     return { kind: 'belt', handle: belt, chainId: seg.chainId, wholeChain: false };
   }

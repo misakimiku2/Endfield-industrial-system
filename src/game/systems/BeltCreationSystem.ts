@@ -662,10 +662,10 @@ export class BeltCreationSystem {
         const t = beltCornerTransform(info.incomingDir, info.outgoingDir);
         g.rotation = t.rotation;
         g.scale.set(t.mirrorH ? -1 : 1, 1);
-        drawCornerBelt(g, CELL_SIZE, previewColor);
+        drawCornerBelt(g, CELL_SIZE, { shellColor: previewColor, beltColor: previewColor });
       } else {
         g.rotation = beltTextureRotation(info.outgoingDir);
-        drawStraightBelt(g, CELL_SIZE, previewColor);
+        drawStraightBelt(g, CELL_SIZE, { shellColor: previewColor, beltColor: previewColor });
       }
 
       this.previewContainer.addChild(g);
@@ -681,7 +681,7 @@ export class BeltCreationSystem {
     const g = new Graphics();
     g.position.set(gx * CELL_SIZE + CELL_SIZE / 2, gy * CELL_SIZE + CELL_SIZE / 2);
     g.alpha = PREVIEW_ALPHA;
-    drawStraightBelt(g, CELL_SIZE, COLOR_PREVIEW_INVALID);
+    drawStraightBelt(g, CELL_SIZE, { shellColor: COLOR_PREVIEW_INVALID, beltColor: COLOR_PREVIEW_INVALID });
     this.previewContainer.addChild(g);
     this.previewContainer.visible = true;
   }

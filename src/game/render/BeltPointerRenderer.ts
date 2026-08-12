@@ -3,14 +3,20 @@
 //
 // 职责:
 //   - 每帧查询所有 Position+BeltSegmentComp 实体，为每段维护一个 pointer Sprite + 单元蒙版。
-//   - 传送带单元（正方形）作为 pointer 的蒙版，**但仅在链端点格（链首/链尾）启用**：
-//     端点格的 pointer 越过传送带物理边界时被裁掉（不溢出到传送带外）；
-//     中间格**不蒙版**，pointer 可自然跨越格边界，使整链箭头像传送带一样连贯流动、无断层。
+//   - 传送带单元（正方形）作为 pointer 的蒙版，**仅在链端点格启用**：
+//     链首格(head)裁起点侧、链尾格(tail)裁终点侧、单格链(single)两端都裁——
+//     pointer 从传送带边界出现/消失，不溢出到传送带之外（起点不外飘，终点不走出）；
+//     中间格不蒙版，pointer 可自然跨越格边界，使整链箭头像传送带一样连贯流动、无断层。
 //   - 每段共享同一个 globalPhase（2 秒一格）：N 格出口边 = N+1 格入口边，
 //     相位复位时下一格的 pointer 接管同一世界位置 → 视觉无缝衔接（自动扶梯效果）。
-//   - 直段：沿方向轴线性移动；链首/链尾格移动范围扩展半个箭头（滑入/滑出），越界部分由蒙版裁掉。
+//   - 直段：沿方向轴线性移动；链首/链尾格移动范围在端点侧各扩展半个箭头（滑入/滑出），
+//     越界部分由端点蒙版裁掉（pointer 从边界渐入/渐出，而非硬切或外飘）。
 //   - 转角段：沿四分之一圆弧移动。
 //   - 阶段1 无物品，pointer 始终显示（T2.1 物品出现后会隐藏）。
+//
+// PixiJS v8 注意：Graphics 作为 StencilMask，clear()+redraw 后模板缓冲不更新（github #10290）。
+//   drawEndpointMask 重画后必须 cellWrap.mask=null 再绑回，否则蒙版形同虚设——曾导致起点
+//   pointer 从传送带外面飘入。详见 update 中 isHead 分支的 workaround 注释。
 //
 // pointer 纹理：devices 图集的 pointer.png（来自 pointer.svg，9.4×21.3，纵向，默认箭头朝上）。
 // 挂 layer3Item（物品层），盖在传送带带身（layer2Building）之上。
@@ -53,13 +59,15 @@ function directionAngle(dir: Direction): number {
 /** 单个 pointer Sprite 的运行时状态。 */
 interface PointerEntry {
   sprite: Sprite;
+  /** 选中格叠加的白色 pointer（tint 白，alpha 随相位渐入渐出）；非选中段 visible=false。 */
+  whiteSprite: Sprite;
   /** 包裹 sprite 的容器（作为蒙版裁剪单元，位置=格左上角世界坐标）。 */
   cellWrap: Container;
   /** 单元蒙版（Graphics，走 StencilMask 路径，无纹理、resize 安全）。
-   *  形状随端点类型变化（见 lastMaskKind），仅在 kind 变化时重画，避免每帧 redraw 开销。 */
+   *  形状随端点类型变化（见 lastMaskKey），仅在 kind/direction 变化时重画，避免每帧 redraw 开销。 */
   cellMask: Graphics;
-  /** 当前已画进 cellMask 的形状种类（避免每帧重画相同形状）。 */
-  lastMaskKind: MaskKind;
+  /** 当前已画进 cellMask 的形状 key（kind+direction，避免每帧重画相同形状）。 */
+  lastMaskKey: string;
   handle: EntityHandle;
 }
 
@@ -67,11 +75,11 @@ interface PointerEntry {
  * 蒙版形状种类。决定 cellMask 画什么形状：
  *  - 'none'：中间格，不裁（renderable=false、mask=null）。
  *  - 'head'：链首格，只裁"背向"方向那一侧（传送带真正的起点），其余三面向链内敞开。
- *  - 'tail'：链尾格，只裁"朝向"方向那一侧（传送带真正的终点）。
- * 端点格只裁"真正是传送带尽头"的那一面，另一面朝向链内保持敞开，
- * 这样 pointer 从端点格滑向相邻格时前端不会被本格蒙版裁断（避免"前端闪断再完整出现"）。
+ *  - 'tail'：链尾格，只裁"朝向"方向那一侧（传送带真正的终点），其余三面向链内敞开。
+ *  - 'single'：单格链（head+tail 同格），两端都是尽头，完整格蒙版（两端都裁）。
+ * 选中格不再单独用蒙版——改用 whiteSprite 叠层 + alpha 渐变实现"白色 pointer"，避免硬切断层。
  */
-type MaskKind = 'none' | 'head' | 'tail';
+type MaskKind = 'none' | 'head' | 'tail' | 'single';
 
 /**
  * 传送带 pointer 渲染器。
@@ -91,7 +99,7 @@ export class BeltPointerRenderer {
 
   /** handle → entry 映射，用于 diff。 */
   private entries = new Map<EntityHandle, PointerEntry>();
-  /** 选中态（SelectionSystem 写）；选中段不显示 pointer（逻辑不变，仅隐藏）。 */
+  /** 选中态（SelectionSystem 写）；选中段叠加白色 pointer（whiteSprite alpha 渐变）。 */
   private beltSelection: BeltSelection | null = null;
 
   constructor(world: World, layer: Container, getTexture: TextureLookup) {
@@ -165,10 +173,18 @@ export class BeltPointerRenderer {
         const sprite = new Sprite(this.pointerTex!);
         sprite.anchor.set(0.5);
         sprite.scale.set(this.pointerScale);
+        sprite.tint = 0xdfb615; // 黄色 pointer（常态底层，始终显示保证跨格衔接）
+        // whiteSprite：选中段叠加的白色 pointer，tint 白，alpha 随相位渐入渐出（见 update）
+        const whiteSprite = new Sprite(this.pointerTex!);
+        whiteSprite.anchor.set(0.5);
+        whiteSprite.scale.set(this.pointerScale);
+        whiteSprite.tint = 0xffffff;
+        whiteSprite.visible = false;
         cellWrap.addChild(cellMask);
         cellWrap.addChild(sprite);
+        cellWrap.addChild(whiteSprite);
         this.layer.addChild(cellWrap);
-        entry = { sprite, cellWrap, cellMask, lastMaskKind: 'none', handle };
+        entry = { sprite, whiteSprite, cellWrap, cellMask, lastMaskKey: '', handle };
         this.entries.set(handle, entry);
       }
 
@@ -178,27 +194,33 @@ export class BeltPointerRenderer {
       // 蒙版容器对齐到格左上角世界坐标（蒙版正方形覆盖整个传送带单元）
       entry.cellWrap.position.set(pos.x, pos.y);
 
-      // 仅在链端点格（链首/链尾）启用单元蒙版：
-      //  - 端点格：pointer 滑入/滑出时越界部分被裁掉，不溢出到传送带之外。
-      //  - 中间格：不蒙版，pointer 可自然跨越格边界 —— N 格出口边 = N+1 格入口边
-      //    （globalPhase 复位时下一格 pointer 接管同一世界位置），形成连贯流动无断层。
-      // 端点蒙版是"半边裁剪"：只裁真正是传送带尽头的那一面（链首=背向、链尾=朝向），
-      // 朝向链内的另一面敞开，使 pointer 流入/流出相邻格时前端不会被本格蒙版切断。
+      // 链端点格启用单元蒙版，pointer 从传送带边界出现/消失，不溢出到传送带之外：
+      //  - head（链首）：裁起点侧（背向 direction），pointer 从起点边界出现。
+      //  - tail（链尾）：裁终点侧（朝向 direction），pointer 在终点边界消失（不走出末端）。
+      //  - single（单格链 head+tail 同格）：两端都是尽头，完整格蒙版（两端都裁）。
+      // 中间格不蒙版，pointer 跨格衔接（N 格出口边 = N+1 格入口边，globalPhase 复位时下一格
+      // 接管同一世界位置）→ 自动扶梯连贯流动。选中格不额外蒙版——白色靠 whiteSprite 叠层
+      // 实现（黄色底层始终在，保证衔接不断层；蒙版对 sprite/whiteSprite 一视同仁地裁剪）。
       // isTail 可能在延长时由 true 翻 false（见 BeltCreationSystem.commitCells），
       // 故每帧按当前 seg 重新判定，不缓存端点状态。
       const isHead = seg.incomingDirection !== undefined;
       const isTail = seg.isTail;
-      const maskKind: MaskKind = isHead ? 'head' : isTail ? 'tail' : 'none';
+      const maskKind: MaskKind = (isHead && isTail) ? 'single' : isHead ? 'head' : isTail ? 'tail' : 'none';
       if (maskKind === 'none') {
-        // 中间格：不蒙版。必须把 cellMask 的 renderable 关掉，否则那个白色填充正方形会
+        // 中间格/链尾格：不蒙版。必须把 cellMask 的 renderable 关掉，否则那个白色填充正方形会
         // 当作普通子节点直接画出来。
         entry.cellMask.renderable = false;
         entry.cellWrap.mask = null;
       } else {
-        // 端点格：按 head/tail 重画蒙版形状（仅 kind 变化时重画，避免每帧开销），再启用。
-        if (entry.lastMaskKind !== maskKind) {
+        // head：重画蒙版形状。缓存 key 含 direction（延长转弯时 head 方向变也要重画）。
+        const maskKey = `${maskKind}:${seg.direction}`;
+        if (entry.lastMaskKey !== maskKey) {
           this.drawEndpointMask(entry.cellMask, seg, maskKind);
-          entry.lastMaskKind = maskKind;
+          entry.lastMaskKey = maskKey;
+          // PixiJS v8 regression（github #10290）：Graphics 作为 StencilMask，clear()+redraw
+          // 后模板缓冲不更新（仍按旧 geometry 裁剪）→ 越界 pointer 不被裁，表现为起点 pointer
+          // 从传送带外面飘入。workaround：重画后先把 mask 置 null 再绑回，强制重新采集新 geometry。
+          entry.cellWrap.mask = null;
         }
         entry.cellMask.renderable = true;
         entry.cellWrap.mask = entry.cellMask;
@@ -208,33 +230,54 @@ export class BeltPointerRenderer {
       // 使 pointer 像自动扶梯一样均匀分布、连续流动（无重叠/跳变）。
       // sprite 用格中心为原点的偏移；再换算到 cellWrap 本地坐标（减去半格）。
       const { x, y, rotation } = this.computePointerTransform(seg, globalPhase);
-      entry.sprite.position.set(CELL_SIZE / 2 + x, CELL_SIZE / 2 + y);
+      const px = CELL_SIZE / 2 + x;
+      const py = CELL_SIZE / 2 + y;
+      // 黄色 pointer（底层，始终显示，保证自动扶梯跨格衔接不断层）
+      entry.sprite.position.set(px, py);
       entry.sprite.rotation = rotation;
       entry.sprite.alpha = 1;
-      // 选中段不显示 pointer（逻辑不变，仅隐藏渲染）；其余段 pointer 始终可见
-      // （T2.0 阶段1 无物品；端点越界部分由单元蒙版裁掉，无 alpha 渐变）
-      entry.sprite.visible = !(this.beltSelection?.has(handle) ?? false);
+      entry.sprite.visible = true;
+      // whiteSprite：选中段叠加白色 pointer，position/rotation 同 sprite（流动同步）。
+      // alpha 随 globalPhase 余弦渐变——pointer 在格中间(phase≈0.5)全白，在格边界(phase≈0/1)
+      // 渐隐到 0 → pointer 流经选中格时白色平滑出现再消失（黄→白→黄），不立即变白、不溢出、
+      // 不断层（黄色底层始终在）。非选中段 whiteSprite.visible=false，只显示黄色底层。
+      const selected = this.beltSelection?.has(handle) ?? false;
+      if (selected) {
+        entry.whiteSprite.position.set(px, py);
+        entry.whiteSprite.rotation = rotation;
+        // globalPhase=0.5 时 cos(0)=1（格中间，全白）；=0/1 时 cos(±π)=-1→max 0（格边界，透明）
+        entry.whiteSprite.alpha = Math.max(0, Math.cos((globalPhase - 0.5) * Math.PI * 2));
+        entry.whiteSprite.visible = true;
+      } else {
+        entry.whiteSprite.visible = false;
+      }
     }
   }
 
   /**
-   * 画端点格的"半边裁剪"蒙版形状到 cellMask（cellWrap 本地坐标，格左上角为原点）。
+   * 画链端点格(head/tail/single)的蒙版形状到 cellMask（cellWrap 本地坐标，格左上角为原点）。
    *
    * 设计：端点格只在"真正是传送带尽头"的那一面裁剪，朝向链内的其余面全部敞开：
-   *  - head（链首）：裁掉"背向 direction"的一面（物品流向的源头）。沿 direction 正方向
-   *    把蒙版延伸出一个超出格边界的带状区域（"敞开口"），使 pointer 越过入口边滑入时
-   *    不会被本格蒙版切到；越界部分（滑出传送带起点之外）才被裁掉。
-   *  - tail（链尾）：裁掉"朝向 direction"的一面（物品流向的终点）。沿 -direction 敞开。
+   *  - head（链首）：裁"背向 direction"面（起点）。沿 direction 正向延伸"敞开口"，
+   *    使 pointer 越过入口边滑入时前端不被切，越界部分（滑出起点之外）才被裁掉。
+   *  - tail（链尾）：裁"朝向 direction"面（终点）。沿 -direction 敞开。
+   *  - single（单格链）：两端都是尽头，完整格蒙版（不敞开），pointer 只在格内可见。
    *
    * 实现为画一个覆盖"本格 + 敞开侧外延"的矩形（加法），而不是画 U 形多边形——
    * 矩形蒙版更简单、且 StencilMask 对凸形状无歧义。
    *
-   * 敞开量 OPEN = 半格：足够覆盖 pointer 从端点格滑入/滑出相邻格时的前端越界（pointer 高度 0.25 格，
-   * moveRange 扩展 0.125 格，前端最多越过边界 ~0.125+0.125=0.25 格 < 0.5 格敞开口）。
+   * 敞开量 OPEN = 半格：足够覆盖 pointer 前端越界（pointer 高度 0.25 格，moveRange 端点侧
+   * 扩展 0.125 格，前端最多越过边界 ~0.125+0.125=0.25 格 < 0.5 格敞开口）。
    *
-   * @param kind 'head' 或 'tail'。
+   * @param kind 'head' | 'tail' | 'single'。
    */
-  private drawEndpointMask(cellMask: Graphics, seg: BeltSegmentComp, kind: 'head' | 'tail'): void {
+  private drawEndpointMask(cellMask: Graphics, seg: BeltSegmentComp, kind: 'head' | 'tail' | 'single'): void {
+    cellMask.clear();
+    if (kind === 'single') {
+      // 单格链：两端都是尽头，完整格蒙版（pointer 只在格内可见，两端渐入/渐出）
+      cellMask.rect(0, 0, CELL_SIZE, CELL_SIZE).fill({ color: 0xffffff });
+      return;
+    }
     const OPEN = CELL_SIZE / 2; // 敞开侧外延量（半格）
     // 敞开方向：head 沿 direction 正向敞开（朝链内），tail 沿 direction 负向（朝链内）。
     // 对链首 head：direction 是链内方向 → 正向敞开。
@@ -251,7 +294,6 @@ export class BeltPointerRenderer {
     else if (dx < 0) minX -= OPEN;  // 朝左敞开
     if (dy > 0) maxY += OPEN;       // 朝下敞开
     else if (dy < 0) minY -= OPEN;  // 朝上敞开
-    cellMask.clear();
     cellMask.rect(minX, minY, maxX - minX, maxY - minY).fill({ color: 0xffffff });
   }
 
