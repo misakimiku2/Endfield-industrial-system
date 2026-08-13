@@ -12,7 +12,8 @@
 //   - 直段：沿方向轴线性移动；链首/链尾格移动范围在端点侧各扩展半个箭头（滑入/滑出），
 //     越界部分由端点蒙版裁掉（pointer 从边界渐入/渐出，而非硬切或外飘）。
 //   - 转角段：沿四分之一圆弧移动。
-//   - 阶段1 无物品，pointer 始终显示（T2.1 物品出现后会隐藏）。
+//   - T2.1 起：段上有物品时 pointer 整体隐藏（cellWrap.visible=false，A9 §5.2.2 仅空载显示）；
+//     空载时恢复显示并循环流动。
 //
 // PixiJS v8 注意：Graphics 作为 StencilMask，clear()+redraw 后模板缓冲不更新（github #10290）。
 //   drawEndpointMask 重画后必须 cellWrap.mask=null 再绑回，否则蒙版形同虚设——曾导致起点
@@ -30,11 +31,12 @@ import type { TextureLookup } from '../systems/RenderSystem';
 import type { BeltSelection } from '../systems/belt/BeltSelection';
 import { CELL_SIZE } from './constants';
 import { turnInfoFromDirections } from '../systems/belt/BeltPathGeometry';
+import { BeltSystem } from '../systems/BeltSystem';
 
-/** pointer 一个完整循环的时间（毫秒）= 走过一格。与 T2.1 的 40-tick/2s 模型一致。 */
-const POINTER_CYCLE_MS = 2000;
 /** pointer 在格内的视觉尺寸（相对 CELL_SIZE）。与旧项目 cellSize*0.25 一致（按 pointer 高度）。 */
 const POINTER_SIZE_RATIO = 0.25;
+/** pointer 接近物品时 alpha 渐变淡出的相位范围（格单位，0.15 ≈ 10px）。避免硬切突兀消失。 */
+const POINTER_FADE = 0.15;
 
 /** 方向 → 序号：up=0, right=1, down=2, left=3（与旧项目 _directionToIndex 一致）。 */
 function directionToIndex(dir: Direction): number {
@@ -131,9 +133,10 @@ export class BeltPointerRenderer {
 
   /**
    * 每帧更新所有 pointer 的位置与朝向。
-   * @param elapsedMS 从游戏开始累积的总毫秒数。
+   * @param alpha 仿真周期插值系数（accumulator/SIM_STEP，0~1）。pointer 用 BeltSystem.beltPhase
+   *   作时间源（与物品同源），消除漂移/闪烁。
    */
-  update(elapsedMS: number): void {
+  update(alpha: number): void {
     const visible = this.world.query('Position', 'BeltSegmentComp');
     const seen = new Set<EntityHandle>(visible);
 
@@ -152,8 +155,8 @@ export class BeltPointerRenderer {
     // 懒解析纹理：assets 在 Game 构造之后才加载完，首次有传送带段时取真实纹理。
     if (!this.resolveTexture()) return;
 
-    // 2. 全局相位（0~1，2 秒一循环）
-    const globalPhase = (elapsedMS % POINTER_CYCLE_MS) / POINTER_CYCLE_MS;
+    // 2. 全局相位（与物品同源 BeltSystem.beltPhase + 帧间 alpha 插值，消除漂移/闪烁）
+    const globalPhase = BeltSystem.beltPhase + alpha * BeltSystem.beltPhaseDelta;
 
     // 3. 新增 + 同步
     for (const handle of visible) {
@@ -193,6 +196,23 @@ export class BeltPointerRenderer {
 
       // 蒙版容器对齐到格左上角世界坐标（蒙版正方形覆盖整个传送带单元）
       entry.cellWrap.position.set(pos.x, pos.y);
+
+      // pointer alpha：段上有物品时，pointer 接近前方物品渐变淡出（A9 §5.2.2 的优雅版，
+      // 替代旧版硬切 visible=false）。pointer（globalPhase 流动）流向物品时透明度降到 0，
+      // 平滑消失在物品前；物品后（无前方物品）保持隐藏。
+      const items = seg.items ?? [];
+      let ptrAlpha = 1;
+      if (items.length > 0) {
+        // 前方最近物品（渲染 progress > pointer 相位）：pointer 流向它，接近时淡出。
+        // 物品渲染 progress（progress+alpha*delta）与 pointer（beltPhase+alpha*delta_phase）同源对比。
+        let front = Infinity;
+        for (const it of items) {
+          const ip = it.progress + alpha * (it.delta || 0);
+          if (ip > globalPhase && ip < front) front = ip;
+        }
+        ptrAlpha = front === Infinity ? 0 : Math.max(0, Math.min(1, (front - globalPhase) / POINTER_FADE));
+      }
+      entry.cellWrap.visible = true;
 
       // 链端点格启用单元蒙版，pointer 从传送带边界出现/消失，不溢出到传送带之外：
       //  - head（链首）：裁起点侧（背向 direction），pointer 从起点边界出现。
@@ -235,7 +255,7 @@ export class BeltPointerRenderer {
       // 黄色 pointer（底层，始终显示，保证自动扶梯跨格衔接不断层）
       entry.sprite.position.set(px, py);
       entry.sprite.rotation = rotation;
-      entry.sprite.alpha = 1;
+      entry.sprite.alpha = ptrAlpha;
       entry.sprite.visible = true;
       // whiteSprite：选中段叠加白色 pointer，position/rotation 同 sprite（流动同步）。
       // alpha 随 globalPhase 余弦渐变——pointer 在格中间(phase≈0.5)全白，在格边界(phase≈0/1)
@@ -250,11 +270,12 @@ export class BeltPointerRenderer {
         // [FADE,1-FADE] 格内全白，[1-FADE,1] 出口渐出。黄色底层始终在 → 跨格衔接不断层。
         const FADE = 0.18;
         const gp = globalPhase;
-        entry.whiteSprite.alpha = gp < FADE
+        const selAlpha = gp < FADE
           ? gp / FADE
           : gp > 1 - FADE
             ? (1 - gp) / FADE
             : 1;
+        entry.whiteSprite.alpha = selAlpha * ptrAlpha; // 选中白色也受物品淡出影响
         entry.whiteSprite.visible = true;
       } else {
         entry.whiteSprite.visible = false;

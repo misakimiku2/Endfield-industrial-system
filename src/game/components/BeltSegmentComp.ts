@@ -8,6 +8,26 @@
 import type { Direction } from './BuildingComp';
 
 /**
+ * 传送带上的物品 (A9 §2.1)。
+ *
+ * 每一段传送带独立追踪自己上面的物品队列（`BeltSegmentComp.items`）。
+ * - `itemId`: 物品类型 id，对应 items 图集的 textureKey（如 'cuprium_ore'）。
+ * - `progress`: 0.0~1.0，物品在该段传送带上的归一化位置（0=段首，1=段尾）。
+ *   每 Simulation Tick 推进 +0.025（0.5 格/秒 × 50ms / 64px），跨一整段需 40 Tick / 2 秒 (A9 §2.2)。
+ */
+export interface BeltItem {
+  itemId: string;
+  /** 0.0~1.0，段内归一化位置。断头/堵塞停止时钳制为 STOP_MAX(0.75)，使物品完全在格内不凸出。 */
+  progress: number;
+  /**
+   * 本 Simulation Tick 的 progress 增量，渲染层用于帧间插值（消除 20TPS 逻辑阶跃在 60FPS 下的卡顿）。
+   * 流动物品 = +0.025；停止/被间距夹住不动的物品 = 0（渲染静止，不插值）。
+   * 由 BeltSystem 每 tick 写入，BeltItemRenderer 读取。
+   */
+  delta: number;
+}
+
+/**
  * 传送带段组件。
  *
  * 渲染相关字段（entryDir/mirrorH）由 BeltPathGeometry.getCellTurnInfo/beltCornerTransform
@@ -36,4 +56,10 @@ export interface BeltSegmentComp {
   segmentIndex: number;
   /** pointer 流动相位偏移（0~1），落盘时随机生成，避免所有传送带同步流动。T2.0 阶段1 pointer 动画用。 */
   phaseOffset: number;
+  /**
+   * 该段上的物品队列 (A9 §2.1)。T2.1 起由 BeltSystem 每 Tick 推进 progress。
+   * 创建时初始化为 `[]`；T2.6 起物品从设备输出端口注入，T2.2 起跨段传输。
+   * 渲染: items 非空时隐藏该段 pointer (A9 §5.2.2)，由 BeltItemRenderer 渲染物品。
+   */
+  items: BeltItem[];
 }

@@ -29,6 +29,8 @@ import { BeltSelection } from './game/systems/belt/BeltSelection';
 import { PerfMonitor, type BenchmarkReport, type MemoryStressRound } from './game/perf/PerfMonitor';
 import type { Position } from './game/components/Position';
 import type { SpriteComp } from './game/components/SpriteComp';
+import type { BeltSegmentComp } from './game/components/BeltSegmentComp';
+import { BeltSystem } from './game/systems/BeltSystem';
 import { CELL_SIZE } from './game/render/constants';
 import type { EntityHandle } from './game/ECS';
 
@@ -299,6 +301,7 @@ async function main() {
     // 普通模式下启用。集中在此同步，避免分散在各退出入口导致漏调（曾使 hover 永久禁用）。
     game.renderSystem.setBeltHoverEnabled(!belt.isActive());
     selection.update(); // T1.8: 选中框跟随相机（每帧重绘）
+    game.tickSimulation(ticker.deltaMS); // T2.1: 仿真 Tick(20TPS，驱动 BeltSystem 物品移动)，须在渲染前
     game.update(ticker.deltaMS); // T1.6: RenderSystem（实体↔Sprite 同步 + 视口剔除 + T2.0 pointer 流动）
     // 选中框屏幕坐标（调试用）: 相机移动时该坐标应随之变化；若钉住不动即异常
     const now = performance.now();
@@ -414,14 +417,17 @@ async function main() {
   };
   // getOccupiedCells(): 返回占用快照（验收"占位无泄漏"用）
   const getOccupiedCells = () => occupancy.snapshot();
-  // clearAllPlaced(): 销毁所有带 BuildingComp 的实体 + 清空占用表（重置用）
+  // clearAllPlaced(): 销毁所有带 BuildingComp 的实体 + 传送带段 + 清空占用表（重置用）
+  // T2.2: 一并清除 BeltSegmentComp（原仅清设备，传送带会累积 → "一堆物品"bug）
   const clearAllPlaced = (): void => {
-    const handles = game.world.query('BuildingComp');
-    for (const h of handles) game.world.destroyEntity(h);
+    const buildings = game.world.query('BuildingComp');
+    const belts = game.world.query('BeltSegmentComp');
+    for (const h of buildings) game.world.destroyEntity(h);
+    for (const h of belts) game.world.destroyEntity(h);
     occupancy.clear();
     selection.clearSelection(); // 实体清空后选中框必须消失（T1.9 删除同样依赖此路径）
     game.update();
-    console.log(`[T1.7] 清除全部已放置设备 (${handles.length} 个)，占用表清空`);
+    console.log(`[T1.7] 清除全部放置物 (设备 ${buildings.length} + 传送带 ${belts.length})，占用表清空`);
   };
 
   // ── T1.8 验收钩子: 程序化选中第一个设备（绕过鼠标交互，便于自动验收）──
@@ -629,6 +635,11 @@ async function main() {
       const dirIdx = (d: number) => (d === 270 ? 0 : d === 0 ? 1 : d === 90 ? 2 : 3);
       const diff = (dirIdx(outgoingDir) - dirIdx(incomingDir) + 4) % 4;
       const isCCW = diff === 3;
+      // T2.2: 占用检查，避免重复运行在同一格叠加多条传送带（测试累积 bug 修复）
+      if (!occupancy.canPlace(dirCells[i].x, dirCells[i].y, 1, 1)) {
+        console.warn(`spawnBelt: (${dirCells[i].x},${dirCells[i].y}) 已占用，跳过该格`);
+        continue;
+      }
       const handle = game.world.createEntity();
       game.world.addComponent(handle, 'Position', { x: dirCells[i].x * CELL_SIZE, y: dirCells[i].y * CELL_SIZE });
       game.world.addComponent(handle, 'SpriteComp', {
@@ -648,12 +659,64 @@ async function main() {
         incomingDirection: i === 0 ? chainIncoming : undefined,
         segmentIndex: i,
         phaseOffset: Math.random(),
+        items: [], // T2.1: 物品队列初始为空
       });
       occupancy.occupy(dirCells[i].x, dirCells[i].y, 'transport_belt');
       created++;
     }
     game.update(); // 立即刷新一帧，让 Sprite 出现
     return created;
+  };
+
+  // ── T2.1 验收钩子: 程序化创建一段传送带并往首段注入物品（验收"单段物品移动"）──
+  // 用法: __game.spawnBeltWithItem([[10,10]], 270, 'cuprium_ore')
+  //   物品从首段段首(progress=0)出发，沿方向匀速移动(+0.025/tick，2秒走一格)，到段尾(0.99)停下。
+  //   多格链: 物品只在首段内移动到段尾停（T2.1 不做跨段传输，留 T2.2）。
+  //   itemId 见 items 图集，如 'cuprium_ore' / 'amethyst_ore' / 'ferrium_ore'。
+  const spawnBeltWithItem = (
+    cells: Array<[number, number]>,
+    startDir: 0 | 90 | 180 | 270,
+    itemId: string,
+    progress = BeltSystem.beltPhase,
+  ): number => {
+    clearAllPlaced(); // T2.2: 每次清场，避免重复运行累积传送带/物品（修复"一堆物品"bug）
+    const before = new Set(game.world.query('BeltSegmentComp'));
+    const created = spawnBelt(cells, startDir);
+    if (created === 0) return 0;
+    // 在新增段中找链首段(segmentIndex===0)注入物品；退化取首个新增段
+    const after = game.world.query('BeltSegmentComp');
+    let head: EntityHandle | null = null;
+    for (const h of after) {
+      if (before.has(h)) continue;
+      if (head === null) head = h; // 退化: 记住首个新增段
+      const seg = game.world.getComponent<BeltSegmentComp>(h, 'BeltSegmentComp');
+      if (seg && seg.segmentIndex === 0) { head = h; break; } // 优先链首段
+    }
+    if (head !== null) {
+      const seg = game.world.getComponent<BeltSegmentComp>(head, 'BeltSegmentComp');
+      // ECS getComponent 返回组件对象引用，直接 mutate 即生效（Phase 1 简化设计）
+      // 默认 progress=BeltSystem.beltPhase：物品注入即与 pointer 同相位（"物品=实体 pointer"）
+      if (seg) seg.items.push({ itemId, progress, delta: 0 });
+    }
+    game.update(); // 立即刷新一帧，让物品 Sprite 出现
+    return created;
+  };
+
+  // ── T2.2 验收钩子: 消费链尾物品（模拟设备吸入/存货口，测试堵塞→疏通）──
+  // 移除所有链尾断头段(isTail)的段尾物品(progress 最大)各一个。
+  // 用法: 传送带链堵塞后调用 → 链尾腾位 → 下游 hasSpace 恢复 → 上游恢复流动。
+  const consumeBeltTailItem = (): number => {
+    const segs = game.world.query('BeltSegmentComp');
+    let removed = 0;
+    for (const h of segs) {
+      const seg = game.world.getComponent<BeltSegmentComp>(h, 'BeltSegmentComp');
+      if (!seg || !seg.isTail || !seg.items || seg.items.length === 0) continue;
+      seg.items.sort((a, b) => b.progress - a.progress); // 段尾(出口)在前
+      seg.items.shift(); // 移除段尾物品
+      removed++;
+    }
+    game.update();
+    return removed;
   };
 
   // 开发期调试钩子: 暴露关键对象到 window，便于控制台验证与测试。
@@ -689,6 +752,8 @@ async function main() {
     runFpsBenchmark,
     memoryStressCheck,
     spawnBelt,
+    spawnBeltWithItem,
+    consumeBeltTailItem,
   };
 
   console.log('[集成工业系统] T1.7 设备放置 + T1.8 基础交互 + T1.9 设备删除 + T1.10 性能基准 + T2.0 传送带创建就绪');
@@ -701,6 +766,7 @@ async function main() {
   console.log('  T1.10: __game.spawnBenchmarkDevices(100) 一键100设备 / fillBenchmarkDevices() 铺满地图 → runFpsBenchmark() 采样FPS/内存 → memoryStressCheck() 内存压测');
   console.log('  T2.0: __game.spawnBelt([[5,5],[8,5],[8,8]],0) 程序化生成带转角传送带链 → 验证4方向转角+pointer流动');
   console.log('  T2.0 链管理: spawnBelt后 selectFirstBelt() 单击选单格 / selectFirstBelt(true) 双击选整链 → deleteSelectedBelt() 删当前所选');
+  console.log('  T2.1/T2.2: __game.spawnBeltWithItem([[10,10],[11,10],[12,10],[13,10]],0,"cuprium_ore") 多格直链物品流动; 转角测试 [[10,12],[10,10],[12,10]],270 L形链物品转弯(动画同pointer); consumeBeltTailItem() 测堵塞疏通');
 }
 
 main().catch((err) => {

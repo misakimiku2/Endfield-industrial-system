@@ -15,6 +15,9 @@ import type { SceneRenderer } from './render/SceneRenderer';
 import { RenderSystem } from './systems/RenderSystem';
 import { PlacementSystem } from './systems/PlacementSystem';
 import { BeltCreationSystem } from './systems/BeltCreationSystem';
+import { GameLoop } from './GameLoop';
+import { BeltSystem } from './systems/BeltSystem';
+import { SIM_STEP_MS } from './render/constants';
 import { getTexture } from './render/AssetsLoader';
 
 export class Game {
@@ -28,6 +31,10 @@ export class Game {
   readonly placement: PlacementSystem;
   /** 传送带创建系统（T2.0 阶段 1）。 */
   readonly beltCreation: BeltCreationSystem;
+  /** 仿真主循环（A5 §2 双时钟，T2.1 起驱动 BeltSystem 等逻辑系统）。 */
+  readonly gameLoop: GameLoop;
+  /** 传送带物品移动系统（T2.1）。 */
+  readonly beltSystem: BeltSystem;
 
   constructor(scene: SceneRenderer, viewport: ViewportSize) {
     this.world = new World();
@@ -46,6 +53,20 @@ export class Game {
     this.beltCreation = new BeltCreationSystem(
       this.world, this.occupancy, this.camera, scene.layers,
     );
+    // 仿真循环 + 系统（T2.1 起）：BeltSystem 先于未来的 MachineSystem 注册（A5 §5/DD-010）。
+    this.beltSystem = new BeltSystem();
+    this.gameLoop = new GameLoop(this.world);
+    this.gameLoop.addSystem(this.beltSystem);
+  }
+
+  /**
+   * 推进仿真（A5 §2 双时钟）。每渲染帧由主循环调用，累积时间跑整数个 20TPS Tick。
+   * 必须在 update()（渲染）之前调用，保证 RenderSystem 读到最新 Tick 快照（A5 §1.1）。
+   * 暂停时（gameLoop.paused）Tick 停止，渲染继续（相机可操作）。
+   * @param deltaMS 自上一帧的毫秒数（来自 Pixi ticker）。
+   */
+  tickSimulation(deltaMS: number): void {
+    this.gameLoop.update(deltaMS);
   }
 
   /**
@@ -55,6 +76,8 @@ export class Game {
    * @param deltaMS 自上一帧的毫秒数（来自 Pixi ticker），传入 RenderSystem 累积 pointer 相位。
    */
   update(deltaMS = 0): void {
-    this.renderSystem.update(deltaMS);
+    // alpha = 仿真周期插值系数（accumulator/SIM_STEP，0~1），供 BeltItemRenderer 帧间插值（消除物品 20TPS 卡顿）
+    const alpha = this.gameLoop.accumulator / SIM_STEP_MS;
+    this.renderSystem.update(deltaMS, alpha);
   }
 }

@@ -590,6 +590,7 @@ export class BeltCreationSystem {
       incomingDirection,
       segmentIndex,
       phaseOffset: Math.random(),
+      items: [], // T2.1: 物品队列初始为空，由 BeltSystem 推进 progress
     });
     this.occupancy.occupy(gx, gy, 'transport_belt');
     return handle;

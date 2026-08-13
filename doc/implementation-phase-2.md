@@ -230,9 +230,18 @@ interface BeltLinkComp {
 ### 预估工时
 1 次会话
 
+### 实现笔记（2026-08-13 完成 ✅）
+- **GameLoop 双时钟**（A5 §2）：新增 `src/game/GameLoop.ts`，20TPS 仿真 + 60FPS 渲染 accumulator，BeltSystem 作 SimulationSystem 注册。这是 T2.1 的关键前置（之前主循环只有渲染）。
+- **beltPhase 全局相位**：pointer 和物品共用 `BeltSystem.beltPhase`（logical tick 推进），消除两者（pointer 旧用 elapsedMS、物品用 logical tick）不同源导致的相位漂移与跨段闪烁。物品注入时 `progress = beltPhase` 对齐（"物品=实体 pointer"，间距/节奏完全一致）。
+- **delta 帧间插值**：`BeltItem.delta`（本 tick 增量），渲染 `renderProgress = progress + alpha*delta`（alpha=accumulator/SIM_STEP，0~1）。流动物品 delta=0.025 平滑滑动、停止/被夹住 delta=0 静止，消除 20TPS 阶跃在 60FPS 下的卡顿。
+- **物品旋转**：直段朝流向（`directionToIndex×π/2`）、转角沿弧切线（复用 pointer `computeCornerTransform` 数学），与 pointer 朝向一致。
+- **停止居中**：`STOP_MAX=0.5`（格中心），物品停在最后一格正中（完全在格内、视觉居中）；跨段时 progress 仍到 1.0（边缘世界坐标连续，多格链流动无缝）。
+- **pointer 接近物品渐变**（ptrAlpha）：物品所在格的 pointer 接近前方物品时 alpha 渐变淡出（`POINTER_FADE=0.15`），替代旧版硬切 `visible=false`；物品后方无前方物品时 alpha=0 隐藏。
+- 验证：`scripts/verify-t21-item-move.mjs`（8/8）、`verify-t22-anim.mjs`（3/3 居中/同步/转角）、`verify-pointer-fade.mjs`（4/4）。
+
 ---
 
-## T2.2 — BeltSystem 扩展：跨段传输与堵塞
+## T2.2 — BeltSystem 扩展：跨段传输与堵塞 ✅
 
 ### 目标
 实现物品从一段传送带传到下一段，以及堵塞逆流传播。
@@ -251,6 +260,16 @@ interface BeltLinkComp {
 
 ### 预估工时
 1 次会话
+
+### 实现笔记（2026-08-13 完成 ✅）
+- **跨段传输**（A9 §2.2/§3）：队首 `progress≥1.0` + 出口方向相邻 Cell 有下游段且入口有空位（`hasSpaceAtEntry`：min progress ≥ MIN_ITEM_GAP）→ 物品移到下游段 `progress=0`。无下游/下游满 → 钳制 STOP_MAX 等待。
+- **堵塞逆流**（A9 §3.4）：下游满 → 本段队首停段尾 → 后方被最小间距夹住 → 本段塞满 → 更上游跨段失败 → 逆流向源头传播。
+- **疏通**（A9 §3.5）：下游消耗/腾位 → `hasSpace` 恢复 → 上游恢复跨段流动。
+- **反向遍历**（消除跨段顿）：`BeltSystem.update` 从链尾→链头遍历。跨段物品 push 到下游时下游已处理 → 本 tick 不推进新物品（progress 保持 0），renderProgress 跨段边界连续（消除 50ms 停滞"顿一下"）。query 顺序=段创建顺序=链头→链尾，反向即物流逆序，堵塞时上游看到下游最新状态。
+- **delta 连续**：跨段 push `delta=0.025`、beltPhase 重置 `beltPhaseDelta=0.025`（不再为 0），消除重置/跨段 tick 内 renderProgress 固定导致的停滞。
+- **测试钩子修复**：`clearAllPlaced` 清传送带（原只清设备，导致"一堆物品"累积）、`spawnBelt` 占用检查、`spawnBeltWithItem` 清场、`consumeBeltTailItem` 模拟设备消费（测堵塞→疏通）。
+- 验证：`scripts/verify-t22-cross-segment.mjs`（跨段+堵塞+疏通）、`diag-item-stutter.mjs`（跨段 renderProgress 连续性）。
+- **已知遗留**：堵塞多物品场景间距 bug（"不后退"逻辑导致后方物品卡在 0.5，间距违规）——用户当前单物品场景无此问题，待后续修。
 
 ---
 

@@ -29,6 +29,7 @@ import type { BeltSegmentComp } from '../components/BeltSegmentComp';
 import { beltTextureRotation, beltCornerTransform } from './belt/BeltPathGeometry';
 import { BeltPointerRenderer } from '../render/BeltPointerRenderer';
 import { BeltVectorRenderer } from '../render/BeltVectorRenderer';
+import { BeltItemRenderer } from '../render/BeltItemRenderer';
 import { BeltHoverRenderer } from '../render/BeltHoverRenderer';
 import type { BeltSelection } from './belt/BeltSelection';
 import type { AtlasGroup } from '../render/AssetsLoader';
@@ -91,6 +92,8 @@ export class RenderSystem {
   private entries = new Map<EntityHandle, SpriteEntry>();
   /** 传送带 pointer 流动渲染器（T2.0 阶段1）。挂在 layer3Item，盖在带身之上。 */
   private readonly pointerRenderer: BeltPointerRenderer;
+  /** 传送带物品渲染器（T2.1）。挂在 layer3Item，与 pointer 同层（二者互斥：有物品隐 pointer）。 */
+  private readonly beltItemRenderer: BeltItemRenderer;
   /** 传送带带身矢量渲染器（T2.0 方案A）。挂在 layer2Building，替代传送带 Sprite。 */
   private readonly beltVectorRenderer: BeltVectorRenderer;
   /** 传送带悬停高亮渲染器（橙色四角 L 形 + 呼吸）。挂在 layer2Building。 */
@@ -109,6 +112,7 @@ export class RenderSystem {
     this.camera = camera;
     this.getTexture = getTexture;
     this.pointerRenderer = new BeltPointerRenderer(world, layers.layer3Item, getTexture);
+    this.beltItemRenderer = new BeltItemRenderer(world, layers.layer3Item, getTexture);
     this.beltVectorRenderer = new BeltVectorRenderer(world, layers.layer2Building);
     this.beltHoverRenderer = new BeltHoverRenderer(world, camera, layers.layer2Building);
   }
@@ -136,8 +140,9 @@ export class RenderSystem {
   /**
    * 每帧调用：同步 query 结果到 Sprite 集合，并做位置同步与视口剔除。
    * @param deltaMS 自上一帧的毫秒数（来自 Pixi ticker），用于累积 pointer 相位。默认 0 兼容旧调用。
+   * @param alpha 仿真周期插值系数（accumulator/SIM_STEP，0~1），传给 BeltItemRenderer 做物品帧间插值。
    */
-  update(deltaMS = 0): void {
+  update(deltaMS = 0, alpha = 0): void {
     this.elapsedMS += deltaMS;
     const visible = this.world.query('Position', 'SpriteComp');
     const seen = new Set<EntityHandle>(visible);
@@ -216,8 +221,10 @@ export class RenderSystem {
 
     // 传送带带身矢量渲染（T2.0 方案A）：在 Sprite 同步之后，刷新带身 Graphics 位置/朝向/选中变色
     this.beltVectorRenderer.update();
-    // 传送带 pointer 流动（T2.0 阶段1）：刷新 pointer 位置/朝向/选中 tint
-    this.pointerRenderer.update(this.elapsedMS);
+    // 传送带 pointer 流动：用 beltPhase + alpha（与物品同源，消除漂移/闪烁）
+    this.pointerRenderer.update(alpha);
+    // 传送带物品渲染（T2.1）：按 items 的 progress 画物品位置/纹理（alpha 帧间插值消除卡顿）
+    this.beltItemRenderer.update(alpha);
     // 传送带悬停高亮（橙色四角 L 形 + 呼吸）
     this.beltHoverRenderer.update(this.elapsedMS);
   }
@@ -228,6 +235,7 @@ export class RenderSystem {
     this.entries.clear();
     this.beltVectorRenderer.destroy();
     this.pointerRenderer.destroy();
+    this.beltItemRenderer.destroy();
     this.beltHoverRenderer.destroy();
   }
 
