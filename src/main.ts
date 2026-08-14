@@ -749,6 +749,42 @@ async function main() {
     return removed;
   };
 
+  // ── T2.6 验收钩子: 往传送带段注入物品 / 查看段上物品状态 ──
+  // injectBeltItem('originium_ore', 0.3, 1) → 往 segmentIndex===1 的段注入源矿(progress=0.3)。
+  //   默认注入链首段(segmentIndex===0)、progress=0——物品从链首出发走到链尾（与 spawnBeltWithItem
+  //   不同: 不清场，可与已放置设备共存，T2.6 场景 = placeAt + spawnBelt + injectBeltItem）。
+  const injectBeltItem = (itemId: string, progress = 0, segmentIndex = 0): boolean => {
+    for (const h of game.world.query('BeltSegmentComp')) {
+      const seg = game.world.getComponent<BeltSegmentComp>(h, 'BeltSegmentComp');
+      if (seg && seg.segmentIndex === segmentIndex) {
+        seg.items.push({ itemId, progress, delta: 0 });
+        game.update();
+        return true;
+      }
+    }
+    console.warn(`injectBeltItem: 找不到 segmentIndex===${segmentIndex} 的传送带段`);
+    return false;
+  };
+  // beltStatus() → 每段一行: "段0 (6,10) 270° [尾]: 源矿@0.35, 蓝铁矿@0.10"（验收物品停在门口=0.50 用）
+  const beltStatus = (): string => {
+    const segs = game.world.query('BeltSegmentComp').map((h) => ({
+      seg: game.world.getComponent<BeltSegmentComp>(h, 'BeltSegmentComp'),
+      pos: game.world.getComponent<Position>(h, 'Position'),
+    }));
+    if (segs.length === 0) return '没有传送带段';
+    return segs
+      .map(({ seg, pos }) => {
+        if (!seg || !pos) return '段?: 未知';
+        const gx = Math.round(pos.x / CELL_SIZE);
+        const gy = Math.round(pos.y / CELL_SIZE);
+        const items = (seg.items ?? [])
+          .map((it) => `${itemName(it.itemId)}@${it.progress.toFixed(2)}`)
+          .join(', ');
+        return `段${seg.segmentIndex} (${gx},${gy}) ${seg.direction}°${seg.isTail ? ' [尾]' : ''}: ${items || '无物品'}`;
+      })
+      .join('\n');
+  };
+
   // ── T2.3 验收钩子: 配方数据加载（启动时从 CSV 构建，控制台查询）──
   // listRecipes('refining_unit') → "精炼炉配方：晶体外壳(源矿×1, 2秒)、蓝铁块(蓝铁矿×1, 2秒)、..."
   const equipmentNameToId = new Map<string, string>();
@@ -768,10 +804,12 @@ async function main() {
   };
 
   // ── T2.5: 注入生产数据，注册 MachineSystem（BeltSystem 之后，DD-010）──
-  // 生产事件转发 console（启动/结算/blocked 仅状态转换时产生，低频不刷屏），
+  // 生产事件转发 console（启动/结算/blocked 仅状态转换时产生，低频不刷屏；
+  // T2.6 input 吸入事件随物品到达节奏产生），
   // recentEvents 环形缓冲供 __game.productionLog() 覆盘验证。
   const machineSystem = game.initProduction(recipeIndex, itemTable);
-  machineSystem.onEvent = (e) => console.log(`[${ts()}] [T2.5 生产] ${e.message}`);
+  machineSystem.onEvent = (e) =>
+    console.log(`[${ts()}] [${e.type === 'input' ? 'T2.6 物流' : 'T2.5 生产'}] ${e.message}`);
 
   // ── T2.4 验收钩子: 输入缓冲区（模拟物品传入，检查 count 与锁定）──
   // injectInput('originium_ore', 3) → "输入槽0: 源矿 × 3/50 (已锁定)"
@@ -952,8 +990,73 @@ async function main() {
     return 'T2.5 一键测试完成（关键输出见控制台 [T2.5 生产] / [步骤N] 日志）';
   };
 
+  /** 链尾段（isTail，物品"停在设备门口"的观察点）。 */
+  const tailSegment = (): BeltSegmentComp | null => {
+    for (const h of game.world.query('BeltSegmentComp')) {
+      const seg = game.world.getComponent<BeltSegmentComp>(h, 'BeltSegmentComp');
+      if (seg?.isTail) return seg;
+    }
+    return null;
+  };
+  /** 链尾段上 progress 最大的物品（队首）——null = 链尾无物品。 */
+  const tailHeadItem = (): { itemId: string; progress: number } | null => {
+    const tail = tailSegment();
+    if (!tail || tail.items.length === 0) return null;
+    return tail.items.reduce((a, b) => (b.progress > a.progress ? b : a));
+  };
+  /** T2.6 一键测试主体（并发/重复保护见 runTest 的 phase 状态机）。
+   * 场景: 精炼炉(5,5) + 下方上行传送带×3（喂底中输入端口 6,7）。
+   * 预注满输出槽使设备 blocked——生产结算暂缓、不消耗输入槽，本次验收只看输入对接，时序确定。 */
+  const demoT26 = async (): Promise<string> => {
+    console.log(`[${ts()}] ════ T2.6 一键测试: 传送带 → 设备输入对接 ════`);
+    clearAllPlaced();
+    if (!placeAt('refining_unit', 5, 5)) return 'T2.6 测试失败: 精炼炉放置失败';
+    injectOutput('origocrust', 50); // 输出注满 → 设备 blocked（结算暂缓，输入槽不被生产消耗）
+    const created = spawnBelt([[6, 10], [6, 9], [6, 8]], 270);
+    if (created !== 3) return 'T2.6 测试失败: 传送带创建失败';
+    injectBeltItem('originium_ore', 0);
+    console.log(`[${ts()}] [步骤1] 场景就绪: 精炼炉(5,5) + 上行传送带×3 → 底中输入端口(6,7)，源矿已上带`);
+    console.log(`[${ts()}] [步骤2] 观察画面: 物品沿传送带向上前进（约 6 秒到门口）→ 到达精炼炉门口时消失`);
+    const absorbed = await waitFor(() => (firstComp()?.bufferInput[0].count ?? 0) >= 1, 15000);
+    if (!absorbed) {
+      console.log(`[${ts()}] T2.6 测试失败: 15 秒内物品未被吸入——仿真时钟未推进？页面在后台被深度节流时请切到前台再试`);
+      return 'T2.6 测试失败: 物品未被吸入输入槽（仿真未推进？）';
+    }
+    console.log(`[${ts()}] [步骤3] 物品消失并进入输入槽（上方 [T2.6 物流] 即吸入消息）:\n${inputBuffer()}`);
+
+    console.log(`[${ts()}] [步骤4] 注满输入槽 50/50，再放一个源矿 → 物品应停在精炼炉门口`);
+    injectInput('originium_ore', 49);
+    injectBeltItem('originium_ore', 0);
+    const stopped = await waitFor(() => {
+      const head = tailHeadItem();
+      return head !== null && head.progress >= 0.49;
+    }, 15000);
+    if (!stopped) {
+      console.log(`[${ts()}] T2.6 测试失败: 物品未停在门口（被提前吸入或未到达）:\n${beltStatus()}`);
+      return 'T2.6 测试失败: 满槽时物品未停在门口';
+    }
+    await sleep(700); // 停稳观察: progress 应保持 0.50 不动
+    const parked = tailHeadItem();
+    console.log(
+      `[${ts()}] [步骤5] 物品停在精炼炉门口（progress=${parked?.progress.toFixed(2)} 不再前进，输入槽满）:\n${beltStatus()}`,
+    );
+    console.log(`[${ts()}] [步骤6] consumeInput(1) 腾出空位（模拟生产消耗）→ 门口物品应立即被吸入`);
+    consumeInput(1);
+    const resumed = await waitFor(() => {
+      const c = firstComp();
+      return c !== null && (c.bufferInput[0].count ?? 0) >= 50 && (tailHeadItem() === null);
+    }, 5000);
+    if (!resumed) {
+      console.log(`[${ts()}] T2.6 测试失败: 疏通后物品未被吸入:\n${beltStatus()}\n${inputBuffer()}`);
+      return 'T2.6 测试失败: 疏通后物品未被吸入';
+    }
+    console.log(`[${ts()}] [步骤7] 疏通后门口物品被吸入，输入槽回满:\n${inputBuffer()}`);
+    console.log(`[${ts()}] ════ T2.6 一键测试完成 ════`);
+    return 'T2.6 一键测试完成（关键输出见控制台 [T2.6 物流] / [步骤N] 日志）';
+  };
+
   /**
-   * 一键测试入口（含重复调用保护）。目前支持 't25'（生产计时与生产循环验收全流程）。
+   * 一键测试入口（含重复调用保护）。可用: 't25'（生产计时与生产循环）、't26'（传送带→设备输入对接）。
    *
    * phase 状态机（用户实测：内置浏览器控制台会在执行后**自动重发**上一条命令，
    * 每秒 2~4 次、每轮结束立即再触发，导致测试无限循环重跑）:
@@ -961,48 +1064,56 @@ async function main() {
    *   running  → 重复调用忽略（第 2 次打印一次来源栈后静默）
    *   done     → 成功后本次页面加载不再重跑（重跑=刷新页面），重复调用只提示一次
    *   cooldown → 失败后 30 秒冷却，避免自动重发导致失败循环重试
+   * 每个测试名独立一套 phase（互不影响，t25 跑完仍可跑 t26）。
    */
-  type T25Phase = 'idle' | 'running' | 'done' | 'cooldown';
-  let t25Phase: T25Phase = 'idle';
-  let t25PhaseUntil = 0;
-  let t25Ignores = 0;
-  const t25Ignore = (hint: string): string => {
-    t25Ignores++;
-    if (t25Ignores === 2) {
+  type TestPhase = 'idle' | 'running' | 'done' | 'cooldown';
+  const testPhases = new Map<string, { phase: TestPhase; until: number; ignores: number }>();
+  const phaseOf = (name: string) => {
+    let p = testPhases.get(name);
+    if (!p) { p = { phase: 'idle', until: 0, ignores: 0 }; testPhases.set(name, p); }
+    return p;
+  };
+  const testIgnore = (name: string, hint: string): string => {
+    const p = phaseOf(name);
+    p.ignores++;
+    if (p.ignores === 2) {
       // 打印一次调用来源栈，确诊自动重发的来源（控制台手输 = 短栈 at <anonymous>:1:x）
       const stack = new Error().stack?.split('\n').slice(2, 6).join('\n') ?? '(无栈)';
       console.log(
-        `[${ts()}] [T2.5] 检测到命令被自动重发，已忽略 ${t25Ignores} 次（后续静默忽略）。${hint}\n` +
+        `[${ts()}] [${name}] 检测到命令被自动重发，已忽略 ${p.ignores} 次（后续静默忽略）。${hint}\n` +
         `  调用来源（诊断用）:\n${stack}`,
       );
     }
     return `已忽略（${hint}）`;
   };
+  const TESTS: Record<string, () => Promise<string>> = { t25: demoT25, t26: demoT26 };
   const runTest = async (name: string): Promise<string> => {
-    if (name !== 't25') return `未知测试 '${name}'（可用: 't25'）`;
-    if (t25Phase === 'running') {
-      return t25Ignore('测试正在进行中');
+    const demo = TESTS[name];
+    if (!demo) return `未知测试 '${name}'（可用: ${Object.keys(TESTS).join(', ')}）`;
+    const p = phaseOf(name);
+    if (p.phase === 'running') {
+      return testIgnore(name, '测试正在进行中');
     }
-    if (t25Phase === 'done') {
-      return t25Ignore('本次页面加载已完成过测试；想再跑一次请刷新页面 (F5) 后重新输入');
+    if (p.phase === 'done') {
+      return testIgnore(name, '本次页面加载已完成过测试；想再跑一次请刷新页面 (F5) 后重新输入');
     }
-    if (t25Phase === 'cooldown' && performance.now() < t25PhaseUntil) {
-      return t25Ignore('上次测试失败，30 秒冷却中（避免自动重发导致失败重试循环）');
+    if (p.phase === 'cooldown' && performance.now() < p.until) {
+      return testIgnore(name, '上次测试失败，30 秒冷却中（避免自动重发导致失败重试循环）');
     }
-    t25Phase = 'running';
-    t25Ignores = 0;
+    p.phase = 'running';
+    p.ignores = 0;
     let result: string;
     try {
-      result = await demoT25();
+      result = await demo();
     } catch (err) {
-      console.error(`[${ts()}] [T2.5] 一键测试异常:`, err);
-      result = 'T2.5 测试失败: 异常';
+      console.error(`[${ts()}] [${name}] 一键测试异常:`, err);
+      result = `${name.toUpperCase()} 测试失败: 异常`;
     }
-    if (result.startsWith('T2.5 一键测试完成')) {
-      t25Phase = 'done';
+    if (result.includes('一键测试完成')) {
+      p.phase = 'done';
     } else {
-      t25Phase = 'cooldown';
-      t25PhaseUntil = performance.now() + 30_000;
+      p.phase = 'cooldown';
+      p.until = performance.now() + 30_000;
     }
     return result;
   };
@@ -1042,6 +1153,8 @@ async function main() {
     spawnBelt,
     spawnBeltWithItem,
     consumeBeltTailItem,
+    injectBeltItem,
+    beltStatus,
     itemTable,
     recipeTable,
     recipeIndex,
@@ -1072,6 +1185,8 @@ async function main() {
   console.log('  T2.4: __game.placeAt("refining_unit",5,5) → injectInput("originium_ore",3) → "输入槽0: 源矿 × 3/50 (已锁定)" → consumeInput(3) 扣空解锁; inputBuffer() 查看当前槽');
   console.log('  T2.5 一键测试: __game.test("t25")  ← 复制这一条到控制台回车即可（自动放设备+注料+计时+结算+blocked疏通演示）');
   console.log('  T2.5 手动: placeAt("refining_unit",5,5) → injectInput("originium_ore",3) → productionStatus() 监控计时(期间输入槽数量不变) → 结算 "输入槽 源矿 -1，输出槽 晶体外壳 +1" 并自动续启; injectOutput("origocrust",50)+等完成=blocked → consumeOutput(1) 疏通结算; productionLog() 查事件');
+  console.log('  T2.6 一键测试: __game.test("t26")  ← 复制这一条到控制台回车即可（自动放炉+铺带+物品上门消失+满槽堵停+疏通吸入演示）');
+  console.log('  T2.6 手动: placeAt("refining_unit",5,5) → spawnBelt([[6,9],[6,8]],270) 带尾指向底中输入端口 → injectBeltItem("originium_ore") → 物品到门口消失、inputBuffer() +1; injectInput(...,49) 注满 → 物品停在门口(beltStatus() 查 @0.50) → consumeInput(1) 疏通吸入');
 }
 
 main().catch((err) => {

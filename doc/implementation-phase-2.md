@@ -350,7 +350,7 @@ interface BeltLinkComp {
 
 ---
 
-## T2.6 — 传送带 → 设备输入对接
+## T2.6 — 传送带 → 设备输入对接 ✅
 
 ### 目标
 实现传送带末端物品进入设备输入槽的逻辑。
@@ -368,6 +368,17 @@ interface BeltLinkComp {
 
 ### 预估工时
 1 次会话
+
+### 实现笔记（2026-08-14 完成 ✅）
+- **PortGeometry 共享模块**（`src/game/systems/PortGeometry.ts`）：rotatePort/portOutwardBase/rotateDirection 从 BeltCreationSystem **原样抽出**（A3 §2.2 端口旋转数学）。单一事实来源——传送带创建的端口高亮与 MachineSystem 的端口吸入必须算出**相同的端口格**，两处各持拷贝一旦发散，连接判定就与实际端口错位。BeltSystem 的 import 补 `.ts` 扩展名（node --experimental-strip-types 直跑单测要求，vite/tsc 兼容）。
+- **IntakeOps**（`src/game/systems/machine/IntakeOps.ts`，BufferOps/ProductionOps 先例）：`inputPortCells`（输入端口世界格 = 左上角格 + rotatePort，按定义序即"左→中→右"连接序；只含 type='input'，output/liquid 不在内）、`buildBeltCellIndex`（每 Tick 一份 `"gx,gy"→段实体` 索引，各端口 O(1) 查相邻供给带，替代逐段全量扫描）、`findFeederBelt`（A9 §6.7 连接判定：**段格 + directionVector(direction) === 端口格**，即传送带方向指向设备；四方向各查一格）、`tryAbsorbHeadItem`（队首 progress ≥ PORT_ENTER_PROGRESS → tryAcceptItem → 从段 items[] 移除，A9 §3.6 三件套中"空槽锁定/count+1"由 tryAcceptItem 完成）。
+- **触发点与停点同源**：`PORT_ENTER_PROGRESS = BeltSystem.STOP_MAX = 0.5`（导出复用，A9 §3.3 格中心触发）。BeltSystem 对无下游带的段尾物品钳制在同一位置——物品"停在设备门口"与"触发吸入判定"是同一点：槽满时物品停住，槽腾出后**停在门口的物品下 Tick 立即被吸入**（堵塞→疏通 A9 §3.5），无需额外状态。BeltSystem 本体零改动（设备格无下游带→自然钳制 0.5），符合其文件头"端口吸入由 MachineSystem 处理"的设计分工。
+- **MachineSystem 输入物流**（A8 §7 步骤 2）：update 拆为 `updateInternal`（T2.5 逻辑原样搬移）+ `absorbBeltInputs`（每输入端口找供给带 → 吸入队首；DD-010 顺序 BeltSystem 先钳制、本系统同 Tick 吸入，"本 Tick 到达本 Tick 进入"）。**内部状态与配方解耦**（原 `!recipeList → continue` 跳过整台设备，现只挡内部生产部分）——吸入不依赖配方，仓库类设备（T2.12 取/存货口）同走此路径。每端口每 Tick 至多 1 件（A8 §4.1）；多端口轮询指针 inputPollIndex 属 T2.10，本版按端口定义序遍历（当前全部设备单输入槽，行为等价）。
+- **事件**：ProductionEvent 新增 `input` 类型（recipeId 改可选），消息 `精炼炉: 吸入 源矿 ×1（传送带 → 输入槽）`；main.ts 转发按类型分前缀（input → `[T2.6 物流]`，其余 → `[T2.5 生产]`）。
+- **调试钩子**：`injectBeltItem(itemId, progress?, segmentIndex?)`（往指定段注入物品，**不清场**、可与 placeAt 共存——spawnBeltWithItem 会清场不适用于 T2.6 场景）、`beltStatus()`（每段一行 `段0 (6,10) 270° [尾]: 源矿@0.35`，验收"停在门口"用）。一键测试 `__game.test("t26")`：runTest 泛化为多测试注册表 + 按测试名独立的 phase 状态机（t25 跑完不影响 t26，防自动重发逻辑不变）。
+- **t26 场景确定性**：搭建后先 `injectOutput` 注满输出槽使设备 blocked（T2.5 语义：结算暂缓**不消耗输入槽**）——验收全程只观察输入对接，避免生产消耗导致"满槽堵停"步骤的时序不确定。场景：精炼炉(5,5) + 上行传送带×3 喂底中输入端口(6,7)。
+- **验证**：`scripts/verify-t26-input-port.ts`（39/39：端口旋转四朝向/连接方向判定/类型锁定拒绝/满槽堵停/疏通恢复/输出与液体端口不吸入/多端口同 Tick 各吸 1 件/两段链跨段到门口）+ `verify-t26-input-port.mjs` CDP 浏览器验收（14/14：物品到门口消失+输入槽+1+吸入消息/满槽停 0.50 静止/疏通吸入/方向背离永不吸入）+ 一键测试 CDP 复验（完成、二次调用忽略、未知测试提示可用列表）。
+- **回归**：t23/t24/t25 单测 40/21/45 无破坏；t23-t24/t25 浏览器 9/18 无破坏。**历史遗留修复**：`verify-t21-item-move.mjs`（5 处断言）/`verify-t22-cross-segment.mjs`（2 处）仍期望旧版 0.99 段尾停点，与 T2.2 起 STOP_MAX=0.5 格中心行为不符（git stash 验证在本任务改动前即失败，非本次引入）；按现行为重写断言后 7/7、7/7。
 
 ---
 

@@ -5,11 +5,11 @@
 // 运行: node scripts/verify-t21-item-move.mjs
 //
 // 断言:
-//   1. spawnBeltWithItem 后物品 progress≈0（段首）
-//   2. ~1 秒后 progress≈0.5（20 tick × 0.025，匀速推进）
-//   3. ~2 秒后 progress 稳定在 [0.98,0.99]（段尾停止，A9 §3.2 钳制 0.99）
-//   4. 再等 0.5 秒 progress 不变（确实停下，非滑过）
-//   5. 截图: 有物品段无 pointer、空载段有 pointer（目视）
+//   1. spawnBeltWithItem 后物品在段内（注入点=beltPhase，与 pointer 同相位）
+//   2. 物品沿段方向推进，无下游时钳制在格中心 STOP_MAX=0.5 停下（T2.1 实现笔记"停止居中"，
+//      A9 §3.1-B；旧版 0.99 段尾停点已随 T2.2 的跨段连续性调整废弃）
+//   3. 停在 0.5 后稳定不变（确实停下，非滑过）
+//   4. 截图: 有物品段无 pointer、空载段有 pointer（目视）
 import { writeFileSync, mkdirSync } from 'node:fs';
 
 const CDP = 'http://localhost:9222';
@@ -90,36 +90,34 @@ await delay(400);
 
 let st = JSON.parse(await evalJs(cdp, READ_ITEM));
 console.log('[T2.1] 初始状态:', st);
-check('物品已注入段首', st !== null && st.itemId === 'cuprium_ore', `(progress=${st?.progress})`);
+check('物品已注入段内', st !== null && st.itemId === 'cuprium_ore', `(progress=${st?.progress})`);
 const p0 = st?.progress ?? 0;
-// 注入后到首次读取有 evalJs 往返+截图延迟，物品可能已推进若干 tick，故放宽到 <0.5
-check('物品在段首附近(progress<0.5)', p0 < 0.5, `(progress=${p0.toFixed(3)})`);
+// 注入点=beltPhase(0~1)，读到的已是注入后若干 tick 的位置：向停点 0.5 收敛中或已停
+check('物品位于停点前(p≤0.5)', p0 <= 0.5 + 0.001, `(progress=${p0.toFixed(3)})`);
 await shot(cdp, '01-item-at-head');
 
-// 等 ~1 秒: 验证匀速推进（20 tick × 0.025 ≈ +0.5，用差值断言避免依赖 p0 起点）
+// 等 ~1 秒: 单段断头带无下游 → 钳制在格中心 0.5（注入点<beltPhase 时先匀速推进到 0.5）
 await delay(1000);
 st = JSON.parse(await evalJs(cdp, READ_ITEM));
 const p1 = st?.progress ?? 0;
 console.log('[T2.1] ~1s:', st);
-check('物品移动中(progress 单调递增)', p1 > p0, `(${p0.toFixed(3)} → ${p1.toFixed(3)})`);
-const dv = p1 - p0;
-check('匀速推进(~0.5/秒, 40tick/格)', dv >= 0.3 && dv <= 0.75, `(Δprogress=${dv.toFixed(3)})`);
-check('尚未到段尾(p1<0.99)', p1 < 0.99, `(progress=${p1.toFixed(3)})`);
+check('物品前进到停点 0.5(格中心)', Math.abs(p1 - 0.5) < 0.01, `(progress=${p1.toFixed(3)})`);
+check('前进单调不后退', p1 >= p0 - 0.001, `(${p0.toFixed(3)} → ${p1.toFixed(3)})`);
 await shot(cdp, '02-item-moving');
 
-// 等 ~1.2 秒(累计~2.2s): 应到段尾并稳定在 0.99
+// 等 ~1.2 秒(累计~2.2s): 应稳定停在 0.5
 await delay(1200);
 st = JSON.parse(await evalJs(cdp, READ_ITEM));
 const p2 = st?.progress ?? 0;
 console.log('[T2.1] ~2.2s:', st);
-check('~2s 后到段尾 [0.98,0.99]', p2 >= 0.98 && p2 <= 0.99, `(progress=${p2.toFixed(3)})`);
+check('~2s 后停在 0.5(格中心)', Math.abs(p2 - 0.5) < 0.01, `(progress=${p2.toFixed(3)})`);
 
 // 再等 0.5 秒: 应稳定不变（证明停下，非滑过）
 await delay(500);
 st = JSON.parse(await evalJs(cdp, READ_ITEM));
 const p3 = st?.progress ?? 0;
 console.log('[T2.1] ~2.7s(停止后):', st);
-check('段尾稳定不超 0.99', p3 >= 0.98 && p3 <= 0.99, `(progress=${p3.toFixed(3)})`);
+check('停点稳定 0.5', Math.abs(p3 - 0.5) < 0.01, `(progress=${p3.toFixed(3)})`);
 check('确实停下(Δprogress≈0)', Math.abs(p3 - p2) < 0.01, `(Δ=${(p3 - p2).toFixed(3)})`);
 await shot(cdp, '03-item-stopped-at-tail');
 

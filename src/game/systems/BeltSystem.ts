@@ -10,18 +10,19 @@
 //     更上游跨段失败 → 逆流向源头传播。下游疏通（入口腾位）→ hasSpace 恢复 → 上游恢复流动。
 //
 // 不在本系统（留给后续）:
-//   - 端口吸入设备输入槽（T2.6，progress=0.5 触发，由 MachineSystem 处理）
+//   - 端口吸入设备输入槽（T2.6 已实现，由 MachineSystem/machine/IntakeOps 处理:
+//     物品在本系统钳制到 STOP_MAX=0.5 停在门口，MachineSystem 同 Tick 吸入输入槽）
 //   - 设备输出物品注入传送带（T2.7）
 //
 // 执行顺序 (A5 §5/DD-010): BeltSystem 先于 MachineSystem，保证物品先到达。
 //   dt 恒为 50ms，progress 增量用固定常量 ITEM_PROGRESS_PER_TICK。
 
-import type { World, EntityHandle } from '../ECS';
-import type { SimulationSystem } from '../GameLoop';
-import type { BeltItem, BeltSegmentComp } from '../components/BeltSegmentComp';
-import type { Position } from '../components/Position';
-import { directionVector } from './belt/BeltPathGeometry';
-import { CELL_SIZE } from '../render/constants';
+import type { World, EntityHandle } from '../ECS.ts';
+import type { SimulationSystem } from '../GameLoop.ts';
+import type { BeltItem, BeltSegmentComp } from '../components/BeltSegmentComp.ts';
+import type { Position } from '../components/Position.ts';
+import { directionVector } from './belt/BeltPathGeometry.ts';
+import { CELL_SIZE } from '../render/constants.ts';
 
 /**
  * 物品 progress 每 Tick 增量 (A9 §2.2)。
@@ -37,8 +38,11 @@ const MIN_ITEM_GAP = 0.25;
  * 断头/堵塞时物品停止的 progress（格中心 0.5）。
  * 物品停在格中心，完全在格内、视觉居中（符合"走到尽头停下"的直观预期）。
  * 跨段时 progress 仍到 1.0（物品半在本格半在下格，边缘世界坐标连续），保证多格链流动视觉无缝。
+ *
+ * 导出供 machine/IntakeOps 复用（T2.6 端口吸入触发点）：物品"停在设备门口"与
+ * "触发吸入判定"必须是同一 progress，否则槽满时停的位置与疏通后吸入的位置不一致。
  */
-const STOP_MAX = 0.5;
+export const STOP_MAX = 0.5;
 
 /**
  * 传送带系统。处理所有带 BeltSegmentComp 实体的物品移动、跨段传输与堵塞。

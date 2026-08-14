@@ -17,7 +17,6 @@ import type { World, EntityHandle } from '../ECS';
 import type { Camera } from '../render/Camera';
 import type { SceneLayers } from '../render/SceneRenderer';
 import type { OccupancyMap } from '../world/OccupancyMap';
-import type { Port } from '../data/buildings';
 import { getBuildingDefinition } from '../data/buildings';
 import type { BuildingComp, Direction } from '../components/BuildingComp';
 import type { Position } from '../components/Position';
@@ -38,6 +37,8 @@ import {
   type IsBlocked,
   type FindPathOptions,
 } from './belt/BeltPathfinding';
+// 端口旋转数学（T2.6 起与 MachineSystem 共享，单一事实来源）
+import { rotatePort, portOutwardBase, rotateDirection } from './PortGeometry';
 
 /** 创建模式状态。 */
 export type BeltMode = 'idle' | 'hover' | 'preview';
@@ -703,59 +704,6 @@ export class BeltCreationSystem {
 /** 世界像素 → 格子坐标（向下取整）。 */
 function worldToGrid(wx: number, wy: number): GridCell {
   return { x: Math.floor(wx / CELL_SIZE), y: Math.floor(wy / CELL_SIZE) };
-}
-
-/** 把端口相对位置按建筑朝向旋转，得到在世界坐标系中的相对位置。 */
-function rotatePort(
-  port: Port,
-  footprint: { w: number; h: number },
-  direction: Direction,
-): { dx: number; dy: number } {
-  const cx = (footprint.w - 1) / 2;
-  const cy = (footprint.h - 1) / 2;
-  const x = port.position.dx - cx;
-  const y = port.position.dy - cy;
-  let rx = x;
-  let ry = y;
-  switch (direction) {
-    case 0:
-      break;
-    case 90:
-      rx = -y;
-      ry = x;
-      break;
-    case 180:
-      rx = -x;
-      ry = -y;
-      break;
-    case 270:
-      rx = y;
-      ry = -x;
-      break;
-  }
-  return {
-    dx: Math.round(rx + cx),
-    dy: Math.round(ry + cy),
-  };
-}
-
-/** 端口在默认方向下的朝外方向。 */
-function portOutwardBase(
-  port: Port,
-  footprint: { w: number; h: number },
-): Direction {
-  const { dx, dy } = port.position;
-  if (dy === 0) return 270; // 顶边端口朝上
-  if (dy === footprint.h - 1) return 90; // 底边端口朝下
-  if (dx === 0) return 180; // 左边端口朝左
-  if (dx === footprint.w - 1) return 0; // 右边端口朝右
-  // 非边缘端口按上处理（防御性，当前数据不会出现）
-  return 270;
-}
-
-/** 把一个基础方向按建筑朝向旋转。 */
-function rotateDirection(base: Direction, direction: Direction): Direction {
-  return ((base + direction) % 360) as Direction;
 }
 
 /**

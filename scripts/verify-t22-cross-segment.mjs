@@ -98,13 +98,13 @@ for (let i = 0; i < 20; i++) {
   track = JSON.parse(await evalJs(cdp, TRACK_FIRST));
   if (track) {
     segIdxSeen.add(track.segIdx);
-    if (track.segIdx === maxSeg && track.head >= 0.98) { reachedTail = true; }
+    if (track.segIdx === maxSeg && track.head >= 0.49) { reachedTail = true; }
   }
 }
 console.log('[T2.2] 流动过程 segmentIndex 覆盖:', [...segIdxSeen].sort((a,b)=>a-b));
 check('物品跨段(segmentIndex 递增覆盖多段)', segIdxSeen.size >= 2, `(覆盖 ${segIdxSeen.size} 段)`);
 check('物品到达链尾段(segIdx=3)', segIdxSeen.has(maxSeg), '');
-check('物品在链尾段尾停下(head≥0.98)', reachedTail, `(head=${track?.head?.toFixed(3)})`);
+check('物品在链尾格中心停下(head≈0.5)', reachedTail, `(head=${track?.head?.toFixed(3)})`);
 await shot(cdp, '01-cross-segment-flow');
 
 // === 测试 2: 堵塞（2格链 + 多物品，链尾满后上游停在段尾）===
@@ -128,9 +128,9 @@ console.log('[T2.2] 堵塞后分布(7s):', JSON.stringify(jam));
 const tailJam = jam.find(s => s.isTail);
 const headJam = jam.find(s => s.segIdx === 0);
 check('堵塞: 链尾段(segIdx=1)物品堆积(≥3)', tailJam && tailJam.items.length >= 3, `(链尾物品数=${tailJam?.items.length})`);
-// 堵塞标志：segIdx=0 有物品停在段尾(≥0.95)无法跨段（因链尾入口满）
+// 堵塞标志：segIdx=0 有物品停在格中心(≈0.5)无法跨段（因链尾入口满，STOP_MAX=0.5 钳制）
 const headStuckP = headJam ? Math.max(0, ...headJam.items.map(i=>i.p)) : 0;
-check('堵塞: 上游(segIdx=0)物品停在段尾等待(≥0.95)', headStuckP >= 0.95, `(segIdx0 max p=${headStuckP.toFixed(3)})`);
+check('堵塞: 上游(segIdx=0)物品停在格中心等待(≈0.5)', headStuckP >= 0.49 && headStuckP <= 0.51, `(segIdx0 max p=${headStuckP.toFixed(3)})`);
 await shot(cdp, '02-jam-backup');
 
 // === 测试 3: 疏通（consumeBeltTailItem 模拟设备消费，上游恢复跨段）===
