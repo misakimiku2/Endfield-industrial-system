@@ -57,26 +57,58 @@ let st = JSON.parse(await evalJs(cdp, READ));
 console.log('[fade] 物品停止:', st);
 check('物品停止在 progress=0.5', st.ip !== null && Math.abs(st.ip - 0.5) < 0.02, `(ip=${st.ip})`);
 
-// 采样 beltPhase，复刻 pointer ptrAlpha 公式，验证接近物品(0.5)时渐变到 0
-console.log('\n采样 pointer alpha 渐变（物品 progress=0.5，pointer beltPhase 流动）：');
-let sawFull = false, sawFade = false, sawHidden = false;
-let fadeShotTaken = false;
-for (let i = 0; i < 40; i++) {
-  await delay(120);
-  const s = JSON.parse(await evalJs(cdp, READ));
-  if (s.ip === null) continue;
-  // 复刻 BeltPointerRenderer: 前方物品 progress(ip) > bp ? ip : Infinity
-  const front = s.ip > s.bp ? s.ip : Infinity;
-  const ptrAlpha = front === Infinity ? 0 : Math.max(0, Math.min(1, (front - s.bp) / FADE));
-  if (ptrAlpha >= 0.95) sawFull = true;
-  if (ptrAlpha > 0.05 && ptrAlpha < 0.95) { sawFade = true; if (!fadeShotTaken) { await shot(cdp, '01-pointer-fading'); fadeShotTaken = true; } }
-  if (ptrAlpha <= 0.05) sawHidden = true;
-  if (i % 5 === 0) console.log(`  bp=${s.bp.toFixed(3)} ip=${s.ip.toFixed(3)} → ptrAlpha=${ptrAlpha.toFixed(3)}`);
+// 页内 rAF 采样渲染器**真实 sprite alpha**（每帧一条，无 CDP 往返节奏失真；
+// 读 RenderSystem.pointerRenderer.entries 中"有物品段"的黄色 pointer alpha）。
+// 复刻公式的旧断言只能验证数学，公式回归（如退回旧版单向淡出）测不出来——
+// 旧版在相位回绕瞬间 alpha 0→1 硬跳（用户实测"物品前方的指针闪动"），帧采样必捕获。
+const SAMPLE_ALPHA = `(async () => {
+  const pr = window.__game.renderSystem.pointerRenderer;
+  const w = window.__game.world;
+  const samples = [];
+  const t0 = performance.now();
+  await new Promise((resolve) => {
+    const step = () => {
+      let a = null;
+      for (const [, entry] of pr.entries) {
+        const seg = w.getComponent(entry.handle, 'BeltSegmentComp');
+        if (seg && seg.items && seg.items.length > 0) { a = entry.sprite.alpha; break; }
+      }
+      samples.push(a);
+      if (performance.now() - t0 < 4200) requestAnimationFrame(step); else resolve();
+    };
+    requestAnimationFrame(step);
+  });
+  return JSON.stringify(samples);
+})()`;
+console.log('\n页内逐帧采样真实 pointer alpha（物品 progress=0.5，pointer 流动，~4.2 秒 / 2 个周期）：');
+const rawSamples = JSON.parse(await evalJs(cdp, SAMPLE_ALPHA));
+const samples = rawSamples.filter((a) => a !== null);
+let sawFull = false, sawFade = false, minAlpha = 1, maxJump = 0;
+for (let i = 0; i < samples.length; i++) {
+  const a = samples[i];
+  if (a < minAlpha) minAlpha = a;
+  if (a >= 0.95) sawFull = true;
+  if (a > 0.05 && a < 0.95) sawFade = true;
+  if (i > 0) maxJump = Math.max(maxJump, Math.abs(a - samples[i - 1]));
 }
-console.log('');
+console.log(`  采样 ${samples.length} 帧: minAlpha=${minAlpha.toFixed(3)} maxJump=${maxJump.toFixed(3)}`);
+check(`采样覆盖充分(≥100 帧)`, samples.length >= 100, `(${samples.length} 帧)`);
 check('pointer 远离物品时全显(alpha≈1)', sawFull, '');
 check('pointer 接近物品时渐变淡出(0<alpha<1)', sawFade, '');
-check('pointer 到达/越过物品时隐藏(alpha≈0)', sawHidden, '');
+check('pointer 经过物品正下方时接近隐藏(谷值 alpha≤0.25)', minAlpha <= 0.25, `(minAlpha=${minAlpha.toFixed(3)})`);
+// 连续性: 逐帧采样相位步长 ≈0.025/3 → alpha 变化 ≤~0.06/帧（偶掉帧 ≤0.4）；旧版回绕硬跳 = 1.0
+check('无硬跳变(逐帧 |Δalpha| ≤ 0.45，无闪动)', maxJump <= 0.45, `(maxJump=${maxJump.toFixed(3)})`);
+// 抓一张淡出中间态截图（真实 alpha 进入 0.05~0.95 窗口时拍）
+for (let i = 0; i < 40; i++) {
+  const a = await evalJs(cdp, `(() => {
+    const pr = window.__game.renderSystem.pointerRenderer; const w = window.__game.world;
+    for (const [, e] of pr.entries) { const s = w.getComponent(e.handle, 'BeltSegmentComp');
+      if (s && s.items && s.items.length) return e.sprite.alpha; }
+    return 1;
+  })()`);
+  if (a > 0.05 && a < 0.95) { await shot(cdp, '01-pointer-fading'); break; }
+  await delay(80);
+};
 // 链尾断头 pointer（物品格上游空载格无，单段）—— 单段只有一格，pointer 在物品格渐变
 await shot(cdp, '02-final');
 

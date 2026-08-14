@@ -12,8 +12,8 @@
 //   - 直段：沿方向轴线性移动；链首/链尾格移动范围在端点侧各扩展半个箭头（滑入/滑出），
 //     越界部分由端点蒙版裁掉（pointer 从边界渐入/渐出，而非硬切或外飘）。
 //   - 转角段：沿四分之一圆弧移动。
-//   - T2.1 起：段上有物品时 pointer 整体隐藏（cellWrap.visible=false，A9 §5.2.2 仅空载显示）；
-//     空载时恢复显示并循环流动。
+//   - T2.1 起：段上有物品时 pointer 距最近物品渐变淡出/淡入（A9 §5.2.2 仅空载显示的优雅版，
+//     见 update 中 ptrAlpha；物品=实体 pointer 同相位，指针间距与物品节奏一致）。
 //
 // PixiJS v8 注意：Graphics 作为 StencilMask，clear()+redraw 后模板缓冲不更新（github #10290）。
 //   drawEndpointMask 重画后必须 cellWrap.mask=null 再绑回，否则蒙版形同虚设——曾导致起点
@@ -197,20 +197,22 @@ export class BeltPointerRenderer {
       // 蒙版容器对齐到格左上角世界坐标（蒙版正方形覆盖整个传送带单元）
       entry.cellWrap.position.set(pos.x, pos.y);
 
-      // pointer alpha：段上有物品时，pointer 接近前方物品渐变淡出（A9 §5.2.2 的优雅版，
-      // 替代旧版硬切 visible=false）。pointer（globalPhase 流动）流向物品时透明度降到 0，
-      // 平滑消失在物品前；物品后（无前方物品）保持隐藏。
+      // pointer alpha：段上有物品时，pointer 距最近物品渐变淡出/淡入（A9 §5.2.2 的优雅版，
+      // 替代旧版硬切 visible=false）。物品渲染 progress（progress+alpha*delta）与 pointer
+      // （beltPhase+alpha*delta_phase）同源对比。
+      // 对称淡入淡出（2026-08-14 修复）: pointer 接近物品淡出、从物品下方穿过后淡入。
+      // 旧版单向逻辑（越过段内最后物品后保持隐藏）在相位回绕瞬间 alpha 从 0 硬跳回 1——
+      // 停住/被堵的物品（T2.6 门口堵停、T2.2 堵塞）会被流动的 pointer 周期性超过，
+      // 每 2 秒一次硬跳 = 用户实测的"物品前方的指针闪动"。对称版在任何相位连续无跳变。
       const items = seg.items ?? [];
       let ptrAlpha = 1;
       if (items.length > 0) {
-        // 前方最近物品（渲染 progress > pointer 相位）：pointer 流向它，接近时淡出。
-        // 物品渲染 progress（progress+alpha*delta）与 pointer（beltPhase+alpha*delta_phase）同源对比。
-        let front = Infinity;
+        let dist = Infinity;
         for (const it of items) {
-          const ip = it.progress + alpha * (it.delta || 0);
-          if (ip > globalPhase && ip < front) front = ip;
+          const d = Math.abs(it.progress + alpha * (it.delta || 0) - globalPhase);
+          if (d < dist) dist = d;
         }
-        ptrAlpha = front === Infinity ? 0 : Math.max(0, Math.min(1, (front - globalPhase) / POINTER_FADE));
+        ptrAlpha = Math.max(0, Math.min(1, dist / POINTER_FADE));
       }
       entry.cellWrap.visible = true;
 

@@ -95,7 +95,7 @@ try {
   await evalJs(cdp, `__game.injectOutput('origocrust', 50)`); // blocked，输入槽不被生产消耗
   const created = await evalJs(cdp, `__game.spawnBelt([[6, 9], [6, 8]], 270)`);
   check('1b. 上行传送带×2（链尾 (6,8) 指向底中输入端口 (6,7)）', created === 2, `创建 ${created} 段`);
-  check('1c. 链首注入源矿', await evalJs(cdp, `__game.injectBeltItem('originium_ore', 0)`) === true);
+  check('1c. 链首注入源矿', await evalJs(cdp, `__game.injectBeltItem('originium_ore')`) === true);
 
   // 1.5 格行程（(6,9) p0 → (6,8) p0.5）≈ 3 秒，等吸入完成（输入槽 ≥1 即物品已消失进槽）
   const gone = await waitUntil(cdp, `(() => ${inputCount} >= 1)()`, 10000);
@@ -110,7 +110,7 @@ try {
 
   console.log('[满槽堵停]');
   await evalJs(cdp, `__game.injectInput('originium_ore', 49)`); // 补到 50/50
-  await evalJs(cdp, `__game.injectBeltItem('originium_ore', 0)`);
+  await evalJs(cdp, `__game.injectBeltItem('originium_ore')`);
   const parked = await waitUntil(cdp, `(() => { const p = ${tailHeadProgress}; return p !== null && p >= 0.49; })()`, 10000);
   check('4a. 物品走到精炼炉门口停住（progress ≥ 0.49）', parked, await evalJs(cdp, `__game.beltStatus()`));
   await sleep(800); // 停稳观察
@@ -132,7 +132,7 @@ try {
   await evalJs(cdp, `__game.placeAt('refining_unit', 5, 5)`);
   await evalJs(cdp, `__game.injectOutput('origocrust', 50)`); // 输入槽不参与生产，且保持空
   await evalJs(cdp, `__game.spawnBelt([[6, 8]], 0)`); // 同格但朝右——出口是 (7,8)，不指向端口 (6,7)
-  await evalJs(cdp, `__game.injectBeltItem('originium_ore', 0)`);
+  await evalJs(cdp, `__game.injectBeltItem('originium_ore')`);
   await waitUntil(cdp, `(() => { const p = ${tailHeadProgress}; return p !== null && p >= 0.49; })()`, 8000);
   await sleep(1000); // 在门口停留一段时间，确认不被吸入
   const p3 = await evalJs(cdp, tailHeadProgress);

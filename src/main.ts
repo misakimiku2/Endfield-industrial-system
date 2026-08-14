@@ -750,10 +750,13 @@ async function main() {
   };
 
   // ── T2.6 验收钩子: 往传送带段注入物品 / 查看段上物品状态 ──
-  // injectBeltItem('originium_ore', 0.3, 1) → 往 segmentIndex===1 的段注入源矿(progress=0.3)。
-  //   默认注入链首段(segmentIndex===0)、progress=0——物品从链首出发走到链尾（与 spawnBeltWithItem
-  //   不同: 不清场，可与已放置设备共存，T2.6 场景 = placeAt + spawnBelt + injectBeltItem）。
-  const injectBeltItem = (itemId: string, progress = 0, segmentIndex = 0): boolean => {
+  // injectBeltItem('originium_ore') → 往 segmentIndex===0 的段注入源矿。
+  //   默认 progress=BeltSystem.beltPhase——与 spawnBeltWithItem 同约定（T2.1"物品=实体 pointer"）:
+  //   物品注入即与 pointer 同相位，间距/节奏与指针动画完全一致；显式传 0 会随机错相
+  //   （用户实测: 物品与指针间距每次不同、且从带首边缘外出现）。
+  //   与 spawnBeltWithItem 不同: 不清场，可与已放置设备共存，
+  //   T2.6 场景 = placeAt + spawnBelt + injectBeltItem。
+  const injectBeltItem = (itemId: string, progress = BeltSystem.beltPhase, segmentIndex = 0): boolean => {
     for (const h of game.world.query('BeltSegmentComp')) {
       const seg = game.world.getComponent<BeltSegmentComp>(h, 'BeltSegmentComp');
       if (seg && seg.segmentIndex === segmentIndex) {
@@ -1014,7 +1017,7 @@ async function main() {
     injectOutput('origocrust', 50); // 输出注满 → 设备 blocked（结算暂缓，输入槽不被生产消耗）
     const created = spawnBelt([[6, 10], [6, 9], [6, 8]], 270);
     if (created !== 3) return 'T2.6 测试失败: 传送带创建失败';
-    injectBeltItem('originium_ore', 0);
+    injectBeltItem('originium_ore');
     console.log(`[${ts()}] [步骤1] 场景就绪: 精炼炉(5,5) + 上行传送带×3 → 底中输入端口(6,7)，源矿已上带`);
     console.log(`[${ts()}] [步骤2] 观察画面: 物品沿传送带向上前进（约 6 秒到门口）→ 到达精炼炉门口时消失`);
     const absorbed = await waitFor(() => (firstComp()?.bufferInput[0].count ?? 0) >= 1, 15000);
@@ -1026,7 +1029,7 @@ async function main() {
 
     console.log(`[${ts()}] [步骤4] 注满输入槽 50/50，再放一个源矿 → 物品应停在精炼炉门口`);
     injectInput('originium_ore', 49);
-    injectBeltItem('originium_ore', 0);
+    injectBeltItem('originium_ore');
     const stopped = await waitFor(() => {
       const head = tailHeadItem();
       return head !== null && head.progress >= 0.49;

@@ -379,6 +379,7 @@ interface BeltLinkComp {
 - **t26 场景确定性**：搭建后先 `injectOutput` 注满输出槽使设备 blocked（T2.5 语义：结算暂缓**不消耗输入槽**）——验收全程只观察输入对接，避免生产消耗导致"满槽堵停"步骤的时序不确定。场景：精炼炉(5,5) + 上行传送带×3 喂底中输入端口(6,7)。
 - **验证**：`scripts/verify-t26-input-port.ts`（39/39：端口旋转四朝向/连接方向判定/类型锁定拒绝/满槽堵停/疏通恢复/输出与液体端口不吸入/多端口同 Tick 各吸 1 件/两段链跨段到门口）+ `verify-t26-input-port.mjs` CDP 浏览器验收（14/14：物品到门口消失+输入槽+1+吸入消息/满槽停 0.50 静止/疏通吸入/方向背离永不吸入）+ 一键测试 CDP 复验（完成、二次调用忽略、未知测试提示可用列表）。
 - **回归**：t23/t24/t25 单测 40/21/45 无破坏；t23-t24/t25 浏览器 9/18 无破坏。**历史遗留修复**：`verify-t21-item-move.mjs`（5 处断言）/`verify-t22-cross-segment.mjs`（2 处）仍期望旧版 0.99 段尾停点，与 T2.2 起 STOP_MAX=0.5 格中心行为不符（git stash 验证在本任务改动前即失败，非本次引入）；按现行为重写断言后 7/7、7/7。
+- **物品/pointer 相位对齐 + 指针闪动修复（2026-08-14 用户实测反馈）**：用户报告 t26 一键测试中①物品与指针间距每次运行不同、②第二件物品明显错位、③停住物品前方指针闪动。根因 1：`injectBeltItem` 曾默认 progress=0 注入，违反 T2.1"物品=实体 pointer"约定（注入时 progress=beltPhase）——物品落后指针一个随机相位差（每次不同），且注入瞬间悬在带首边缘外。修复：默认 `progress=BeltSystem.beltPhase`（与 spawnBeltWithItem 同约定），demoT26/验收脚本全部改对齐注入；逐帧验证 578 帧跨 3 段 maxDiff=0.022（仅注入后首 tick 插值瞬态），此后与 pointer 晶格完全同步。根因 2：pointer 单向淡出（越过段内最后物品后保持隐藏）在 beltPhase 回绕瞬间 alpha 0→1 **硬跳**——停住/被堵的物品（门口堵停、T2.2 堵塞）被流动 pointer 周期性超过，每 2 秒一次硬跳即闪动。修复：`BeltPointerRenderer` 改**对称淡入淡出**（alpha = clamp(|物品渲染progress − g| / POINTER_FADE)）：接近淡出、穿过淡入，任何相位连续。`verify-pointer-fade.mjs` 重写为页内 rAF 逐帧采样渲染器**真实 sprite alpha**（复刻公式测不出渲染层回归；606 帧 maxJump=0.024 vs 旧版 1.0），新增"无硬跳变"断言；`diag-t26-align.mjs` 目视截图（gui-test-screenshots/t26-fix/：对齐流动/门口停住/淡出中间态）。
 
 ---
 
