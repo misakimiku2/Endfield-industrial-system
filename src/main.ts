@@ -898,74 +898,113 @@ async function main() {
     }
     return pred();
   };
-  /** 一键测试并发保护: Chrome 控制台在空输入时按 Enter 会重复执行上一条命令，
-   *  多个 demoT25 并发会互相 clearAllPlaced 清掉对方的设备（日志交错刷屏）。 */
-  let t25Running = false;
+  /** T2.5 一键测试主体（并发/重复保护见 runTest 的 phase 状态机）。 */
   const demoT25 = async (): Promise<string> => {
-    if (t25Running) {
-      console.log(`[${ts()}] [T2.5] 上一次一键测试仍在进行中，忽略本次调用（若非你主动重复，多半是控制台空输入时按了 Enter）`);
-      return '已忽略: 上一次 T2.5 测试尚未结束';
+    console.log(`[${ts()}] ════ T2.5 一键测试: 生产计时与生产循环 ════`);
+    console.log('(T2.5 按计划无画面变化——设备状态 UI 在 T2.8/T2.9，效果全部看本控制台)');
+    clearAllPlaced();
+    if (!placeAt('refining_unit', 5, 5)) return 'T2.5 测试失败: 精炼炉放置失败';
+    console.log(`[${ts()}] [步骤1] 已放置精炼炉，注入源矿 ×3 →`);
+    injectInput('originium_ore', 3);
+    await sleep(300);
+    console.log(`[${ts()}] [步骤2] 启动生产计时（不扣原料）:\n${productionStatus()}`);
+    const early = firstComp();
+    if (early && early.state === 'idle' && early.currentRecipeId === null) {
+      console.log(`[${ts()}] ⚠ 注入源矿后设备仍 idle——仿真时钟没有推进。已启用后台保活定时器；` +
+        '若长时间无进展，请把游戏标签页切到前台（rAF 在后台标签页停转，深度节流时仿真会慢放）。');
     }
-    t25Running = true;
-    try {
-      console.log(`[${ts()}] ════ T2.5 一键测试: 生产计时与生产循环 ════`);
-      console.log('(T2.5 按计划无画面变化——设备状态 UI 在 T2.8/T2.9，效果全部看本控制台)');
-      clearAllPlaced();
-      if (!placeAt('refining_unit', 5, 5)) return 'T2.5 测试失败: 精炼炉放置失败';
-      console.log(`[${ts()}] [步骤1] 已放置精炼炉，注入源矿 ×3 →`);
-      injectInput('originium_ore', 3);
-      await sleep(300);
-      console.log(`[${ts()}] [步骤2] 启动生产计时（不扣原料）:\n${productionStatus()}`);
-      const early = firstComp();
-      if (early && early.state === 'idle' && early.currentRecipeId === null) {
-        console.log(`[${ts()}] ⚠ 注入源矿后设备仍 idle——仿真时钟没有推进。已启用后台保活定时器；` +
-          '若长时间无进展，请把游戏标签页切到前台（rAF 在后台标签页停转，深度节流时仿真会慢放）。');
-      }
-      await sleep(800);
-      const mid = firstComp();
-      if (mid) {
-        console.log(
-          `[${ts()}] [步骤3] 计时中 进度=${(mid.progress * 100).toFixed(0)}%，` +
-          `输入槽仍为 源矿 ×${mid.bufferInput[0].count}（生产期间原料不变，A8 §3.1）`,
-        );
-      }
-      // 等首次结算: 输出槽出现 1 个晶体外壳（结算后立即续启，state 回 working）
-      const settled = await waitFor(() => {
-        const c = firstComp();
-        return c !== null && (c.bufferOutput[0]?.count ?? 0) >= 1;
-      }, 4000);
-      if (!settled) {
-        console.log(`[${ts()}] T2.5 测试失败: 4 秒内未观察到结算——仿真时钟未推进（页面在后台被深度节流？切到前台再试）`);
-        return 'T2.5 测试失败: 4 秒内未观察到结算（计时未推进，建议前台运行）';
-      }
-      console.log(`[${ts()}] [步骤4] 结算完成（上方 [T2.5 生产] 消息即控制台验收文本）:\n${productionStatus()}`);
-
-      // blocked 演示: 注满输出 → 下次计时完成时结算暂缓 → 疏通后完成暂缓结算
-      console.log(`[${ts()}] [步骤5] 注满输出槽演示 blocked（输出 ×50）→`);
-      injectOutput('origocrust', 49); // 输出已有 1，补到 50
-      const blocked = await waitFor(() => firstComp()?.state === 'blocked', 5000);
-      if (!blocked) {
-        console.log(`[${ts()}] T2.5 测试失败: 5 秒内未进入 blocked（计时/输出异常？）`);
-        return 'T2.5 测试失败: 5 秒内未进入 blocked';
-      }
-      const bc = firstComp();
+    await sleep(800);
+    const mid = firstComp();
+    if (mid) {
       console.log(
-        `[${ts()}] [步骤6] blocked: 结算暂缓，原料未扣除（源矿仍 ×${bc?.bufferInput[0].count}）:\n${productionStatus()}`,
+        `[${ts()}] [步骤3] 计时中 进度=${(mid.progress * 100).toFixed(0)}%，` +
+        `输入槽仍为 源矿 ×${mid.bufferInput[0].count}（生产期间原料不变，A8 §3.1）`,
       );
-      console.log(`[${ts()}] [步骤7] consumeOutput(1) 疏通（模拟 T2.7 传送带取走产物）→`);
-      consumeOutput(1);
-      await sleep(300);
-      console.log(`[${ts()}] [步骤8] 疏通后完成暂缓结算并恢复生产:\n${productionStatus()}`);
-      console.log(`[${ts()}] ════ T2.5 一键测试完成。设备继续生产中，可重复调用 __game.test("t25")；clearAllPlaced() 清场 ════`);
-      return 'T2.5 一键测试完成（关键输出见控制台 [T2.5 生产] / [步骤N] 日志）';
-    } finally {
-      t25Running = false;
     }
+    // 等首次结算: 输出槽出现 1 个晶体外壳（结算后立即续启，state 回 working）
+    const settled = await waitFor(() => {
+      const c = firstComp();
+      return c !== null && (c.bufferOutput[0]?.count ?? 0) >= 1;
+    }, 4000);
+    if (!settled) {
+      console.log(`[${ts()}] T2.5 测试失败: 4 秒内未观察到结算——仿真时钟未推进（页面在后台被深度节流？切到前台再试）`);
+      return 'T2.5 测试失败: 4 秒内未观察到结算（计时未推进，建议前台运行）';
+    }
+    console.log(`[${ts()}] [步骤4] 结算完成（上方 [T2.5 生产] 消息即控制台验收文本）:\n${productionStatus()}`);
+
+    // blocked 演示: 注满输出 → 下次计时完成时结算暂缓 → 疏通后完成暂缓结算
+    console.log(`[${ts()}] [步骤5] 注满输出槽演示 blocked（输出 ×50）→`);
+    injectOutput('origocrust', 49); // 输出已有 1，补到 50
+    const blocked = await waitFor(() => firstComp()?.state === 'blocked', 5000);
+    if (!blocked) {
+      console.log(`[${ts()}] T2.5 测试失败: 5 秒内未进入 blocked（计时/输出异常？）`);
+      return 'T2.5 测试失败: 5 秒内未进入 blocked';
+    }
+    const bc = firstComp();
+    console.log(
+      `[${ts()}] [步骤6] blocked: 结算暂缓，原料未扣除（源矿仍 ×${bc?.bufferInput[0].count}）:\n${productionStatus()}`,
+    );
+    console.log(`[${ts()}] [步骤7] consumeOutput(1) 疏通（模拟 T2.7 传送带取走产物）→`);
+    consumeOutput(1);
+    await sleep(300);
+    console.log(`[${ts()}] [步骤8] 疏通后完成暂缓结算并恢复生产:\n${productionStatus()}`);
+    console.log(`[${ts()}] ════ T2.5 一键测试完成 ════`);
+    return 'T2.5 一键测试完成（关键输出见控制台 [T2.5 生产] / [步骤N] 日志）';
   };
-  /** 一键测试入口。目前支持 't25'（生产计时与生产循环验收全流程）。 */
+
+  /**
+   * 一键测试入口（含重复调用保护）。目前支持 't25'（生产计时与生产循环验收全流程）。
+   *
+   * phase 状态机（用户实测：内置浏览器控制台会在执行后**自动重发**上一条命令，
+   * 每秒 2~4 次、每轮结束立即再触发，导致测试无限循环重跑）:
+   *   idle     → 首次调用运行测试
+   *   running  → 重复调用忽略（第 2 次打印一次来源栈后静默）
+   *   done     → 成功后本次页面加载不再重跑（重跑=刷新页面），重复调用只提示一次
+   *   cooldown → 失败后 30 秒冷却，避免自动重发导致失败循环重试
+   */
+  type T25Phase = 'idle' | 'running' | 'done' | 'cooldown';
+  let t25Phase: T25Phase = 'idle';
+  let t25PhaseUntil = 0;
+  let t25Ignores = 0;
+  const t25Ignore = (hint: string): string => {
+    t25Ignores++;
+    if (t25Ignores === 2) {
+      // 打印一次调用来源栈，确诊自动重发的来源（控制台手输 = 短栈 at <anonymous>:1:x）
+      const stack = new Error().stack?.split('\n').slice(2, 6).join('\n') ?? '(无栈)';
+      console.log(
+        `[${ts()}] [T2.5] 检测到命令被自动重发，已忽略 ${t25Ignores} 次（后续静默忽略）。${hint}\n` +
+        `  调用来源（诊断用）:\n${stack}`,
+      );
+    }
+    return `已忽略（${hint}）`;
+  };
   const runTest = async (name: string): Promise<string> => {
-    if (name === 't25') return demoT25();
-    return `未知测试 '${name}'（可用: 't25'）`;
+    if (name !== 't25') return `未知测试 '${name}'（可用: 't25'）`;
+    if (t25Phase === 'running') {
+      return t25Ignore('测试正在进行中');
+    }
+    if (t25Phase === 'done') {
+      return t25Ignore('本次页面加载已完成过测试；想再跑一次请刷新页面 (F5) 后重新输入');
+    }
+    if (t25Phase === 'cooldown' && performance.now() < t25PhaseUntil) {
+      return t25Ignore('上次测试失败，30 秒冷却中（避免自动重发导致失败重试循环）');
+    }
+    t25Phase = 'running';
+    t25Ignores = 0;
+    let result: string;
+    try {
+      result = await demoT25();
+    } catch (err) {
+      console.error(`[${ts()}] [T2.5] 一键测试异常:`, err);
+      result = 'T2.5 测试失败: 异常';
+    }
+    if (result.startsWith('T2.5 一键测试完成')) {
+      t25Phase = 'done';
+    } else {
+      t25Phase = 'cooldown';
+      t25PhaseUntil = performance.now() + 30_000;
+    }
+    return result;
   };
 
   // 开发期调试钩子: 暴露关键对象到 window，便于控制台验证与测试。
