@@ -78,5 +78,10 @@ export const COLOR_VIGNETTE = 'rgba(0,0,0,0.3)';
 
 /** 仿真 Tick 步长（ms）@ 20 TPS (A5 §2, DD-004)。 */
 export const SIM_STEP_MS = 50;
-/** 螺旋追赶保护上限（ms）(A5 §2)。 */
-export const SIM_ACCUMULATOR_MAX_MS = 250;
+/**
+ * 螺旋追赶保护上限（ms）(A5 §2)。
+ * 1000 = 单次最多追赶 20 Tick：后台标签页保活定时器（main.ts）按实际间隔喂入 ~1s/次
+ * （浏览器后台节流 ~1Hz），上限需 ≥ 该间隔后台才能实时推进；对前台卡顿恢复场景，
+ * 20 Tick 的追赶量在几百实体规模下仍远低于帧预算，不会螺旋崩溃。
+ */
+export const SIM_ACCUMULATOR_MAX_MS = 1000;

@@ -344,6 +344,24 @@ async function main() {
     }
   });
 
+  // ── 后台标签页仿真保活 (A5 §2 双时钟的兜底) ──
+  // Pixi ticker(rAF) 在隐藏/被遮挡的标签页停转 → 仅靠它驱动时工厂仿真整体冻结
+  // （T2.5 实测: 在后台标签页跑 __game.test("t25")，设备注入原料后永远 idle、进度 0%）。
+  // 定时器兜底: document.hidden 时按**实际流逝时间**喂 tickSimulation——浏览器后台节流
+  // ~1Hz 也能按真实间隔追上（accumulator 钳制 SIM_ACCUMULATOR_MAX_MS=1000，每次最多
+  // 追 20 Tick，不崩溃；长时间深度节流时仿真慢放但不冻结）。渲染仍由 rAF 驱动
+  // （后台无需渲染），回到前台自动恢复双时钟。可见时仅刷新时间戳，无仿真开销。
+  let lastHiddenTickAt = performance.now();
+  setInterval(() => {
+    if (!document.hidden) {
+      lastHiddenTickAt = performance.now();
+      return;
+    }
+    const now = performance.now();
+    game.tickSimulation(now - lastHiddenTickAt);
+    lastHiddenTickAt = now;
+  }, 250);
+
   // 首帧立即对齐一次相机变换 + 网格 + 渲染系统，避免首帧错位/缺帧
   camera.updateTransform();
   gridRenderer.update();
@@ -572,6 +590,8 @@ async function main() {
   };
 
   const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  /** 日志时间前缀 HH:MM:SS（控制台日志按时间线阅读用，T2.5 用户反馈）。 */
+  const ts = (): string => new Date().toTimeString().slice(0, 8);
 
   /** FPS/内存采样报告（不生成设备，先 spawnBenchmarkDevices 再调用）。 */
   const runFpsBenchmark = (durationMs = 5000): Promise<BenchmarkReport> =>
@@ -751,7 +771,7 @@ async function main() {
   // 生产事件转发 console（启动/结算/blocked 仅状态转换时产生，低频不刷屏），
   // recentEvents 环形缓冲供 __game.productionLog() 覆盘验证。
   const machineSystem = game.initProduction(recipeIndex, itemTable);
-  machineSystem.onEvent = (e) => console.log(`[T2.5 生产] ${e.message}`);
+  machineSystem.onEvent = (e) => console.log(`[${ts()}] [T2.5 生产] ${e.message}`);
 
   // ── T2.4 验收钩子: 输入缓冲区（模拟物品传入，检查 count 与锁定）──
   // injectInput('originium_ore', 3) → "输入槽0: 源矿 × 3/50 (已锁定)"
@@ -878,46 +898,69 @@ async function main() {
     }
     return pred();
   };
+  /** 一键测试并发保护: Chrome 控制台在空输入时按 Enter 会重复执行上一条命令，
+   *  多个 demoT25 并发会互相 clearAllPlaced 清掉对方的设备（日志交错刷屏）。 */
+  let t25Running = false;
   const demoT25 = async (): Promise<string> => {
-    console.log('════ T2.5 一键测试: 生产计时与生产循环 ════');
-    console.log('(T2.5 按计划无画面变化——设备状态 UI 在 T2.8/T2.9，效果全部看本控制台)');
-    clearAllPlaced();
-    if (!placeAt('refining_unit', 5, 5)) return 'T2.5 测试失败: 精炼炉放置失败';
-    console.log('[步骤1] 已放置精炼炉，注入源矿 ×3 →');
-    injectInput('originium_ore', 3);
-    await sleep(300);
-    console.log(`[步骤2] 启动生产计时（不扣原料）:\n${productionStatus()}`);
-    await sleep(800);
-    const mid = firstComp();
-    if (mid) {
-      console.log(
-        `[步骤3] 计时中 进度=${(mid.progress * 100).toFixed(0)}%，` +
-        `输入槽仍为 源矿 ×${mid.bufferInput[0].count}（生产期间原料不变，A8 §3.1）`,
-      );
+    if (t25Running) {
+      console.log(`[${ts()}] [T2.5] 上一次一键测试仍在进行中，忽略本次调用（若非你主动重复，多半是控制台空输入时按了 Enter）`);
+      return '已忽略: 上一次 T2.5 测试尚未结束';
     }
-    // 等首次结算: 输出槽出现 1 个晶体外壳（结算后立即续启，state 回 working）
-    const settled = await waitFor(() => {
-      const c = firstComp();
-      return c !== null && (c.bufferOutput[0]?.count ?? 0) >= 1;
-    }, 4000);
-    if (!settled) return 'T2.5 测试失败: 4 秒内未观察到结算（计时未推进？）';
-    console.log(`[步骤4] 结算完成（上方 [T2.5 生产] 消息即控制台验收文本）:\n${productionStatus()}`);
+    t25Running = true;
+    try {
+      console.log(`[${ts()}] ════ T2.5 一键测试: 生产计时与生产循环 ════`);
+      console.log('(T2.5 按计划无画面变化——设备状态 UI 在 T2.8/T2.9，效果全部看本控制台)');
+      clearAllPlaced();
+      if (!placeAt('refining_unit', 5, 5)) return 'T2.5 测试失败: 精炼炉放置失败';
+      console.log(`[${ts()}] [步骤1] 已放置精炼炉，注入源矿 ×3 →`);
+      injectInput('originium_ore', 3);
+      await sleep(300);
+      console.log(`[${ts()}] [步骤2] 启动生产计时（不扣原料）:\n${productionStatus()}`);
+      const early = firstComp();
+      if (early && early.state === 'idle' && early.currentRecipeId === null) {
+        console.log(`[${ts()}] ⚠ 注入源矿后设备仍 idle——仿真时钟没有推进。已启用后台保活定时器；` +
+          '若长时间无进展，请把游戏标签页切到前台（rAF 在后台标签页停转，深度节流时仿真会慢放）。');
+      }
+      await sleep(800);
+      const mid = firstComp();
+      if (mid) {
+        console.log(
+          `[${ts()}] [步骤3] 计时中 进度=${(mid.progress * 100).toFixed(0)}%，` +
+          `输入槽仍为 源矿 ×${mid.bufferInput[0].count}（生产期间原料不变，A8 §3.1）`,
+        );
+      }
+      // 等首次结算: 输出槽出现 1 个晶体外壳（结算后立即续启，state 回 working）
+      const settled = await waitFor(() => {
+        const c = firstComp();
+        return c !== null && (c.bufferOutput[0]?.count ?? 0) >= 1;
+      }, 4000);
+      if (!settled) {
+        console.log(`[${ts()}] T2.5 测试失败: 4 秒内未观察到结算——仿真时钟未推进（页面在后台被深度节流？切到前台再试）`);
+        return 'T2.5 测试失败: 4 秒内未观察到结算（计时未推进，建议前台运行）';
+      }
+      console.log(`[${ts()}] [步骤4] 结算完成（上方 [T2.5 生产] 消息即控制台验收文本）:\n${productionStatus()}`);
 
-    // blocked 演示: 注满输出 → 下次计时完成时结算暂缓 → 疏通后完成暂缓结算
-    console.log('[步骤5] 注满输出槽演示 blocked（输出 ×50）→');
-    injectOutput('origocrust', 49); // 输出已有 1，补到 50
-    const blocked = await waitFor(() => firstComp()?.state === 'blocked', 5000);
-    if (!blocked) return 'T2.5 测试失败: 5 秒内未进入 blocked（计时/输出异常？）';
-    const bc = firstComp();
-    console.log(
-      `[步骤6] blocked: 结算暂缓，原料未扣除（源矿仍 ×${bc?.bufferInput[0].count}）:\n${productionStatus()}`,
-    );
-    console.log('[步骤7] consumeOutput(1) 疏通（模拟 T2.7 传送带取走产物）→');
-    consumeOutput(1);
-    await sleep(300);
-    console.log(`[步骤8] 疏通后完成暂缓结算并恢复生产:\n${productionStatus()}`);
-    console.log('════ T2.5 一键测试完成。设备继续生产中，可重复调用 __game.test("t25")；clearAllPlaced() 清场 ════');
-    return 'T2.5 一键测试完成（关键输出见控制台 [T2.5 生产] / [步骤N] 日志）';
+      // blocked 演示: 注满输出 → 下次计时完成时结算暂缓 → 疏通后完成暂缓结算
+      console.log(`[${ts()}] [步骤5] 注满输出槽演示 blocked（输出 ×50）→`);
+      injectOutput('origocrust', 49); // 输出已有 1，补到 50
+      const blocked = await waitFor(() => firstComp()?.state === 'blocked', 5000);
+      if (!blocked) {
+        console.log(`[${ts()}] T2.5 测试失败: 5 秒内未进入 blocked（计时/输出异常？）`);
+        return 'T2.5 测试失败: 5 秒内未进入 blocked';
+      }
+      const bc = firstComp();
+      console.log(
+        `[${ts()}] [步骤6] blocked: 结算暂缓，原料未扣除（源矿仍 ×${bc?.bufferInput[0].count}）:\n${productionStatus()}`,
+      );
+      console.log(`[${ts()}] [步骤7] consumeOutput(1) 疏通（模拟 T2.7 传送带取走产物）→`);
+      consumeOutput(1);
+      await sleep(300);
+      console.log(`[${ts()}] [步骤8] 疏通后完成暂缓结算并恢复生产:\n${productionStatus()}`);
+      console.log(`[${ts()}] ════ T2.5 一键测试完成。设备继续生产中，可重复调用 __game.test("t25")；clearAllPlaced() 清场 ════`);
+      return 'T2.5 一键测试完成（关键输出见控制台 [T2.5 生产] / [步骤N] 日志）';
+    } finally {
+      t25Running = false;
+    }
   };
   /** 一键测试入口。目前支持 't25'（生产计时与生产循环验收全流程）。 */
   const runTest = async (name: string): Promise<string> => {

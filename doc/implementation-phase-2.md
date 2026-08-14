@@ -344,7 +344,9 @@ interface BeltLinkComp {
 - **事件与调试钩子**：MachineSystem 产生 start/settle/blocked/cancel 事件（仅状态转换，低频），main.ts 转发 console + `recentEvents` 环形缓冲（`__game.productionLog()`）；`__game.productionStatus()` 监控（"精炼炉: working | 配方: 晶体外壳(...) | 进度: 45.0% (900/2000ms)" + 双槽明细）、`injectOutput/consumeOutput`（测 blocked→疏通，后者模拟 T2.7 取货）、`outputBuffer()`。
 - **接线**：`Game.initProduction(recipeIndex, itemTable)` 在 main.ts CSV 加载后注入并注册 MachineSystem（幂等）；`formatRecipeSummary` 移入 recipes.ts（listRecipes 与事件日志共用格式）；`formatBufferSlots` 加 label 参数（"输出槽"）。
 - **计时语义**：启动 Tick elapsed=0、推进从下一 Tick 开始；2 秒配方在启动后第 40 次推进（第 41 次更新）时 elapsed=2000 → 结算——即 T=0 启动、T=2s 整原子结算。
-- 验证：`scripts/verify-t25-production.ts`（45/45 单测：纯函数匹配/落地/结算 + 真实 World 集成含 blocked 疏通全流程）+ `scripts/verify-t25-production.mjs` CDP 浏览器验收（18/18：计时期间原料不变、结算消息、续启、blocked/疏通、液体配方不启动）；T2.3/T2.4 单测（40/40、21/21）与浏览器回归（9/9）无破坏。
+- **一键测试 `__game.test("t25")`**（用户实测反馈迭代）：控制台帮助行是**文档**（含 `→` 等符号），整行粘贴会 SyntaxError → 封装单命令自动跑验收全流程；**并发保护**（Chrome 控制台空输入按 Enter 会重复执行上一条命令，多次运行互相 clearAllPlaced 清场导致日志交错刷屏 → 运行中重复调用直接忽略）；日志加 **HH:MM:SS 时间戳前缀**（`[${ts()}]`，按时间线读日志）；步骤2 idle 诊断提示（仿真时钟未推进时给出原因与建议）。
+- **后台标签页仿真保活**（用户实测：后台标签页跑测试设备永远 idle、进度 0%，整份日志无任何 `[T2.5 生产]` 事件——仿真时钟冻结）：Pixi ticker(rAF) 在隐藏/被遮挡标签页停转。main.ts 定时器兜底：`document.hidden` 时按**实际流逝时间**喂 `tickSimulation`（浏览器后台节流 ~1Hz 也能实时追上）；`SIM_ACCUMULATOR_MAX_MS` 250→1000（≥ 单次喂入间隔才能后台实时，单次最多追 20 Tick 仍有界防追赶崩溃）。渲染仍由 rAF 驱动，回前台自动恢复双时钟。
+- 验证：`scripts/verify-t25-production.ts`（45/45 单测：纯函数匹配/落地/结算 + 真实 World 集成含 blocked 疏通全流程）+ `scripts/verify-t25-production.mjs` CDP 浏览器验收（18/18：计时期间原料不变、结算消息、续启、blocked/疏通、液体配方不启动）；一键测试/并发保护/后台保活 CDP 复验（6/6）；T2.3/T2.4 单测（40/40、21/21）与浏览器回归（9/9）无破坏。
 
 ---
 
