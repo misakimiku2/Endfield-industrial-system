@@ -12,7 +12,8 @@
 // 不在本系统（留给后续）:
 //   - 端口吸入设备输入槽（T2.6 已实现，由 MachineSystem/machine/IntakeOps 处理:
 //     物品在本系统钳制到 STOP_MAX=0.5 停在门口，MachineSystem 同 Tick 吸入输入槽）
-//   - 设备输出物品注入传送带（T2.7）
+//   - 设备输出物品注入传送带（T2.7 已实现，由 MachineSystem/machine/OutputOps 处理:
+//     输出槽物品在 beltPhase 相位注入段首 items[]，本系统下一 Tick 起正常推进）
 //
 // 执行顺序 (A5 §5/DD-010): BeltSystem 先于 MachineSystem，保证物品先到达。
 //   dt 恒为 50ms，progress 增量用固定常量 ITEM_PROGRESS_PER_TICK。
@@ -31,8 +32,13 @@ import { CELL_SIZE } from '../render/constants.ts';
  */
 const ITEM_PROGRESS_PER_TICK = 0.025;
 
-/** 同段相邻物品的最小 progress 间距 (A9 §2.3，1/4 格)。同时用作跨段入口空位判定。 */
-const MIN_ITEM_GAP = 0.25;
+/**
+ * 同段相邻物品的最小 progress 间距 (A9 §2.3，1/4 格)。同时用作跨段入口空位判定。
+ *
+ * 导出供 machine/OutputOps 复用（T2.7 设备输出注入的空位判定）：注入点与入口最近
+ * 物品的间距标准必须与跨段传输一致，否则设备输出与跨段争抢入口时判定口径不一。
+ */
+export const MIN_ITEM_GAP = 0.25;
 
 /**
  * 断头/堵塞时物品停止的 progress（格中心 0.5）。

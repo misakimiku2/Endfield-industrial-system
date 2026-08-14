@@ -1,6 +1,6 @@
-// 机器系统 — T2.5 生产计时与生产循环 + T2.6 传送带→设备输入对接
-// 依据: implementation-phase-2.md T2.5/T2.6、A8 §3 (生产计时系统)、§6 (状态机)、§7 (Tick 内执行顺序)、
-//       §4.1 (输入轮询)、A9 §3.3/§3.6/§6.7 (端口吸入/连接判定)、A5 §5/DD-010
+// 机器系统 — T2.5 生产计时与生产循环 + T2.6 传送带→设备输入对接 + T2.7 设备→传送带输出对接
+// 依据: implementation-phase-2.md T2.5/T2.6/T2.7、A8 §3 (生产计时系统)、§6 (状态机)、§7 (Tick 内执行顺序)、
+//       §4.1 (输入轮询)、§4.2 (输出轮询)、A9 §2.3(最小间距)/§6.7 (端口连接判定)、A5 §5/DD-010
 //
 // 每 Simulation Tick 对每台带 BuildingComp 的设备执行 A8 §7:
 //   1. 更新设备内部状态 (T2.5):
@@ -14,7 +14,10 @@
 //       tryAcceptItem 判定"空槽或锁定同类型未满"，满则物品留在传送带上）。
 //       吸入不依赖配方——仓库类设备（T2.12）同走此路径。每端口每 Tick 至多 1 件 (A8 §4.1)；
 //       多端口轮询指针 inputPollIndex 属 T2.10，本版按端口定义序遍历（单输入槽设备等价）。
-//   §7 的"3. 输出物流"（设备吐出到传送带）由 T2.7 实现。
+//   3. 输出物流 (T2.7): 每个输出端口找入口朝向它的接收传送带（A9 §6.7 "背离设备"），
+//       从输出槽放 1 件到段首（beltPhase 相位注入，物品=实体 pointer；入口间距不足
+//       → 满带，物品留在输出槽，下 Tick 重试，OutputOps 详注）。每端口每 Tick 至多
+//       1 件 (A8 §4.2)；多端口轮询指针 outputPollIndex 属 T2.10，本版按端口定义序遍历。
 //
 // 状态机 (A8 §6): idle ↔ working ↔ blocked，转换全部由本系统驱动：
 //   idle→working 启动计时；working→idle 结算后无后续配方；working→blocked 计时完成但输出满；
@@ -22,6 +25,7 @@
 //
 // 执行顺序 (A5 §5/DD-010): BeltSystem → MachineSystem。BeltSystem 先把物品推进/钳制到
 //   门口(0.5)，本系统随后同 Tick 吸入——保证"本 Tick 到达的物品在本 Tick 进入设备"。
+//   输出注入同理在 BeltSystem 之后：注入的物品下一 Tick 起由 BeltSystem 推进。
 
 import type { World, EntityHandle } from '../ECS.ts';
 import type { SimulationSystem } from '../GameLoop.ts';
@@ -46,11 +50,17 @@ import {
   findFeederBelt,
   tryAbsorbHeadItem,
 } from './machine/IntakeOps.ts';
+import {
+  outputPortCells,
+  findReceiverBelt,
+  tryEmitToBelt,
+} from './machine/OutputOps.ts';
 
-/** 生产/物流事件（控制台输出/调试钩子用，仅状态转换或物品吸入时产生，非每 Tick）。 */
+/** 生产/物流事件（控制台输出/调试钩子用，仅状态转换或物品吞吐时产生，非每 Tick）。 */
 export interface ProductionEvent {
-  /** T2.5: start/settle/blocked/cancel；T2.6: input（传送带物品吸入输入槽）。 */
-  type: 'start' | 'settle' | 'blocked' | 'cancel' | 'input';
+  /** T2.5: start/settle/blocked/cancel；T2.6: input（传送带物品吸入输入槽）；
+   *  T2.7: output（输出槽物品放出到传送带）。 */
+  type: 'start' | 'settle' | 'blocked' | 'cancel' | 'input' | 'output';
   handle: EntityHandle;
   /** 关联配方 id；input 事件无配方（不适用）。 */
   recipeId?: string;
@@ -111,6 +121,9 @@ export class MachineSystem implements SimulationSystem {
 
       // ── 2. 输入物流 (A8 §7 步骤2, T2.6): 传送带 → 输入端口吸入 ──
       this.absorbBeltInputs(world, handle, comp, def, beltAt);
+
+      // ── 3. 输出物流 (A8 §7 步骤3, T2.7): 输出端口 → 传送带注入 ──
+      this.emitBeltOutputs(world, handle, comp, def, beltAt);
     }
   }
 
@@ -228,6 +241,39 @@ export class MachineSystem implements SimulationSystem {
         this.emit({
           type: 'input', handle,
           message: `${def.name}: 吸入 ${this.nameOf(absorbed)} ×1（传送带 → 输入槽）`,
+        });
+      }
+    }
+  }
+
+  /**
+   * A8 §7 步骤3 (T2.7): 输出物流。对每个输出端口（定义序=连接序）找入口朝向它的
+   * 接收传送带段（A9 §6.7），从输出槽放 1 件到段首；满带（入口间距不足）则物品
+   * 留在输出槽（每 Tick 重试，带腾位即恢复）。每端口每 Tick 至多 1 件 (A8 §4.2)。
+   */
+  private emitBeltOutputs(
+    world: World,
+    handle: EntityHandle,
+    comp: BuildingComp,
+    def: BuildingDefinition,
+    beltAt: Map<string, EntityHandle>,
+  ): void {
+    // 早退: 全空输出槽无货可出（跳过端口遍历——性能基准 100 台空炉零开销）
+    if (!comp.bufferOutput.some((s) => s.count > 0)) return;
+    const pos = world.getComponent<Position>(handle, 'Position');
+    if (!pos) return;
+    const gx = Math.round(pos.x / CELL_SIZE);
+    const gy = Math.round(pos.y / CELL_SIZE);
+    for (const cell of outputPortCells(gx, gy, def, comp.direction)) {
+      const receiver = findReceiverBelt(world, beltAt, cell);
+      if (receiver === null) continue;
+      const seg = world.getComponent<BeltSegmentComp>(receiver, 'BeltSegmentComp');
+      if (!seg) continue;
+      const emitted = tryEmitToBelt(seg, comp);
+      if (emitted !== null) {
+        this.emit({
+          type: 'output', handle,
+          message: `${def.name}: 输出 ${this.nameOf(emitted)} ×1（输出槽 → 传送带）`,
         });
       }
     }
