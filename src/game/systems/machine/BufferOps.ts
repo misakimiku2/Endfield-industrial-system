@@ -52,17 +52,19 @@ export function consumeFromSlot(slot: BufferSlot, n: number): void {
 /**
  * 格式化缓冲区为控制台/调试输出（T2.4 验收格式）。
  * @param nameOf itemId → 显示名（传物品注册表的 name 查询）
+ * @param label 槽位前缀，默认"输入槽"；输出槽传"输出槽"（T2.5）
  */
 export function formatBufferSlots(
   slots: BufferSlot[],
   capacity: number,
   nameOf: (itemId: string) => string,
+  label = '输入槽',
 ): string {
   return slots
     .map((slot, i) =>
       slot.itemId === null || slot.count === 0
-        ? `输入槽${i}: 空`
-        : `输入槽${i}: ${nameOf(slot.itemId)} × ${slot.count}/${capacity} (已锁定)`,
+        ? `${label}${i}: 空`
+        : `${label}${i}: ${nameOf(slot.itemId)} × ${slot.count}/${capacity} (已锁定)`,
     )
     .join('\n');
 }

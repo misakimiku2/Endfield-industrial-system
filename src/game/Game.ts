@@ -17,6 +17,9 @@ import { PlacementSystem } from './systems/PlacementSystem';
 import { BeltCreationSystem } from './systems/BeltCreationSystem';
 import { GameLoop } from './GameLoop';
 import { BeltSystem } from './systems/BeltSystem';
+import { MachineSystem } from './systems/MachineSystem';
+import type { Recipe } from './data/recipes';
+import type { ItemRegistry } from './data/items';
 import { SIM_STEP_MS } from './render/constants';
 import { getTexture } from './render/AssetsLoader';
 
@@ -35,6 +38,8 @@ export class Game {
   readonly gameLoop: GameLoop;
   /** 传送带物品移动系统（T2.1）。 */
   readonly beltSystem: BeltSystem;
+  /** 生产系统（T2.5）。由 initProduction 注入配方/物品数据后创建并注册。 */
+  machineSystem: MachineSystem | null = null;
 
   constructor(scene: SceneRenderer, viewport: ViewportSize) {
     this.world = new World();
@@ -67,6 +72,18 @@ export class Game {
    */
   tickSimulation(deltaMS: number): void {
     this.gameLoop.update(deltaMS);
+  }
+
+  /**
+   * 注入生产数据（配方索引 + 物品注册表）并注册 MachineSystem（T2.5）。
+   * 由 main.ts 在 CSV 数据加载完成后调用（组合根）。注册顺序在 BeltSystem 之后
+   * （A5 §5/DD-010: BeltSystem → MachineSystem，物品先到端口、设备再结算）。
+   */
+  initProduction(recipes: Map<string, Recipe[]>, items: ItemRegistry): MachineSystem {
+    if (this.machineSystem) return this.machineSystem; // 幂等：重复调用不重复注册
+    this.machineSystem = new MachineSystem(recipes, items);
+    this.gameLoop.addSystem(this.machineSystem);
+    return this.machineSystem;
   }
 
   /**

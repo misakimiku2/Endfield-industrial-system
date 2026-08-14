@@ -345,6 +345,10 @@ export class PlacementSystem {
       direction,
       state: 'idle' as const,
       bufferInput: createBufferSlots(def.inputSlotCount), // T2.4: 放置即建输入缓冲区（全空槽）
+      bufferOutput: createBufferSlots(def.outputSlotCount), // T2.5: 输出缓冲区（一槽一物，全空槽）
+      currentRecipeId: null, // T2.5: 生产计时字段（A8 §3.1），放置时无生产任务
+      progress: 0,
+      elapsed: 0,
     });
     this.world.addComponent(handle, 'SpriteComp', {
       group: 'devices' as AtlasGroup,

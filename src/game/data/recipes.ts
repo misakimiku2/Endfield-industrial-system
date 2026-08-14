@@ -201,3 +201,17 @@ export function itemSatisfiesInput(itemId: string, input: RecipeInput, registry:
     return def !== undefined && def.tags.includes(atom.ref);
   });
 }
+
+/**
+ * 配方摘要文本: "晶体外壳(源矿×1/晶体外壳粉末×1, 2秒)"。
+ * listRecipes 查询（T2.3 验收格式）与生产事件日志（T2.5）共用的展示格式。
+ */
+export function formatRecipeSummary(r: Recipe, nameOf: (id: string) => string): string {
+  const main = nameOf(r.outputs[0].itemId);
+  const ing = r.inputs
+    .map((g) => g.alternatives.map((a) => a.kind === 'item'
+      ? `${nameOf(a.ref)}×${a.count}`
+      : `任意${a.ref.charAt(0).toUpperCase() + a.ref.slice(1)}类物品×${a.count}`).join('/'))
+    .join('+');
+  return `${main}(${ing}, ${r.time / 1000}秒)`;
+}

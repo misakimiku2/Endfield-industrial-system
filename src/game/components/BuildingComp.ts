@@ -3,9 +3,10 @@
 //
 // Phase 1 范围 (T1.7): 只放置不生产，故只放设备要用的字段——
 //   definitionId (指向 BuildingDefinition) + direction (世界朝向) + state (恒 idle)。
-// Phase 2 起按任务扩展: T2.4 加 bufferInput（输入缓冲区）；
-//   计时/轮询指针等字段 (A3 §3 的 currentRecipeId/progress/elapsed/bufferOutput/
-//   inputPollIndex/outputPollIndex) 由 T2.5+ 生产任务再加，避免引入未使用的结构。
+// Phase 2 按任务扩展: T2.4 加 bufferInput（输入缓冲区）；
+//   T2.5 加 bufferOutput + 生产计时字段（currentRecipeId/progress/elapsed，A3 §3/A8 §3.1），
+//   state 扩展为完整状态机 'idle' | 'working' | 'blocked'（A8 §6）。
+//   端口轮询指针 (inputPollIndex/outputPollIndex) 由 T2.10 再加，避免引入未使用的结构。
 //
 // direction (A3 §3.3) 是**世界相对**存储的朝向 (存档/模拟都用世界朝向):
 //   0°=朝右, 90°=朝下, 180°=朝左, 270°=朝上。
@@ -17,6 +18,12 @@
  * 存档/模拟/轮询都用世界朝向；玩家按 R 的屏幕手感由 PlacementSystem 做相对视图换算。
  */
 export type Direction = 0 | 90 | 180 | 270;
+
+/**
+ * 设备状态机 (A8 §6)。
+ * idle: 空闲无计时；working: 生产计时推进中（原料未扣）；blocked: 输出满、结算暂缓。
+ */
+export type MachineState = 'idle' | 'working' | 'blocked';
 
 /**
  * 缓冲区槽位 (A3 §3、A8 §2)。
@@ -32,8 +39,7 @@ export interface BufferSlot {
 }
 
 /**
- * 建筑组件 (Phase 1 最小版)。
- * 一个 Entity 带 BuildingComp 即表示"这是一个已放置的设备"。
+ * 建筑组件。一个 Entity 带 BuildingComp 即表示"这是一个已放置的设备"。
  * 配合 Position(左上角世界坐标) + SpriteComp(渲染描述) 完成设备的完整描述。
  */
 export interface BuildingComp {
@@ -43,13 +49,23 @@ export interface BuildingComp {
    *  (Phase 1 不支持改变已放置设备朝向，放错靠 Phase 1.9 删除重建)。 */
   direction: Direction;
   /**
-   * 设备状态 (A3 §4 状态机)。Phase 1 设备不生产，恒 'idle'。
-   * Phase 2 接生产逻辑后扩展为 'idle' | 'working' | 'blocked'。
+   * 设备状态 (A3 §4 状态机，A8 §6)。由 MachineSystem 在生产循环中迁移。
    */
-  state: 'idle';
+  state: MachineState;
   /**
    * 输入缓冲区 (A8 §2.1，T2.4)。长度 = BuildingDefinition.inputSlotCount，
    * 放置时初始化为全空槽，生产系统运行期间读写。
    */
   bufferInput: BufferSlot[];
+  /**
+   * 输出缓冲区 (A8 §2.2，T2.5)。长度 = BuildingDefinition.outputSlotCount，一槽一物。
+   * 原子结算时产物加入此处（液体产物走 liquid 端口不占槽，A8 §2.2 注）。
+   */
+  bufferOutput: BufferSlot[];
+  /** 当前生产配方 id (A8 §3.1，T2.5)。null = 空闲，无生产计时。单设备单计时器。 */
+  currentRecipeId: string | null;
+  /** 生产进度 0~1 (A8 §3.1)。progress = elapsed / totalTime，totalTime 从 Recipe.time 读取。 */
+  progress: number;
+  /** 已消耗生产时间 ms (A8 §3.2)。每 Tick +50ms，不存 Component 之外的派生量。 */
+  elapsed: number;
 }

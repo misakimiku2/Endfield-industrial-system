@@ -321,7 +321,7 @@ interface BeltLinkComp {
 
 ---
 
-## T2.5 — 生产计时与生产循环
+## T2.5 — 生产计时与生产循环 ✅
 
 ### 目标
 实现生产计时管理：配方匹配、生产计时推进、计时完成时原子结算（扣输入+加输出）。
@@ -335,6 +335,16 @@ interface BeltLinkComp {
 
 ### 预估工时
 1 次会话
+
+### 实现笔记（2026-08-14 完成 ✅）
+- **BuildingComp 扩展**（A3 §3/A8 §3.1）：`state` 扩为完整状态机 `'idle' | 'working' | 'blocked'`（A8 §6）；新增 `bufferOutput`（输出槽一槽一物，放置时按 `outputSlotCount` 初始化）与计时字段 `currentRecipeId/progress/elapsed`（totalTime 不存 Component，从 `Recipe.time` 读）。PlacementSystem 与 main.ts placeAt 两处创建点都接。
+- **ProductionOps 纯函数**（`src/game/systems/machine/ProductionOps.ts`，BufferOps 先例）：`planRecipeInputs`（配方匹配→扣料计划：和关系逐组分配、或关系组内按序取首个可满足备选、跨组同槽剩余量递减防超扣）、`findMatchingRecipe`（设备配方列表序首个匹配，确定性）、`planOutputs`（产物落地：同类未满槽合堆优先→空槽锁定；满 → null 暂缓）、`settleProduction`（原子结算：扣输入+加输出+清计时同一调用完成）。**启动与结算各规划一次**——生产期间输入槽只进不出（物流补货、仅结算扣），启动可行的计划结算时必然仍可行，故 Component 只存 currentRecipeId。
+- **液体规则**（A8 §2.2 注）：液体物品（tags 含 `liquid`，如清水/污水）走 liquid 端口不占固体槽——匹配时槽内液体不满足任何原料组（纯液体组 → 配方不可启动，如赤铜块需清水，液体系统 Phase 2+）；结算时液体副产物（赤铜块→污水）跳过不占输出槽。
+- **MachineSystem**（A8 §7 步骤 1"设备内部状态"，每 Tick）：1a 计时推进（elapsed += 50ms，progress = elapsed/totalTime）→ 1b progress≥1.0 原子结算（输出满 → blocked 暂缓**不扣原料**，之后每 Tick 重试，疏通即完成暂缓结算，A8 §2.2/§6.2）→ 1c 无计时则匹配配方启动（**不扣原料**；结算成功同 Tick 立即续启下一次）。输入/输出物流（§7 步骤 2/3）留 T2.6/T2.7。全空槽早退跳过配方遍历（性能基准 100 台空炉零开销）。注册顺序 BeltSystem 之后（DD-010）。
+- **事件与调试钩子**：MachineSystem 产生 start/settle/blocked/cancel 事件（仅状态转换，低频），main.ts 转发 console + `recentEvents` 环形缓冲（`__game.productionLog()`）；`__game.productionStatus()` 监控（"精炼炉: working | 配方: 晶体外壳(...) | 进度: 45.0% (900/2000ms)" + 双槽明细）、`injectOutput/consumeOutput`（测 blocked→疏通，后者模拟 T2.7 取货）、`outputBuffer()`。
+- **接线**：`Game.initProduction(recipeIndex, itemTable)` 在 main.ts CSV 加载后注入并注册 MachineSystem（幂等）；`formatRecipeSummary` 移入 recipes.ts（listRecipes 与事件日志共用格式）；`formatBufferSlots` 加 label 参数（"输出槽"）。
+- **计时语义**：启动 Tick elapsed=0、推进从下一 Tick 开始；2 秒配方在启动后第 40 次推进（第 41 次更新）时 elapsed=2000 → 结算——即 T=0 启动、T=2s 整原子结算。
+- 验证：`scripts/verify-t25-production.ts`（45/45 单测：纯函数匹配/落地/结算 + 真实 World 集成含 blocked 疏通全流程）+ `scripts/verify-t25-production.mjs` CDP 浏览器验收（18/18：计时期间原料不变、结算消息、续启、blocked/疏通、液体配方不启动）；T2.3/T2.4 单测（40/40、21/21）与浏览器回归（9/9）无破坏。
 
 ---
 

@@ -23,7 +23,7 @@ import { InventoryUI } from './game/ui/InventoryUI';
 import { BUILDING_DEFINITIONS, getBuildingDefinition, type BuildingDefinition } from './game/data/buildings';
 import type { BuildingComp, BufferSlot, Direction } from './game/components/BuildingComp';
 import { loadItemRegistry } from './game/data/items';
-import { parseRecipeCsv, buildRecipeIndex, type Recipe } from './game/data/recipes';
+import { parseRecipeCsv, buildRecipeIndex, formatRecipeSummary } from './game/data/recipes';
 import { createBufferSlots, tryAcceptItem, consumeFromSlot, formatBufferSlots } from './game/systems/machine/BufferOps';
 import recipeCsvText from '../doc/csv/recipe.csv?raw';
 import resourceCsvText from '../doc/csv/终末地资源列表 - 自然资源.csv?raw';
@@ -413,6 +413,8 @@ async function main() {
     game.world.addComponent(handle, 'BuildingComp', {
       definitionId: def.id, direction: dir, state: 'idle',
       bufferInput: createBufferSlots(def.inputSlotCount), // T2.4: 放置即建输入缓冲区
+      bufferOutput: createBufferSlots(def.outputSlotCount), // T2.5: 输出缓冲区（一槽一物）
+      currentRecipeId: null, progress: 0, elapsed: 0, // T2.5: 生产计时字段（放置时无任务）
     });
     game.world.addComponent(handle, 'SpriteComp', {
       group: 'devices', textureKey: def.texture,
@@ -739,20 +741,17 @@ async function main() {
   }
   const recipeIndex = buildRecipeIndex(recipeTable.recipes);
   const itemName = (id: string): string => itemTable.byId.get(id)?.name ?? id;
-  const recipeSummary = (r: Recipe): string => {
-    const main = itemName(r.outputs[0].itemId);
-    const ing = r.inputs
-      .map((g) => g.alternatives.map((a) => a.kind === 'item'
-        ? `${itemName(a.ref)}×${a.count}`
-        : `任意${a.ref.charAt(0).toUpperCase() + a.ref.slice(1)}类物品×${a.count}`).join('/'))
-      .join('+');
-    return `${main}(${ing}, ${r.time / 1000}秒)`;
-  };
   const listRecipes = (equipmentId = 'refining_unit'): string => {
     const def = getBuildingDefinition(equipmentId);
     const list = recipeIndex.get(equipmentId) ?? [];
-    return `${def?.name ?? equipmentId}配方：${list.map(recipeSummary).join('、')}`;
+    return `${def?.name ?? equipmentId}配方：${list.map((r) => formatRecipeSummary(r, itemName)).join('、')}`;
   };
+
+  // ── T2.5: 注入生产数据，注册 MachineSystem（BeltSystem 之后，DD-010）──
+  // 生产事件转发 console（启动/结算/blocked 仅状态转换时产生，低频不刷屏），
+  // recentEvents 环形缓冲供 __game.productionLog() 覆盘验证。
+  const machineSystem = game.initProduction(recipeIndex, itemTable);
+  machineSystem.onEvent = (e) => console.log(`[T2.5 生产] ${e.message}`);
 
   // ── T2.4 验收钩子: 输入缓冲区（模拟物品传入，检查 count 与锁定）──
   // injectInput('originium_ore', 3) → "输入槽0: 源矿 × 3/50 (已锁定)"
@@ -800,6 +799,68 @@ async function main() {
     return true;
   };
 
+  // ── T2.5 验收钩子: 生产计时/原子结算（控制台监控生产进度与槽变化）──
+  // productionStatus() → "精炼炉: working | 配方: 晶体外壳 | 进度: 45.0% (900/2000ms) ..."
+  const getOutputBuffer = (h: EntityHandle | null): BufferSlot[] | null => {
+    if (h === null || !game.world.isAlive(h)) return null;
+    return game.world.getComponent<BuildingComp>(h, 'BuildingComp')?.bufferOutput ?? null;
+  };
+  const productionStatus = (handle?: EntityHandle): string => {
+    const h = handle ?? firstBuildingHandle();
+    if (h === null || !game.world.isAlive(h)) return '没有已放置的设备';
+    const comp = game.world.getComponent<BuildingComp>(h, 'BuildingComp');
+    if (!comp) return '设备缺少 BuildingComp';
+    const def = getBuildingDefinition(comp.definitionId);
+    const cap = def?.bufferCapacity ?? 50;
+    const recipe = comp.currentRecipeId !== null
+      ? (recipeIndex.get(comp.definitionId) ?? []).find((r) => r.id === comp.currentRecipeId)
+      : undefined;
+    const head = recipe
+      ? `${def?.name ?? comp.definitionId}: ${comp.state} | 配方: ${formatRecipeSummary(recipe, itemName)} | 进度: ${(comp.progress * 100).toFixed(1)}% (${comp.elapsed}/${recipe.time}ms)`
+      : `${def?.name ?? comp.definitionId}: ${comp.state} | 无生产任务`;
+    return [
+      head,
+      formatBufferSlots(comp.bufferInput, cap, itemName),
+      formatBufferSlots(comp.bufferOutput, cap, itemName, '输出槽'),
+    ].join('\n');
+  };
+  /** 查看输出缓冲区（格式同 inputBuffer）。 */
+  const outputBuffer = (handle?: EntityHandle): string => {
+    const h = handle ?? firstBuildingHandle();
+    const buf = getOutputBuffer(h);
+    if (buf === null) return '没有已放置的设备';
+    return formatBufferSlots(buf, bufferCapacityOf(h), itemName, '输出槽');
+  };
+  /** 向输出槽注入产物（测 blocked：注满输出槽）。语义同输入槽锁定/合堆。 */
+  const injectOutput = (itemId: string, count = 1, handle?: EntityHandle): string => {
+    const h = handle ?? firstBuildingHandle();
+    const buf = getOutputBuffer(h);
+    if (buf === null) return '没有已放置的设备';
+    for (let i = 0; i < count; i++) {
+      if (!tryAcceptItem(buf, itemId, bufferCapacityOf(h))) break;
+    }
+    game.update();
+    return outputBuffer(h ?? undefined);
+  };
+  /** 从输出槽扣减 count 件（模拟 T2.7 传送带取走产物，测 blocked→疏通）。 */
+  const consumeOutput = (count = 1, itemId: string | null = null, handle?: EntityHandle): boolean => {
+    const h = handle ?? firstBuildingHandle();
+    const buf = getOutputBuffer(h);
+    if (buf === null) return false;
+    let left = count;
+    for (const slot of buf) {
+      if (left <= 0) break;
+      if (itemId !== null && slot.itemId !== itemId) continue;
+      const take = Math.min(left, slot.count);
+      if (take > 0) { consumeFromSlot(slot, take); left -= take; }
+    }
+    game.update();
+    return true;
+  };
+  /** 最近生产事件（start/settle/blocked/cancel，验收控制台消息用）。 */
+  const productionLog = (): Array<{ type: string; message: string }> =>
+    machineSystem.recentEvents.map((e) => ({ type: e.type, message: e.message }));
+
   // 开发期调试钩子: 暴露关键对象到 window，便于控制台验证与测试。
   (window as unknown as { __game: unknown }).__game = {
     app,
@@ -842,6 +903,11 @@ async function main() {
     injectInput,
     consumeInput,
     inputBuffer,
+    productionStatus,
+    outputBuffer,
+    injectOutput,
+    consumeOutput,
+    productionLog,
   };
 
   console.log('[集成工业系统] T1.7 设备放置 + T1.8 基础交互 + T1.9 设备删除 + T1.10 性能基准 + T2.0 传送带创建就绪');
@@ -857,6 +923,7 @@ async function main() {
   console.log('  T2.1/T2.2: __game.spawnBeltWithItem([[10,10],[11,10],[12,10],[13,10]],0,"cuprium_ore") 多格直链物品流动; 转角测试 [[10,12],[10,10],[12,10]],270 L形链物品转弯(动画同pointer); consumeBeltTailItem() 测堵塞疏通');
   console.log('  T2.3: __game.listRecipes("refining_unit") 配方查询 → "精炼炉配方：晶体外壳(源矿×1, 2秒)、蓝铁块(蓝铁矿×1, 2秒)、..."');
   console.log('  T2.4: __game.placeAt("refining_unit",5,5) → injectInput("originium_ore",3) → "输入槽0: 源矿 × 3/50 (已锁定)" → consumeInput(3) 扣空解锁; inputBuffer() 查看当前槽');
+  console.log('  T2.5: placeAt → injectInput("originium_ore",3) → productionStatus() 监控计时(期间输入槽数量不变) → 结算 "输入槽 源矿 -1，输出槽 晶体外壳 +1" 并自动续启; injectOutput("origocrust",50)+等完成=blocked → consumeOutput(1) 疏通结算; productionLog() 查事件');
 }
 
 main().catch((err) => {
