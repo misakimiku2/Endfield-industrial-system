@@ -6,6 +6,7 @@ src-tauri/target/
 .env
 .env.local
 .playwright-cli
+gui-test-screenshots
 
 # T1.3: 构建脚本产物(由 npm run pack-assets 生成，不入库)
 public/spritesheets/
