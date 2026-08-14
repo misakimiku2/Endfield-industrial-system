@@ -20,8 +20,13 @@ import { SceneRenderer } from './game/render/SceneRenderer';
 import { GridRenderer } from './game/render/GridRenderer';
 import { loadAllAssets, getTexture } from './game/render/AssetsLoader';
 import { InventoryUI } from './game/ui/InventoryUI';
-import { getBuildingDefinition, type BuildingDefinition } from './game/data/buildings';
-import type { Direction } from './game/components/BuildingComp';
+import { BUILDING_DEFINITIONS, getBuildingDefinition, type BuildingDefinition } from './game/data/buildings';
+import type { BuildingComp, BufferSlot, Direction } from './game/components/BuildingComp';
+import { loadItemRegistry } from './game/data/items';
+import { parseRecipeCsv, buildRecipeIndex, type Recipe } from './game/data/recipes';
+import { createBufferSlots, tryAcceptItem, consumeFromSlot, formatBufferSlots } from './game/systems/machine/BufferOps';
+import recipeCsvText from '../doc/csv/recipe.csv?raw';
+import resourceCsvText from '../doc/csv/终末地资源列表 - 自然资源.csv?raw';
 import { SelectionSystem } from './game/systems/SelectionSystem';
 import { DeleteSystem } from './game/systems/DeleteSystem';
 import { deleteChain, deleteSegment, queryChain } from './game/systems/belt/BeltChainOps';
@@ -405,7 +410,10 @@ async function main() {
     }
     const handle = game.world.createEntity();
     game.world.addComponent(handle, 'Position', { x: gx * CELL_SIZE, y: gy * CELL_SIZE });
-    game.world.addComponent(handle, 'BuildingComp', { definitionId: def.id, direction: dir, state: 'idle' });
+    game.world.addComponent(handle, 'BuildingComp', {
+      definitionId: def.id, direction: dir, state: 'idle',
+      bufferInput: createBufferSlots(def.inputSlotCount), // T2.4: 放置即建输入缓冲区
+    });
     game.world.addComponent(handle, 'SpriteComp', {
       group: 'devices', textureKey: def.texture,
       width: w * CELL_SIZE, height: h * CELL_SIZE, layer: 2,
@@ -719,6 +727,79 @@ async function main() {
     return removed;
   };
 
+  // ── T2.3 验收钩子: 配方数据加载（启动时从 CSV 构建，控制台查询）──
+  // listRecipes('refining_unit') → "精炼炉配方：晶体外壳(源矿×1, 2秒)、蓝铁块(蓝铁矿×1, 2秒)、..."
+  const equipmentNameToId = new Map<string, string>();
+  for (const def of Object.values(BUILDING_DEFINITIONS)) equipmentNameToId.set(def.name, def.id);
+  const itemTable = loadItemRegistry(resourceCsvText, recipeCsvText);
+  const recipeTable = parseRecipeCsv(recipeCsvText, itemTable, equipmentNameToId);
+  if (recipeTable.skipped.length > 0) {
+    console.warn(`[T2.3] 跳过 ${recipeTable.skipped.length} 条配方（设备未定义）:`,
+      [...new Set(recipeTable.skipped.map((s) => s.detail))].join('、'));
+  }
+  const recipeIndex = buildRecipeIndex(recipeTable.recipes);
+  const itemName = (id: string): string => itemTable.byId.get(id)?.name ?? id;
+  const recipeSummary = (r: Recipe): string => {
+    const main = itemName(r.outputs[0].itemId);
+    const ing = r.inputs
+      .map((g) => g.alternatives.map((a) => a.kind === 'item'
+        ? `${itemName(a.ref)}×${a.count}`
+        : `任意${a.ref.charAt(0).toUpperCase() + a.ref.slice(1)}类物品×${a.count}`).join('/'))
+      .join('+');
+    return `${main}(${ing}, ${r.time / 1000}秒)`;
+  };
+  const listRecipes = (equipmentId = 'refining_unit'): string => {
+    const def = getBuildingDefinition(equipmentId);
+    const list = recipeIndex.get(equipmentId) ?? [];
+    return `${def?.name ?? equipmentId}配方：${list.map(recipeSummary).join('、')}`;
+  };
+
+  // ── T2.4 验收钩子: 输入缓冲区（模拟物品传入，检查 count 与锁定）──
+  // injectInput('originium_ore', 3) → "输入槽0: 源矿 × 3/50 (已锁定)"
+  const firstBuildingHandle = (): EntityHandle | null => {
+    const handles = game.world.query('BuildingComp');
+    return handles.length > 0 ? handles[0] : null;
+  };
+  const getBuffer = (h: EntityHandle | null): BufferSlot[] | null => {
+    if (h === null || !game.world.isAlive(h)) return null;
+    return game.world.getComponent<BuildingComp>(h, 'BuildingComp')?.bufferInput ?? null;
+  };
+  const bufferCapacityOf = (h: EntityHandle | null): number => {
+    const comp = h !== null ? game.world.getComponent<BuildingComp>(h, 'BuildingComp') : null;
+    return comp ? (getBuildingDefinition(comp.definitionId)?.bufferCapacity ?? 50) : 50;
+  };
+  const inputBuffer = (handle?: EntityHandle): string => {
+    const h = handle ?? firstBuildingHandle();
+    const buf = getBuffer(h);
+    if (buf === null) return '没有已放置的设备';
+    return formatBufferSlots(buf, bufferCapacityOf(h), itemName);
+  };
+  const injectInput = (itemId: string, count = 1, handle?: EntityHandle): string => {
+    const h = handle ?? firstBuildingHandle();
+    const buf = getBuffer(h);
+    if (buf === null) return '没有已放置的设备';
+    for (let i = 0; i < count; i++) {
+      if (!tryAcceptItem(buf, itemId, bufferCapacityOf(h))) break;
+    }
+    game.update();
+    return inputBuffer(h ?? undefined);
+  };
+  /** 从输入槽扣减 count 件（可选限定 itemId），扣空的槽解锁。返回是否有设备被处理。 */
+  const consumeInput = (count = 1, itemId: string | null = null, handle?: EntityHandle): boolean => {
+    const h = handle ?? firstBuildingHandle();
+    const buf = getBuffer(h);
+    if (buf === null) return false;
+    let left = count;
+    for (const slot of buf) {
+      if (left <= 0) break;
+      if (itemId !== null && slot.itemId !== itemId) continue;
+      const take = Math.min(left, slot.count);
+      if (take > 0) { consumeFromSlot(slot, take); left -= take; }
+    }
+    game.update();
+    return true;
+  };
+
   // 开发期调试钩子: 暴露关键对象到 window，便于控制台验证与测试。
   (window as unknown as { __game: unknown }).__game = {
     app,
@@ -754,6 +835,13 @@ async function main() {
     spawnBelt,
     spawnBeltWithItem,
     consumeBeltTailItem,
+    itemTable,
+    recipeTable,
+    recipeIndex,
+    listRecipes,
+    injectInput,
+    consumeInput,
+    inputBuffer,
   };
 
   console.log('[集成工业系统] T1.7 设备放置 + T1.8 基础交互 + T1.9 设备删除 + T1.10 性能基准 + T2.0 传送带创建就绪');
@@ -767,6 +855,8 @@ async function main() {
   console.log('  T2.0: __game.spawnBelt([[5,5],[8,5],[8,8]],0) 程序化生成带转角传送带链 → 验证4方向转角+pointer流动');
   console.log('  T2.0 链管理: spawnBelt后 selectFirstBelt() 单击选单格 / selectFirstBelt(true) 双击选整链 → deleteSelectedBelt() 删当前所选');
   console.log('  T2.1/T2.2: __game.spawnBeltWithItem([[10,10],[11,10],[12,10],[13,10]],0,"cuprium_ore") 多格直链物品流动; 转角测试 [[10,12],[10,10],[12,10]],270 L形链物品转弯(动画同pointer); consumeBeltTailItem() 测堵塞疏通');
+  console.log('  T2.3: __game.listRecipes("refining_unit") 配方查询 → "精炼炉配方：晶体外壳(源矿×1, 2秒)、蓝铁块(蓝铁矿×1, 2秒)、..."');
+  console.log('  T2.4: __game.placeAt("refining_unit",5,5) → injectInput("originium_ore",3) → "输入槽0: 源矿 × 3/50 (已锁定)" → consumeInput(3) 扣空解锁; inputBuffer() 查看当前槽');
 }
 
 main().catch((err) => {

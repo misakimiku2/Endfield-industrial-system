@@ -42,6 +42,7 @@ import type { Direction } from '../components/BuildingComp';
 import type { OccupancyMap } from '../world/OccupancyMap';
 import { CELL_SIZE } from '../render/constants';
 import { PreviewTintFilter } from '../render/PreviewTintFilter';
+import { createBufferSlots } from './machine/BufferOps';
 
 /** 放置模式状态。 */
 export type PlacementMode = 'idle' | 'placing';
@@ -343,6 +344,7 @@ export class PlacementSystem {
       definitionId: def.id,
       direction,
       state: 'idle' as const,
+      bufferInput: createBufferSlots(def.inputSlotCount), // T2.4: 放置即建输入缓冲区（全空槽）
     });
     this.world.addComponent(handle, 'SpriteComp', {
       group: 'devices' as AtlasGroup,

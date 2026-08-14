@@ -273,7 +273,7 @@ interface BeltLinkComp {
 
 ---
 
-## T2.3 — 配方数据加载
+## T2.3 — 配方数据加载 ✅
 
 ### 目标
 从 `doc/csv/recipe.csv` 加载配方数据，实现配方管理器。
@@ -290,9 +290,16 @@ interface BeltLinkComp {
 ### 预估工时
 1 次会话
 
+### 实现笔记（2026-08-14 完成 ✅）
+- **物品注册表**（`src/game/data/items.ts`）：自然资源.csv（12 物品）+ recipe.csv 产物行（含未定义设备的产物，如反应池的赫铜块）+ 副产物补充表（污水 sewage——CSV 副产物列只有中文名，英文 ID 在代码补）。itemId = 英文 ID 的 snake_case（与 items 图集 textureKey 同约定，Originium Ore → originium_ore）。tags 按类别列派生：类别 slug + 语义别名（ore/liquid/processed）。
+- **配方解析**（`src/game/data/recipes.ts`）：92 数据行 → **46 条入索引**（6 个已定义设备：精炼炉 10/粉碎机 12/配件机 6/塑形机 6/采种机 6/种植机 6），**46 条因设备未定义跳过**（反应池/研磨机/灌装机等尚无 BuildingDefinition，warn 不报错，后续加设备自动出现）。或/和语义（A4 §6.1.1）：`+` 拆多个 RecipeInput（和），`/` 拆组内 alternatives（或）；`（任意Plant类别的物品）` → tag atom。副产物列 → outputs[1:]（赤铜块 → 污水×1）。id 格式 `recipe_{equipmentId}_{主产物}_{序号}`。
+- **原料匹配**：`itemSatisfiesInput(itemId, input, registry)`——item 原子比 itemId、tag 原子比 tags（T2.5 配方匹配直接复用）。
+- **数据接入**：CSV 经 vite `?raw` 内联进 main.ts（单一数据源 doc/csv/，不做拷贝）。
+- 验证：`scripts/verify-t23-recipes.ts`（40/40 单测）+ `scripts/verify-t23-t24.mjs` 浏览器验收（`__game.listRecipes('refining_unit')` 输出"精炼炉配方：晶体外壳(源矿×1/晶体外壳粉末×1, 2秒)、蓝铁块(蓝铁矿×1, 2秒)..."——晶体外壳含或分支全量展示）。
+
 ---
 
-## T2.4 — 输入缓冲区管理
+## T2.4 — 输入缓冲区管理 ✅
 
 ### 目标
 实现设备输入槽逻辑（物品进入、类型锁定）。
@@ -305,6 +312,12 @@ interface BeltLinkComp {
 
 ### 预估工时
 1 次会话
+
+### 实现笔记（2026-08-14 完成 ✅）
+- **BuildingComp 扩展**：新增 `bufferInput: BufferSlot[]`（`BufferSlot { itemId, count }`，A3 §3/A8 §2.1）。放置设备时按 `definition.inputSlotCount` 初始化全空槽（PlacementSystem 与 main.ts placeAt 两处创建点都接）。
+- **BufferOps 纯函数**（`src/game/systems/machine/BufferOps.ts`，按 belt/BeltChainOps 先例独立 ops 模块）：`tryAcceptItem`（空槽锁类型 / 已锁槽只进同类 / 槽满拒绝；**同类型优先并入已锁定槽**——A8 未规定多槽偏好，合堆避免拆堆）、`consumeFromSlot`（扣到 0 解锁，A8 §2.1）、`formatBufferSlots`（验收格式）。
+- **调试钩子**：`__game.injectInput(itemId, n)` 模拟物品传入、`__game.consumeInput(n, itemId?)` 扣减、`__game.inputBuffer()` 查看（默认取第一个已放置设备）。
+- 验证：`scripts/verify-t24-buffer.ts`（21/21 单测）+ CDP 浏览器验收（放置→空槽→注入源矿×3 锁定→蓝铁矿被拒→注满 50→扣空解锁，9/9 中 T2.4 部分）。
 
 ---
 
