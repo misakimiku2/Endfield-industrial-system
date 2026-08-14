@@ -861,6 +861,70 @@ async function main() {
   const productionLog = (): Array<{ type: string; message: string }> =>
     machineSystem.recentEvents.map((e) => ({ type: e.type, message: e.message }));
 
+  // ── 测试场景速建（implementation-phase-2.md「测试效率」章节的一键版）──
+  // 控制台帮助行是文档（含 → 等非代码符号），整行粘贴会 SyntaxError；
+  // 一键测试把验收流程封装成单条命令，非技术向用户只需复制一个调用。
+  // __game.test('t25') → 自动: 放精炼炉 → 注源矿 → 监控计时(原料不变) → 结算续启
+  //                      → 注满输出演示 blocked → consumeOutput 疏通恢复。
+  const firstComp = (): BuildingComp | null => {
+    const h = firstBuildingHandle();
+    return h !== null ? game.world.getComponent<BuildingComp>(h, 'BuildingComp') ?? null : null;
+  };
+  const waitFor = async (pred: () => boolean, timeoutMs: number, stepMs = 100): Promise<boolean> => {
+    const t0 = performance.now();
+    while (performance.now() - t0 < timeoutMs) {
+      if (pred()) return true;
+      await sleep(stepMs);
+    }
+    return pred();
+  };
+  const demoT25 = async (): Promise<string> => {
+    console.log('════ T2.5 一键测试: 生产计时与生产循环 ════');
+    console.log('(T2.5 按计划无画面变化——设备状态 UI 在 T2.8/T2.9，效果全部看本控制台)');
+    clearAllPlaced();
+    if (!placeAt('refining_unit', 5, 5)) return 'T2.5 测试失败: 精炼炉放置失败';
+    console.log('[步骤1] 已放置精炼炉，注入源矿 ×3 →');
+    injectInput('originium_ore', 3);
+    await sleep(300);
+    console.log(`[步骤2] 启动生产计时（不扣原料）:\n${productionStatus()}`);
+    await sleep(800);
+    const mid = firstComp();
+    if (mid) {
+      console.log(
+        `[步骤3] 计时中 进度=${(mid.progress * 100).toFixed(0)}%，` +
+        `输入槽仍为 源矿 ×${mid.bufferInput[0].count}（生产期间原料不变，A8 §3.1）`,
+      );
+    }
+    // 等首次结算: 输出槽出现 1 个晶体外壳（结算后立即续启，state 回 working）
+    const settled = await waitFor(() => {
+      const c = firstComp();
+      return c !== null && (c.bufferOutput[0]?.count ?? 0) >= 1;
+    }, 4000);
+    if (!settled) return 'T2.5 测试失败: 4 秒内未观察到结算（计时未推进？）';
+    console.log(`[步骤4] 结算完成（上方 [T2.5 生产] 消息即控制台验收文本）:\n${productionStatus()}`);
+
+    // blocked 演示: 注满输出 → 下次计时完成时结算暂缓 → 疏通后完成暂缓结算
+    console.log('[步骤5] 注满输出槽演示 blocked（输出 ×50）→');
+    injectOutput('origocrust', 49); // 输出已有 1，补到 50
+    const blocked = await waitFor(() => firstComp()?.state === 'blocked', 5000);
+    if (!blocked) return 'T2.5 测试失败: 5 秒内未进入 blocked（计时/输出异常？）';
+    const bc = firstComp();
+    console.log(
+      `[步骤6] blocked: 结算暂缓，原料未扣除（源矿仍 ×${bc?.bufferInput[0].count}）:\n${productionStatus()}`,
+    );
+    console.log('[步骤7] consumeOutput(1) 疏通（模拟 T2.7 传送带取走产物）→');
+    consumeOutput(1);
+    await sleep(300);
+    console.log(`[步骤8] 疏通后完成暂缓结算并恢复生产:\n${productionStatus()}`);
+    console.log('════ T2.5 一键测试完成。设备继续生产中，可重复调用 __game.test("t25")；clearAllPlaced() 清场 ════');
+    return 'T2.5 一键测试完成（关键输出见控制台 [T2.5 生产] / [步骤N] 日志）';
+  };
+  /** 一键测试入口。目前支持 't25'（生产计时与生产循环验收全流程）。 */
+  const runTest = async (name: string): Promise<string> => {
+    if (name === 't25') return demoT25();
+    return `未知测试 '${name}'（可用: 't25'）`;
+  };
+
   // 开发期调试钩子: 暴露关键对象到 window，便于控制台验证与测试。
   (window as unknown as { __game: unknown }).__game = {
     app,
@@ -908,6 +972,7 @@ async function main() {
     injectOutput,
     consumeOutput,
     productionLog,
+    test: runTest,
   };
 
   console.log('[集成工业系统] T1.7 设备放置 + T1.8 基础交互 + T1.9 设备删除 + T1.10 性能基准 + T2.0 传送带创建就绪');
@@ -923,7 +988,8 @@ async function main() {
   console.log('  T2.1/T2.2: __game.spawnBeltWithItem([[10,10],[11,10],[12,10],[13,10]],0,"cuprium_ore") 多格直链物品流动; 转角测试 [[10,12],[10,10],[12,10]],270 L形链物品转弯(动画同pointer); consumeBeltTailItem() 测堵塞疏通');
   console.log('  T2.3: __game.listRecipes("refining_unit") 配方查询 → "精炼炉配方：晶体外壳(源矿×1, 2秒)、蓝铁块(蓝铁矿×1, 2秒)、..."');
   console.log('  T2.4: __game.placeAt("refining_unit",5,5) → injectInput("originium_ore",3) → "输入槽0: 源矿 × 3/50 (已锁定)" → consumeInput(3) 扣空解锁; inputBuffer() 查看当前槽');
-  console.log('  T2.5: placeAt → injectInput("originium_ore",3) → productionStatus() 监控计时(期间输入槽数量不变) → 结算 "输入槽 源矿 -1，输出槽 晶体外壳 +1" 并自动续启; injectOutput("origocrust",50)+等完成=blocked → consumeOutput(1) 疏通结算; productionLog() 查事件');
+  console.log('  T2.5 一键测试: __game.test("t25")  ← 复制这一条到控制台回车即可（自动放设备+注料+计时+结算+blocked疏通演示）');
+  console.log('  T2.5 手动: placeAt("refining_unit",5,5) → injectInput("originium_ore",3) → productionStatus() 监控计时(期间输入槽数量不变) → 结算 "输入槽 源矿 -1，输出槽 晶体外壳 +1" 并自动续启; injectOutput("origocrust",50)+等完成=blocked → consumeOutput(1) 疏通结算; productionLog() 查事件');
 }
 
 main().catch((err) => {
