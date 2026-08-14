@@ -161,7 +161,7 @@ console.log('\n[A] 一键 100 设备（真实放置路径: 随机落点 + 占用
 
   render.update();
   assert(render.spriteCount === 100, `RenderSystem Sprite = 100（实际 ${render.spriteCount}）`);
-  assert(layers.layer2Building.children.length === 100, 'building 层挂载 100 个 Sprite');
+  assert(layers.layer2Building.children.filter((c) => c instanceof Sprite).length === 100, 'building 层挂载 100 个 Sprite');
 
   // 缩小到整图可见: 动态最小缩放 = min(0.25, 720/4096) ≈ 0.176
   // （T1.10 要求: 64×64 地图在 1280×720 视口下能整图可见）
@@ -195,8 +195,11 @@ console.log('\n[B] 纹理共享（100 设备只引用图集共享纹理，不产
   spawnBenchmarkDevices(world, occ, map, 100);
   render.update();
 
+  // T2.0 起 layer2Building 常驻 BeltHoverRenderer 的 beltHover Graphics（构造即挂载），
+  // 只统计/取用 Sprite 实例，忽略渲染器自有对象。
+  const sprites = layers.layer2Building.children.filter((c) => c instanceof Sprite);
   const used = new Set<Texture>();
-  for (const sprite of layers.layer2Building.children as Sprite[]) {
+  for (const sprite of sprites) {
     used.add(sprite.texture);
     for (const child of sprite.children) {
       used.add((child as Sprite).texture);
@@ -209,12 +212,12 @@ console.log('\n[B] 纹理共享（100 设备只引用图集共享纹理，不产
     '所有引用纹理均来自图集共享集合（无逐设备新建纹理）',
   );
   assert(
-    (layers.layer2Building.children as Sprite[]).every((s) => s.children.length === 1),
+    sprites.every((s) => s.children.length === 1),
     '每个设备 Sprite 都挂载 1 个 logo 子 Sprite（精炼炉完整显示）',
   );
   // 图集共享是"增删设备不涨纹理内存"的前提: 同 key 的 Sprite 必须是同一 Texture 实例
-  const first = layers.layer2Building.children[0] as Sprite;
-  const last = layers.layer2Building.children[99] as Sprite;
+  const first = sprites[0];
+  const last = sprites[99];
   assert(first.texture === last.texture, '第 1 个与第 100 个设备主体共享同一纹理实例');
   assert(
     (first.children[0] as Sprite).texture === (last.children[0] as Sprite).texture,
@@ -302,12 +305,13 @@ console.log('\n[D] 清空/内存释放（生成 100 → 清空 ×3 轮，无 Spr
     const placed = spawnBenchmarkDevices(world, occ, map, 100);
     render.update();
     assert(placed === 100 && render.spriteCount === 100, `第${cycle}轮: 生成 100 个`);
-    const sprites = [...layers.layer2Building.children];
+    // beltHover Graphics 常驻 building 层（T2.0 起），只收集 Sprite 实例做泄漏断言
+    const sprites = layers.layer2Building.children.filter((c) => c instanceof Sprite);
     clearAll();
     assert(world.entityCount() === 0, `第${cycle}轮: 实体清空`);
     assert(occ.occupiedCount === 0 && occ.snapshot().length === 0, `第${cycle}轮: 占用零泄漏`);
     assert(render.spriteCount === 0, `第${cycle}轮: RenderSystem entries 清空`);
-    assert(layers.layer2Building.children.length === 0, `第${cycle}轮: building 层无残留 Sprite`);
+    assert(layers.layer2Building.children.filter((c) => c instanceof Sprite).length === 0, `第${cycle}轮: building 层无残留 Sprite`);
     assert(
       sprites.every((s) => isDestroyed(s)),
       `第${cycle}轮: 旧 Sprite 全部 destroy（无泄漏）`,

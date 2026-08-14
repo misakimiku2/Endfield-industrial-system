@@ -209,14 +209,22 @@ console.log('\n[7] rotateClockwise 不改变相机中心（只改呈现方式）
 }
 
 // ── 8. zoom 边界回归（旋转不应影响 zoom clamp）──
-console.log('\n[8] zoom 边界回归 [0.25, 4.0]（旋转不影响）');
+console.log('\n[8] zoom 边界回归 [动态下限, 4.0]（旋转不影响）');
 {
   const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
   setRotationAndFinishAnim(cam, 90);
   cam.setZoom(100);
   assert(approxEqual(cam.zoom, CAMERA_ZOOM_MAX), `rot=90° setZoom(100) clamp 到 ${CAMERA_ZOOM_MAX}`);
   cam.setZoom(0.01);
-  assert(approxEqual(cam.zoom, CAMERA_ZOOM_MIN), `rot=90° setZoom(0.01) clamp 到 ${CAMERA_ZOOM_MIN}`);
+  // T1.10 起缩放下限是动态的: min(CAMERA_ZOOM_MIN, 整图适配缩放)（64×64 世界全可见）。
+  // 4096² 世界 + 1280×720 视口 → fit = 720/4096 ≈ 0.1758 < 0.25 → 实际下限 0.1758。
+  const fitZoom = Math.min(
+    VIEWPORT.width / WORLD_BOUNDS.widthPx,
+    VIEWPORT.height / WORLD_BOUNDS.heightPx,
+  );
+  const expectedMin = Math.min(CAMERA_ZOOM_MIN, fitZoom);
+  assert(approxEqual(cam.zoom, expectedMin),
+    `rot=90° setZoom(0.01) clamp 到动态下限 ${expectedMin.toFixed(4)}（min(0.25, 整图适配)）`);
 }
 
 // ── 9. 平滑旋转: 动画结束后 displayRotation 精确等于目标 ──

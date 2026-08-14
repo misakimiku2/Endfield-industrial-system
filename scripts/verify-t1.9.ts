@@ -11,7 +11,7 @@
 //   D. RenderSystem 集成: 删除后 Sprite 自动移除（T1.6 query diff 路径）
 //   E. T1.8 选中联动: 删除选中设备后选中态清空、选中框隐藏
 
-import { Container } from 'pixi.js';
+import { Container, Sprite } from 'pixi.js';
 import { World } from '../src/game/ECS.ts';
 import { Camera } from '../src/game/render/Camera.ts';
 import type { SceneLayers } from '../src/game/render/SceneRenderer.ts';
@@ -195,12 +195,17 @@ console.log('\n[D] RenderSystem 集成 (删除 → Sprite 自动移除)');
   const h = placeBuilding(world, occ, refining, 2, 2);
 
   render.update();
-  assert(layers.layer2Building.children.length === 1, '放置后 Sprite 挂到 building 层');
-  const sprite = layers.layer2Building.children[0];
+  // T2.0 起 RenderSystem 构造时把 BeltHoverRenderer 的 beltHover Graphics 常驻挂到
+  // layer2Building（悬停高亮层），层的 children 不再只含建筑 Sprite。
+  // 断言只数 Sprite 实例，忽略渲染器自有对象。
+  const sprites = layers.layer2Building.children.filter((c) => c instanceof Sprite);
+  assert(sprites.length === 1, '放置后 Sprite 挂到 building 层');
+  const sprite = sprites[0];
 
   assert(del.deleteBuilding(h) === true, '删除设备成功');
   render.update();
-  assert(layers.layer2Building.children.length === 0, '删除后下一帧 Sprite 自动移除');
+  const spritesAfter = layers.layer2Building.children.filter((c) => c instanceof Sprite);
+  assert(spritesAfter.length === 0, '删除后下一帧 Sprite 自动移除');
   assert(
     (sprite as unknown as { destroyed: boolean }).destroyed === true,
     '旧 Sprite 已被销毁（无泄漏）',

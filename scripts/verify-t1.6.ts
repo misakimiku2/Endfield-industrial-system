@@ -15,7 +15,7 @@
 // 说明: RenderSystem 依赖 PixiJS Sprite（Node 下 Texture.EMPTY 可用，无需 canvas），
 //       World/Camera/SceneLayers 用真实或轻量实现，getTexture 注入 mock。
 
-import { Container, Texture } from 'pixi.js';
+import { Container, Sprite, Texture } from 'pixi.js';
 import { createDefaultMap, MapInstance } from '../src/game/world/MapInstance.ts';
 import { Camera } from '../src/game/render/Camera.ts';
 import { World } from '../src/game/ECS.ts';
@@ -58,6 +58,12 @@ function makeSceneLayers(): SceneLayers {
 
 // ── 辅助: mock getTexture（返回 Texture.EMPTY 即可，RenderSystem 仅做 new Sprite(tex)）──
 const texLookup: TextureLookup = (_group, _key) => Texture.EMPTY;
+
+// T2.0 起 RenderSystem 构造时把 BeltHoverRenderer 的 beltHover Graphics 常驻挂到
+// layer2Building（悬停高亮层），层的 children 不再只含实体 Sprite。
+// 计数/取用断言一律只数 Sprite 实例，忽略渲染器自有对象。
+const spritesOf = (layer: Container): Sprite[] =>
+  layer.children.filter((c): c is Sprite => c instanceof Sprite);
 
 console.log('\n=== T1.6 渲染系统验证 (MapInstance + Camera bounds + RenderSystem) ===\n');
 
@@ -115,14 +121,14 @@ console.log('\n[C] RenderSystem diff: 创建→建 Sprite，销毁→Sprite 清�
   world.addComponent(e1, 'Position', { x: 1900, y: 1900 });
   world.addComponent(e1, 'SpriteComp', { group: 'devices', textureKey: 'refining_unit', width: 192, height: 192, layer: 2 });
 
-  assert(layers.layer2Building.children.length === 0, `update 前 building 层无子节点`);
+  assert(spritesOf(layers.layer2Building).length === 0, `update 前 building 层无 Sprite`);
   rs.update();
-  assert(layers.layer2Building.children.length === 1, `update 后 building 层新增 1 个 Sprite`);
+  assert(spritesOf(layers.layer2Building).length === 1, `update 后 building 层新增 1 个 Sprite`);
 
   // 销毁实体 → 下一帧 Sprite 被移除
   world.destroyEntity(e1);
   rs.update();
-  assert(layers.layer2Building.children.length === 0, `销毁实体后 Sprite 被清理（layer 无子节点）`);
+  assert(spritesOf(layers.layer2Building).length === 0, `销毁实体后 Sprite 被清理（层内无 Sprite）`);
 
   // 多实体增删混合
   const handles: number[] = [];
@@ -133,13 +139,13 @@ console.log('\n[C] RenderSystem diff: 创建→建 Sprite，销毁→Sprite 清�
     handles.push(h);
   }
   rs.update();
-  assert(layers.layer2Building.children.length === 5, `5 个实体 → 5 个 Sprite`);
+  assert(spritesOf(layers.layer2Building).length === 5, `5 个实体 → 5 个 Sprite`);
   world.destroyEntity(handles[0]);
   world.destroyEntity(handles[2]);
   rs.update();
-  assert(layers.layer2Building.children.length === 3, `销毁 2 个 → 剩 3 个 Sprite`);
+  assert(spritesOf(layers.layer2Building).length === 3, `销毁 2 个 → 剩 3 个 Sprite`);
   rs.clear();
-  assert(layers.layer2Building.children.length === 0, `clear() 后 Sprite 全部清理`);
+  assert(spritesOf(layers.layer2Building).length === 0, `clear() 后 Sprite 全部清理`);
 }
 
 // ── D. layer 映射 ──
@@ -160,7 +166,7 @@ console.log('\n[D] SpriteComp.layer 落到对应 SceneLayers Container');
   rs.update();
   let ok = true;
   for (let li = 0; li < 6; li++) {
-    if (layers[layerNames[li]].children.length !== 1) ok = false;
+    if (spritesOf(layers[layerNames[li]]).length !== 1) ok = false;
     // 其它层不应被误塞
   }
   assert(ok, `6 个实体 layer=0..5 各落到对应层 Container（每层恰好 1 个）`);
@@ -184,8 +190,8 @@ console.log('\n[E] 视口剔除: 屏幕外 visible=false，屏幕内 visible=tru
   world.addComponent(farOutside, 'SpriteComp', { group: 'devices', textureKey: 'b', width: 64, height: 64, layer: 2 });
 
   rs.update();
-  const insideSprite = layers.layer2Building.children[0];
-  const outsideSprite = layers.layer2Building.children[1];
+  const insideSprite = spritesOf(layers.layer2Building)[0];
+  const outsideSprite = spritesOf(layers.layer2Building)[1];
   assert((insideSprite as { visible: boolean }).visible === true, `视口内实体 visible=true`);
   assert((outsideSprite as { visible: boolean }).visible === false, `视口外实体 visible=false（剔除）`);
 
@@ -207,19 +213,19 @@ console.log('\n[F] SpriteComp 的 group/textureKey/layer 变更 → 重建 Sprit
   world.addComponent(h, 'Position', { x: 2000, y: 2000 });
   world.addComponent(h, 'SpriteComp', { group: 'devices', textureKey: 'a', width: 64, height: 64, layer: 2 });
   rs.update();
-  assert(layers.layer2Building.children.length === 1 && layers.layer3Item.children.length === 0,
+  assert(spritesOf(layers.layer2Building).length === 1 && spritesOf(layers.layer3Item).length === 0,
     `初始 layer=2 → building 层 1 个，item 层 0 个`);
 
   // 改 layer → Sprite 应从 building 层移到 item 层（重建）
   world.addComponent(h, 'SpriteComp', { group: 'devices', textureKey: 'a', width: 64, height: 64, layer: 3 });
   rs.update();
-  assert(layers.layer2Building.children.length === 0 && layers.layer3Item.children.length === 1,
+  assert(spritesOf(layers.layer2Building).length === 0 && spritesOf(layers.layer3Item).length === 1,
     `改为 layer=3 → Sprite 迁到 item 层（building 清空，item 1 个）`);
 
   // 改 textureKey → 仍 1 个 Sprite（重建，旧的被销毁）
   world.addComponent(h, 'SpriteComp', { group: 'devices', textureKey: 'changed', width: 64, height: 64, layer: 3 });
   rs.update();
-  assert(layers.layer3Item.children.length === 1, `改 textureKey → 重建后 item 层仍 1 个 Sprite（旧销毁新建）`);
+  assert(spritesOf(layers.layer3Item).length === 1, `改 textureKey → 重建后 item 层仍 1 个 Sprite（旧销毁新建）`);
 }
 
 console.log(`\n=== 结果: ${passed} 通过, ${failed} 失败 ===\n`);
