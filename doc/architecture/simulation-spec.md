@@ -37,6 +37,12 @@
 
 ## 2. GameLoop 实现
 
+> **实现修订（2026-08，T2.1/T2.5 落地）**: ① 累积器钳制上限由 250ms 提高到 **1000ms**
+> （`SIM_ACCUMULATOR_MAX_MS`）——后台标签页 rAF 停转时由 `document.hidden` 定时器兜底喂
+> `tickSimulation`（按实际流逝时间），浏览器后台节流 ~1Hz 也能实时追上；单次最多追 20 Tick
+> 仍有界防追赶崩溃，渲染仍由 rAF 驱动，回前台自动恢复双时钟。② System 接口为
+> `SimulationSystem`，按注册顺序依次 update（BeltSystem → MachineSystem，见 §5/DD-010）。
+
 ```ts
 class GameLoop {
   private simAccumulator = 0;
@@ -168,6 +174,13 @@ class GameLoop {
 - CleanupSystem 最后 → 保证被销毁的实体不会在其他 System 中被访问
 
 ### 5.2 设备内部事件顺序（每个 Tick 内）
+
+> **实现修订（2026-08，T2.5/T2.6/T2.7 落地）**: 实际执行为两段式——`BeltSystem.update`
+> （物品推进/间距钳制/跨段，即下方"阶段 2 的物品前进"）→ `MachineSystem.update` 对每台设备
+> 依次执行本节阶段 1→2→3（1 内部状态 → 2 输入端口吸入 `machine/IntakeOps` → 3 输出端口放出
+> `machine/OutputOps`），保证"本 Tick 到达的物品在本 Tick 进入设备"。堵塞/满槽停止点为格中心
+> 0.5（一格一物品，A9 §2.3 2026-08-17 修订），原文"停在段尾"按此理解。输入/输出物流不依赖
+> 配方（仓库类设备 T2.12 同走此路径），每端口每 Tick 至多 1 件；多端口轮询指针属 T2.10。
 
 虽然仿真使用固定 20 TPS，但每个 Tick 内设备的处理需要遵循精炼炉说明中的"事件顺序"：
 

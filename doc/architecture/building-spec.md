@@ -287,6 +287,12 @@ Phase 1 的 `RenderSystem` 以"一个实体 = 一个 Sprite"为主（`SpriteComp
 
 ## 3. BuildingComponent（ECS）
 
+> **实现进度注（2026-08-17 对照 `src/game/components/BuildingComp.ts`）**: 代码中 `state` 类型目前为
+> `'idle' | 'working' | 'blocked'`（`no_power` Phase 3+）；`inputPollIndex`/`outputPollIndex` 轮询指针
+> 按任务进度**延后至 T2.10 加入**（避免引入未使用字段，当前按端口定义序遍历、行为等价）；
+> `paused`（玩家手动暂停）T2.8 加入。其余字段（BufferSlot/currentRecipeId/progress/elapsed/
+> bufferInput/bufferOutput）已按本节实现（T2.4/T2.5）。
+
 ```ts
 // 单个缓冲区槽位。每槽只容纳一种物品；itemId === null 表示该槽为空、未锁定。
 interface BufferSlot {
@@ -390,6 +396,12 @@ function getWorldOrigin(gx: number, gy: number): { x: number; y: number } {
 ---
 
 ## 4. 状态机
+
+> **扩展（2026-08-17 已定案，T2.8 实现）**: 新增玩家手动暂停 `paused`——正交于 idle/working/blocked
+> 的布尔开关（非第 4 个互斥态），设备弹窗"开/关"电源开关控制；暂停时计时冻结（不归零）、不吸入
+> 不输出，恢复续走。状态**外部视觉**为终末地风格 LOGO 图标方案（正常=LOGO / 暂停=深灰图标 /
+> 堵塞=红 X）+ 端口连接高亮（黄 #FFEF00 / 堵塞红），替代"状态文字"方案。详见
+> implementation-phase-2.md T2.8 与 A8 §6 扩展注。
 
 ### 4.1 状态转换图
 

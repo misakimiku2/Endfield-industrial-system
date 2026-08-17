@@ -302,6 +302,13 @@ interface RecipeAtom {
 
 ## 6. 设备状态机
 
+> **扩展（2026-08-17 已定案，T2.8 实现）**: 新增玩家手动暂停 **PAUSED**——设备弹窗"开/关"电源开关
+> 写入 `BuildingComp.paused`（T2.8 先调试钩子 `__game.setPaused`，正式入口为 T2.15 设备弹窗，
+> 样式复刻旧 Flutter 项目）。暂停时: 不推进计时、不吸入输入、不输出产物（物流视同离线）；
+> 已走计时保留，恢复后从暂停处继续（冻结不归零）。PAUSED 与 IDLE/WORKING/BLOCKED 正交
+> （叠加时优先显示暂停），NO_POWER 仍属 Phase 3+。状态外部视觉为顶层 LOGO 图标方案
+> （正常=LOGO / 暂停=深灰图标 / 堵塞=红 X + 端口高亮），见 implementation-phase-2.md T2.8。
+
 所有生产设备（精炼炉、粉碎机、配件机等）共用同一状态机：
 
 ```
