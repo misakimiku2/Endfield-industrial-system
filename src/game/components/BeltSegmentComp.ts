@@ -17,7 +17,9 @@ import type { Direction } from './BuildingComp';
  */
 export interface BeltItem {
   itemId: string;
-  /** 0.0~1.0，段内归一化位置。断头/堵塞停止时钳制为 STOP_MAX(0.75)，使物品完全在格内不凸出。 */
+  /** 段内归一化位置。正常范围 0.0~1.0；端口穿越格扩展: 设备输出注入从 -0.5（端口格中心）
+   *  出发、预约进入设备的物品推进到 1.5（端口格中心）后移除（2026-08-17 用户选型，
+   *  "物品要走到端口格中心才算进入设备"）。断头/堵塞停止时钳制为 STOP_MAX(0.5) 格中心。 */
   progress: number;
   /**
    * 本 Simulation Tick 的 progress 增量，渲染层用于帧间插值（消除 20TPS 逻辑阶跃在 60FPS 下的卡顿）。
@@ -25,6 +27,13 @@ export interface BeltItem {
    * 由 BeltSystem 每 tick 写入，BeltItemRenderer 读取。
    */
   delta: number;
+  /**
+   * 端口预约标记（T2.6 修订）: true = 已在门口（progress 0.5）通过 tryAcceptItem 预约
+   * 进入设备（输入槽已 count+1），BeltSystem 放行其推进到 1.5（端口格中心），
+   * 由 MachineSystem 在 ≥1.5 时从 items[] 移除（视觉消失）。预约制防多端口争抢
+   * （槽在门口判定瞬间即占用，"堵塞停在供给格中心"与"预约放行"解耦）。
+   */
+  entering?: boolean;
 }
 
 /**
