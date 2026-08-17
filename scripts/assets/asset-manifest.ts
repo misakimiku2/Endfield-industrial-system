@@ -56,6 +56,9 @@ export const ATLAS_GROUPS: AtlasGroup[] = [
       'Transport_Belt_Move.svg': 'transport_belt',
       'Transport_Belt_rotate.svg': 'belt_corner',
       'Item_Control_Port.svg': 'item_control_port',
+      // T2.8 状态徽标（billboard LOGO 按设备状态切换: paused/blocked）
+      'Pause_Logo.svg': 'pause_logo', // 深灰暂停图标（画布与 refining_unit.svg 同尺寸，居中 ~40%）
+      'Blocked_Logo.svg': 'blocked_logo', // 红 X 图标（输出满、结算暂缓）
     },
   },
   {
@@ -90,6 +93,9 @@ export const DEVICE_FILES: readonly string[] = [
   'Transport_Belt_Move.svg',
   'Transport_Belt_rotate.svg',
   'pointer.svg',
+  // T2.8 状态徽标（billboard LOGO 状态切换用，随设备层 4× 栅格化）
+  'Pause_Logo.svg',
+  'Blocked_Logo.svg',
 ];
 
 /**
@@ -108,10 +114,13 @@ export const EXCLUDE_FILES: readonly string[] = [
 
 /**
  * 图集最大边长(POT)。
- * 4096 是 WebGL2 (PixiJS v8 默认) 的安全上限，所有现代 GPU 均支持。
- * items 图集含 93 个 254~256px 物品图标，2048² 装不下，需 4096。
+ * 8192：WebGL2 下现代 GPU（集成核显亦然）MAX_TEXTURE_SIZE 普遍 ≥8192。
+ * devices 图集因 T2.8 逐端口帧（12 个 768² 全画布帧：port 与 arrow 各 6）+ logo-glow
+ * 达 37 块，4096² 装不下（shelfPack 报需 4096×8192）→ 提升到 8192。
+ * ⚠️ 若未来需兼容低端移动 GPU（MAX_TEXTURE_SIZE=4096），需改为裁剪子帧内容
+ *    bounds 打包（当前子帧为全画布透明占位，浪费面积）。
  */
-export const MAX_ATLAS_SIZE = 4096;
+export const MAX_ATLAS_SIZE = 8192;
 
 /**
  * 图集中每个图块之间的 padding(像素)，避免纹理采样溢出(bleeding)。

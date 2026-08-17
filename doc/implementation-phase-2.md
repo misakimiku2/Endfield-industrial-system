@@ -380,10 +380,14 @@ interface BeltLinkComp {
 - **验证**：`scripts/verify-t26-input-port.ts`（39/39：端口旋转四朝向/连接方向判定/类型锁定拒绝/满槽堵停/疏通恢复/输出与液体端口不吸入/多端口同 Tick 各吸 1 件/两段链跨段到门口）+ `verify-t26-input-port.mjs` CDP 浏览器验收（14/14：物品到门口消失+输入槽+1+吸入消息/满槽停 0.50 静止/疏通吸入/方向背离永不吸入）+ 一键测试 CDP 复验（完成、二次调用忽略、未知测试提示可用列表）。
 - **回归**：t23/t24/t25 单测 40/21/45 无破坏；t23-t24/t25 浏览器 9/18 无破坏。**历史遗留修复**：`verify-t21-item-move.mjs`（5 处断言）/`verify-t22-cross-segment.mjs`（2 处）仍期望旧版 0.99 段尾停点，与 T2.2 起 STOP_MAX=0.5 格中心行为不符（git stash 验证在本任务改动前即失败，非本次引入）；按现行为重写断言后 7/7、7/7。
 - **物品/pointer 相位对齐 + 指针闪动修复（2026-08-14 用户实测反馈）**：用户报告 t26 一键测试中①物品与指针间距每次运行不同、②第二件物品明显错位、③停住物品前方指针闪动。根因 1：`injectBeltItem` 曾默认 progress=0 注入，违反 T2.1"物品=实体 pointer"约定（注入时 progress=beltPhase）——物品落后指针一个随机相位差（每次不同），且注入瞬间悬在带首边缘外。修复：默认 `progress=BeltSystem.beltPhase`（与 spawnBeltWithItem 同约定），demoT26/验收脚本全部改对齐注入；逐帧验证 578 帧跨 3 段 maxDiff=0.022（仅注入后首 tick 插值瞬态），此后与 pointer 晶格完全同步。根因 2：pointer 单向淡出（越过段内最后物品后保持隐藏）在 beltPhase 回绕瞬间 alpha 0→1 **硬跳**——停住/被堵的物品（门口堵停、T2.2 堵塞）被流动 pointer 周期性超过，每 2 秒一次硬跳即闪动。修复：`BeltPointerRenderer` 改**对称淡入淡出**（alpha = clamp(|物品渲染progress − g| / POINTER_FADE)）：接近淡出、穿过淡入，任何相位连续。`verify-pointer-fade.mjs` 重写为页内 rAF 逐帧采样渲染器**真实 sprite alpha**（复刻公式测不出渲染层回归；606 帧 maxJump=0.024 vs 旧版 1.0），新增"无硬跳变"断言；`diag-t26-align.mjs` 目视截图（gui-test-screenshots/t26-fix/：对齐流动/门口停住/淡出中间态）。
-- **已知遗留：吸入点应为端口格中心（2026-08-17 用户确认，仅记录未实现）**：用户拍板目标行为（以 `精炼炉设备说明.md` 为准）——物品要走到**设备输入端口格的中心**（走进设备半格深处）才消失进入输入槽，堵塞时停在**供给格**（不进设备）。当前实现（T2.6）是物品停在**供给格中心 0.5** 即被吸入（A9 §3.3 按传送带格中心实现）——比目标行为少走约 1 格。**本次只记录，未改代码**。修正要点（实现时参考）：
-  - 决策点不变：物品在供给格中心 0.5 处做判定——槽可接受 → 继续前进走进端口格（供给格 progress 1.0 后行程延伸进端口格半格），到达端口格中心吸入消失；槽满 → 停在供给格中心 0.5（与精炼炉说明"堵塞停留在 0,3 这一格"一致，STOP_MAX 语义不变）。
-  - 实现面：BeltSystem 对"下游是设备输入端口"的段尾处理（物品行程延伸进端口格，或渲染位置延伸到端口格中心）；MachineSystem 吸入触发点（0.5 → 端口格中心）；T2.6 验收/一键测试断言（吸入时机、停点位置）；与一格一物品模型（A9 §2.3 修订）不冲突。
-  - 修正时机：并入 T2.13 打通验证前，或作为 T2.6 修正小任务。
+- **吸入点=端口格中心（2026-08-17 用户拍板 → 同日预约制实现闭环 ✅）**：目标行为（以 `精炼炉设备说明.md` 为准）——物品走到**设备输入端口格的中心**（走进设备半格深处）才消失进入输入槽，堵塞时停在**供给格**（不进设备）。原实现是供给格中心 0.5 即吸入消失（比目标少走约 1 格）。修正采用**预约制两阶段**，决策点不变（0.5）、消失点后移（1.5）：
+  - **预约（0.5 供给格中心）**：`tryAbsorbHeadItem` 重写——队首到 0.5 且槽可接受 → tryAcceptItem（槽 count+1 即占用）+ 物品标记 `entering=true` **保留在段上**（不再立即移除）；吸入事件消息在预约时刻发。槽满/类型不符 → 照旧停在 0.5（STOP_MAX 堵塞语义不变，与精炼炉说明"堵塞停留在 0,3 这一格"一致）。
+  - **放行（1.5 端口格中心）**：`releaseArrivedItems`（IntakeOps 新增，`PORT_RELEASE_PROGRESS`）——entering 且 progress ≥ 1.5 的物品从段 items[] 移除（视觉消失）。MachineSystem.absorbBeltInputs 每 Tick **先放行完成品再预约**——同 Tick 到达即同 Tick 进槽计数，"预约即 +1"语义不变。
+  - **BeltSystem**：新增导出 `PORT_ENTER_DONE = STOP_MAX + 1.0 = 1.5`；断头段队首推进中 entering 物品**放行至 1.5**（穿过门口继续前进），非 entering 仍钳制 0.5。一格一物品模型不变——entering 物品仍占用供给格（上游物品照常在其后方排队）。
+  - **渲染**：`BeltItemRenderer.itemTransform` 对 progress > 1 的物品沿出口方向直线延伸（直段+转角段统一：转角取 min(progress,1) 的弧线位置再沿出口方向延长 (progress−1)×CELL_SIZE）——物品平滑走进设备内部无跳变。
+  - **连带修正（OutputOps 注入相位窗口）**：输出注入若相位 > STOP_MAX，下一 Tick 被断头钳制回 0.5 会造成视觉后跳 → 注入窗口限制在 beltPhase ≤ STOP_MAX（详见 T2.7 实现笔记"T2.6 修复定型"）。
+  - **验证**：`verify-t26-input-port.ts` 断言重写 48/48（新增预约保留段上/entering 标记/1.4 不放行 1.5 放行/非 entering 不放行/预约后走进设备等；place() 注满输出槽使设备 blocked，隔离生产消耗对输入槽的干扰）+ `verify-t26-input-port.mjs` 15/15（预约后物品继续前进——beltStatus 显示"进设备中"→ 1.5 消失；满槽停 0.50 静止；疏通吸入；方向背离永不吸入）+ demoT26 断言更新（预约即 +1、走进设备 2 秒后消失）。
+  - **回归**：t21~t27 全量绿——单测 t23 40 / t24 21 / t25 45 / t26 48 / t27 42，浏览器 t21 7 / t22-cross 7 / t23-t24 9 / t25 18 / t26 15 / t27 15。A9 §3.3 修订注、`精炼炉设备说明.md` 吸入点注记已同步为已实现。
 
 ---
 
@@ -458,6 +462,23 @@ interface BeltLinkComp {
 
 ### 预估工时
 1.5 次会话（paused 状态机扩展 + 交互 0.5 / LOGO 状态切换 0.5 / 端口高亮 0.5）
+
+### 实现笔记（2026-08-18 完成 ✅；同日两轮用户反馈修订：LOGO 双层/端口面板染色 + 图层顺序/图集缓存排查）
+- **素材**（`src/assets/svg/LOGO/`，2026-08-18 用户自行调整样式）：`Pause_Logo.svg`（暂停图标）、`Blocked_Logo.svg`（红 X）。画布与 refining_unit.svg 同尺寸（50.8×50.8 viewBox / 192×192）——logo 子 Sprite scale=1 继承父缩放，帧尺寸与主帧一致 → 显示大小与原 LOGO 对齐。注册进 asset-manifest DEVICE_FILES + keyOverrides（`pause_logo`/`blocked_logo`，随 devices 图集 4× 光栅化匹配 zoom）。**新 SVG 必须重跑 `npm run pack-assets`** 才会进图集。
+- **LOGO 双层结构（用户修订：只替换上层不透明主体，半透明 glow 保留）**：refining_unit.svg 的 layer-logo 原含两组——`refining-logo-glow`（opacity 0.3 半透明底层）+ `refining-logo-normal`（不透明上层）。改造：glow 组拆出为独立 `layer-logo-glow`（display:none 不进主帧），layer-logo 只留 normal → 图集生成 `refining_unit/logo-glow` + `refining_unit/logo`（纯上层）两帧。RenderSystem：`logo` Sprite = glow 层（**永不换纹理**，同时是 billboard 旋转锚点容器）+ 子 Sprite `logoMain` = 主体层（normal/pause_logo/blocked_logo **仅状态切换时换纹理**）；fallback Graphics 挂 logoMain。glow 帧缺失的设备 logo 层置空、主体照常（`logoTextureKey` 语义=normal 帧，glow key 约定 `${logoTextureKey}-glow`）。
+- **paused 状态机**（`BuildingComp.paused: boolean`，两处创建点 PlacementSystem/main.ts placeAt 均初始化 false）：MachineSystem.update 循环开头 paused 时**早退**——不推进计时（elapsed/progress 冻结保留，恢复从暂停处继续）、不预约吸入（门口物品被 BeltSystem 钳制停 0.5）、不输出（槽内保留）；唯一动作 `releaseEnteringItems`（absorbBeltInputs 的"只放行不预约"变体）——已预约(entering)物品仍放行到 1.5 移除，否则物品永远卡在设备半格深处。paused 与 blocked 独立共存（blocked 是输出满被动暂缓，paused 是玩家主动关停）；暂停期间 state 保持不变。`resolveLogoState(paused, state)` 纯函数（BuildingComp.ts，paused 优先于 blocked）。
+- **端口面板染色（用户修订：染 ports_top 面板本身，非整格半透明）**：refining_unit.svg 新增 6 个隐藏层 `layer-port-in/out-{0,1,2}`（rect_top 端口面板几何的**白色**复制品，各带原 ports-pos-* 组 transform，display:none 不进主帧）→ 图集生成单端口帧 `refining_unit/port-in-*` 等（全画布 192×192、仅该端口面板矩形可见）。`PortHighlightRenderer` 重写：每设备一个 Container（layer3Item、position=设备中心、rotation=direction 弧度——与设备 Sprite 同旋转数学），每端口一个 Sprite（帧与主帧同画布 → anchor 0.5 + position 0 面板矩形自动落位；scale=设备尺寸/纹理尺寸）。**白色纹理 × tint = 纯色不透明**：连接 #FFEF00 / 堵塞 #B10000（用户指定色值）；未连接 visible=false。状态判定 `PortStatusOps.ts`（DD-011 纯函数，渲染与 `__game.portStatus` 同源）：connected = A9 §6.7（findFeederBelt/findReceiverBelt）；输入堵 = 队首停门口（≥0.5 非 entering）；输出堵 = 输出槽有货 && 接收带被占；paused 不算堵（连接黄保留）。
+- **图层顺序（第二轮用户反馈修订，从下到上: 物品(进设备)→设备→端口高亮→端口箭头）**：
+  - 箭头层：PortHighlightRenderer 容器内新增 `arrowsSprite`（`refining_unit/arrows` 帧原色 #828080，zIndex 10 > 面板 0）——设备主帧的箭头被染色面板盖住，容器内补画一份在面板之上；仅任一端口已连接（有面板显示）时可见（无面板时设备主帧箭头裸露，无需补画）。
+  - 物品进设备下层：BeltItemRenderer 双层化——`renderProgress > 1.0`（预约制 entering 物品越过段尾边缘走进端口格，T2.6 视觉行程）的物品 Sprite 移挂 `belowItems` 容器（layer2Building 内 zIndex=-1，设备 Sprite 默认 0 之下）→ 物品被设备纹理遮挡 = "走进设备内部"；≤1.0 照旧挂 layer3Item（带身之上）。仅跨越分界时移动父节点（addChild=移动，无每帧开销）。
+- **第三轮用户反馈修订（glow 堵塞变红 + 堵塞箭头变白）**：
+  - glow 层改**白色源 + 运行时 tint**：refining_unit.svg 的 layer-logo-glow 内 path fill #494848 → #ffffff，RenderSystem.applyLogoVisual 给 glow Sprite 设 tint——正常/暂停 0x494848（与原灰 glow 视觉一致）、blocked 0xB10000（第二层 logo 堵塞时变红，与端口堵塞色同值）。
+  - **逐端口箭头帧**：SVG 新增 6 个 `layer-arrow-in/out-{0,1,2}` 隐藏层（arrows-pos-* 组的箭头 path，stroke #828080 → #ffffff，与端口组同 transform）→ 图集 `refining_unit/arrow-in-*` 等 6 帧（白色源）。PortHighlightRenderer 弃整体 arrowsSprite 改逐端口箭头 Sprite（zIndex 10 面板之上，与面板同显隐）：常态 tint 0x828080（原色）、**堵塞 tint 0xffffff 白色**（方向由容器随设备旋转自然保持）；箭头帧缺失的设备自动回退无箭头。
+  - **图集扩容**：+6 箭头帧后 devices 达 37 块，4096² 装不下（shelfPack 需 4096×8192）→ MAX_ATLAS_SIZE 4096 → 8192（WebGL2 现代 GPU MAX_TEXTURE_SIZE 普遍 ≥8192）。
+- **"blocked 时 glow 变红"排查结论（图集缓存）**：逐层排查（图集源帧采样/Sprite 树 tint 检查/隐藏 glow 对照实验）确认磁盘图集与运行时状态全部正常——根因是**浏览器缓存了旧版 devices.png**（其中 logo-glow 帧是历史红色版本、blocked_logo 是旧尺寸），`npm run pack-assets` 后普通刷新仍命中缓存。处置：URL 加查询参数（`localhost:5174/?v=xxx`）或 Ctrl+Shift+R 硬刷新。**改 SVG + 重打包后若画面异常，先硬刷新再排查代码**。
+- **调试钩子**：`__game.setPaused(bool, handle?)`（T2.8 阶段驱动入口，正式入口 T2.15 电源开关）、`__game.portStatus()`（"输入: (6,7) ●红(堵塞)"格式，与画面高亮同源）；productionStatus 头部加 "(已暂停)" 标记（与 LOGO 视觉对照）。一键测试 `__game.test("t28")`：working(原LOGO) → paused(暂停图标+glow 保留+进度冻结采样断言) → 恢复(从暂停处继续) → blocked(红X) → 双端口红(输入满槽停门口+输出满带留槽) → 疏通(LOGO 复原+输入回黄；输出端口疏通后仍红属正常——断头带容量有限)。时序确定性：输入堵停演示放在 blocked 期间（结算暂缓不消耗输入槽，免生产竞争）。
+- **验证**：`scripts/verify-t28-state-visual.ts`（41/41：resolveLogoState 优先级/端口判定含 paused 排除与 90° 对齐/真实 World 暂停冻结·不吸入·entering 放行·不输出·恢复续走·paused+blocked 共存）+ trae 浏览器（chrome-devtools MCP）手动验收（新帧加载/端口面板纯黄 #FFEF00 仅面板区域不透明/暂停图标+glow 保留/红X+双端口 #B10000/疏通回黄/一键测试全过+二次忽略）。CDP 脚本 `verify-t28-state-visual.mjs` 已备（需 9222 独立 Chrome）。
+- **回归**：t23/t24/t25/t26/t27 单测 40/21/45/48/42 全绿，tsc 无错。
 
 ---
 

@@ -25,6 +25,7 @@ import type { BuildingComp, BufferSlot, Direction } from './game/components/Buil
 import { loadItemRegistry } from './game/data/items';
 import { parseRecipeCsv, buildRecipeIndex, formatRecipeSummary } from './game/data/recipes';
 import { createBufferSlots, tryAcceptItem, consumeFromSlot, formatBufferSlots } from './game/systems/machine/BufferOps';
+import { portStatuses, type PortStatus } from './game/systems/machine/PortStatusOps';
 import recipeCsvText from '../doc/csv/recipe.csv?raw';
 import resourceCsvText from '../doc/csv/终末地资源列表 - 自然资源.csv?raw';
 import { SelectionSystem } from './game/systems/SelectionSystem';
@@ -430,6 +431,7 @@ async function main() {
     game.world.addComponent(handle, 'Position', { x: gx * CELL_SIZE, y: gy * CELL_SIZE });
     game.world.addComponent(handle, 'BuildingComp', {
       definitionId: def.id, direction: dir, state: 'idle',
+      paused: false, // T2.8: 玩家手动暂停（默认运行中）
       bufferInput: createBufferSlots(def.inputSlotCount), // T2.4: 放置即建输入缓冲区
       bufferOutput: createBufferSlots(def.outputSlotCount), // T2.5: 输出缓冲区（一槽一物）
       currentRecipeId: null, progress: 0, elapsed: 0, // T2.5: 生产计时字段（放置时无任务）
@@ -781,7 +783,7 @@ async function main() {
         const gx = Math.round(pos.x / CELL_SIZE);
         const gy = Math.round(pos.y / CELL_SIZE);
         const items = (seg.items ?? [])
-          .map((it) => `${itemName(it.itemId)}@${it.progress.toFixed(2)}`)
+          .map((it) => `${itemName(it.itemId)}${it.entering ? '(进设备中)' : ''}@${it.progress.toFixed(2)}`)
           .join(', ');
         return `段${seg.segmentIndex} (${gx},${gy}) ${seg.direction}°${seg.isTail ? ' [尾]' : ''}: ${items || '无物品'}`;
       })
@@ -877,9 +879,11 @@ async function main() {
     const recipe = comp.currentRecipeId !== null
       ? (recipeIndex.get(comp.definitionId) ?? []).find((r) => r.id === comp.currentRecipeId)
       : undefined;
+    // T2.8: paused 是独立于状态机的玩家手动关停，与 LOGO 视觉（优先显示暂停图标）对照
+    const stateLabel = comp.paused ? `${comp.state} (已暂停)` : comp.state;
     const head = recipe
-      ? `${def?.name ?? comp.definitionId}: ${comp.state} | 配方: ${formatRecipeSummary(recipe, itemName)} | 进度: ${(comp.progress * 100).toFixed(1)}% (${comp.elapsed}/${recipe.time}ms)`
-      : `${def?.name ?? comp.definitionId}: ${comp.state} | 无生产任务`;
+      ? `${def?.name ?? comp.definitionId}: ${stateLabel} | 配方: ${formatRecipeSummary(recipe, itemName)} | 进度: ${(comp.progress * 100).toFixed(1)}% (${comp.elapsed}/${recipe.time}ms)`
+      : `${def?.name ?? comp.definitionId}: ${stateLabel} | 无生产任务`;
     return [
       head,
       formatBufferSlots(comp.bufferInput, cap, itemName),
@@ -922,6 +926,43 @@ async function main() {
   /** 最近生产事件（start/settle/blocked/cancel，验收控制台消息用）。 */
   const productionLog = (): Array<{ type: string; message: string }> =>
     machineSystem.recentEvents.map((e) => ({ type: e.type, message: e.message }));
+
+  // ── T2.8 验收钩子: 玩家手动暂停 + 端口连接状态 ──
+  // setPaused(bool, handle?): 置/清设备 paused（正式入口是 T2.15 弹窗电源开关，
+  //   本钩子是 T2.8 阶段的驱动入口）。暂停 = 生产/物流视同离线，LOGO 换深灰暂停图标。
+  const setPaused = (paused: boolean, handle?: EntityHandle): string => {
+    const h = handle ?? firstBuildingHandle();
+    if (h === null || !game.world.isAlive(h)) return '没有已放置的设备';
+    const comp = game.world.getComponent<BuildingComp>(h, 'BuildingComp');
+    if (!comp) return '设备缺少 BuildingComp';
+    comp.paused = paused; // ECS 组件引用直接 mutate 即生效
+    const def = getBuildingDefinition(comp.definitionId);
+    console.log(`[T2.8] ${def?.name ?? comp.definitionId} ${paused ? '已暂停（LOGO→深灰暂停图标，计时停走、不再吞吐）' : '已恢复（LOGO 复原，从暂停处继续）'}`);
+    return productionStatus(h);
+  };
+  /** 端口连接状态一览（渲染层 PortHighlightRenderer 同源判定: connected 黄 / blocked 红）。 */
+  const formatPortStatus = (list: PortStatus[], label: string): string => {
+    if (list.length === 0) return `  ${label}: (无)`;
+    return `  ${label}: ` + list.map((p) => {
+      const cell = `(${p.x},${p.y})`;
+      if (!p.connected) return `${cell} 未连接`;
+      return `${cell} ${p.blocked ? '●红(堵塞)' : '●黄(已连接)'}`;
+    }).join('  ');
+  };
+  const portStatus = (handle?: EntityHandle): string => {
+    const h = handle ?? firstBuildingHandle();
+    if (h === null || !game.world.isAlive(h)) return '没有已放置的设备';
+    const comp = game.world.getComponent<BuildingComp>(h, 'BuildingComp');
+    if (!comp) return '设备缺少 BuildingComp';
+    const def = getBuildingDefinition(comp.definitionId);
+    if (!def) return '未知设备定义';
+    const st = portStatuses(game.world, h, comp, def);
+    return [
+      `${def.name} 端口状态（画面: 黄=已连接 红=堵塞; paused=${comp.paused}）:`,
+      formatPortStatus(st.input, '输入'),
+      formatPortStatus(st.output, '输出'),
+    ].join('\n');
+  };
 
   // ── 测试场景速建（implementation-phase-2.md「测试效率」章节的一键版）──
   // 控制台帮助行是文档（含 → 等非代码符号），整行粘贴会 SyntaxError；
@@ -1010,9 +1051,11 @@ async function main() {
   };
   /** T2.6 一键测试主体（并发/重复保护见 runTest 的 phase 状态机）。
    * 场景: 精炼炉(5,5) + 下方上行传送带×3（喂底中输入端口 6,7）。
-   * 预注满输出槽使设备 blocked——生产结算暂缓、不消耗输入槽，本次验收只看输入对接，时序确定。 */
+   * 预注满输出槽使设备 blocked——生产结算暂缓、不消耗输入槽，本次验收只看输入对接，时序确定。
+   * 吸入语义（2026-08-17 修订"预约制端口格中心"）: 物品走到供给格中心(0.5)预约
+   * （输入槽即 +1）→ 继续前进走进设备半格 → 到端口格中心(1.5)消失。满槽停 0.5。 */
   const demoT26 = async (): Promise<string> => {
-    console.log(`[${ts()}] ════ T2.6 一键测试: 传送带 → 设备输入对接 ════`);
+    console.log(`[${ts()}] ════ T2.6 一键测试: 传送带 → 设备输入对接（预约制·端口格中心吸入） ════`);
     clearAllPlaced();
     if (!placeAt('refining_unit', 5, 5)) return 'T2.6 测试失败: 精炼炉放置失败';
     injectOutput('origocrust', 50); // 输出注满 → 设备 blocked（结算暂缓，输入槽不被生产消耗）
@@ -1020,15 +1063,28 @@ async function main() {
     if (created !== 3) return 'T2.6 测试失败: 传送带创建失败';
     injectBeltItem('originium_ore');
     console.log(`[${ts()}] [步骤1] 场景就绪: 精炼炉(5,5) + 上行传送带×3 → 底中输入端口(6,7)，源矿已上带`);
-    console.log(`[${ts()}] [步骤2] 观察画面: 物品沿传送带向上前进（约 6 秒到门口）→ 到达精炼炉门口时消失`);
+    console.log(`[${ts()}] [步骤2] 观察画面: 物品沿传送带向上前进（约 6 秒到门口 0.5）→ 预约进槽 → 走进设备半格深处 → 到端口格中心(1.5)消失`);
     const absorbed = await waitFor(() => (firstComp()?.bufferInput[0].count ?? 0) >= 1, 15000);
     if (!absorbed) {
       console.log(`[${ts()}] T2.6 测试失败: 15 秒内物品未被吸入——仿真时钟未推进？页面在后台被深度节流时请切到前台再试`);
       return 'T2.6 测试失败: 物品未被吸入输入槽（仿真未推进？）';
     }
-    console.log(`[${ts()}] [步骤3] 物品消失并进入输入槽（上方 [T2.6 物流] 即吸入消息）:\n${inputBuffer()}`);
+    // 预约即 +1，物品应正在走进设备（下一 Tick 起越过 0.5 继续前进，entering 标记）
+    const walkingIn = await waitFor(() => (tailHeadItem()?.progress ?? 0) > 0.51, 3000);
+    const walking = tailHeadItem();
+    if (!walkingIn || !walking) {
+      console.log(`[${ts()}] T2.6 测试失败: 预约后物品未走进设备（应越过 0.5 前进）:\n${beltStatus()}`);
+      return 'T2.6 测试失败: 预约后物品未前进';
+    }
+    console.log(`[${ts()}] [步骤3] 物品在门口(0.5)预约进槽（输入槽已 +1），正走进设备（progress=${walking.progress.toFixed(2)} → 1.5 处消失）`);
+    const vanished = await waitFor(() => tailHeadItem() === null, 8000); // 0.5→1.5 需 40 Tick(2 秒)
+    if (!vanished) {
+      console.log(`[${ts()}] T2.6 测试失败: 预约物品未在端口格中心消失（8 秒内）:\n${beltStatus()}`);
+      return 'T2.6 测试失败: 物品未消失在端口格中心';
+    }
+    console.log(`[${ts()}] [步骤4] 物品到达端口格中心消失，已进入输入槽（上方 [T2.6 物流] 即吸入消息）:\n${inputBuffer()}`);
 
-    console.log(`[${ts()}] [步骤4] 注满输入槽 50/50，再放一个源矿 → 物品应停在精炼炉门口`);
+    console.log(`[${ts()}] [步骤5] 注满输入槽 50/50，再放一个源矿 → 物品应停在供给格中心（精炼炉门口）`);
     injectInput('originium_ore', 49);
     injectBeltItem('originium_ore');
     const stopped = await waitFor(() => {
@@ -1042,19 +1098,19 @@ async function main() {
     await sleep(700); // 停稳观察: progress 应保持 0.50 不动
     const parked = tailHeadItem();
     console.log(
-      `[${ts()}] [步骤5] 物品停在精炼炉门口（progress=${parked?.progress.toFixed(2)} 不再前进，输入槽满）:\n${beltStatus()}`,
+      `[${ts()}] [步骤6] 物品停在精炼炉门口供给格中心（progress=${parked?.progress.toFixed(2)} 不再前进，输入槽满）:\n${beltStatus()}`,
     );
-    console.log(`[${ts()}] [步骤6] consumeInput(1) 腾出空位（模拟生产消耗）→ 门口物品应立即被吸入`);
+    console.log(`[${ts()}] [步骤7] consumeInput(1) 腾出空位（模拟生产消耗）→ 门口物品应立即被预约并走进设备`);
     consumeInput(1);
     const resumed = await waitFor(() => {
       const c = firstComp();
       return c !== null && (c.bufferInput[0].count ?? 0) >= 50 && (tailHeadItem() === null);
-    }, 5000);
+    }, 8000);
     if (!resumed) {
       console.log(`[${ts()}] T2.6 测试失败: 疏通后物品未被吸入:\n${beltStatus()}\n${inputBuffer()}`);
       return 'T2.6 测试失败: 疏通后物品未被吸入';
     }
-    console.log(`[${ts()}] [步骤7] 疏通后门口物品被吸入，输入槽回满:\n${inputBuffer()}`);
+    console.log(`[${ts()}] [步骤8] 疏通后门口物品被预约、走进设备并消失，输入槽回满:\n${inputBuffer()}`);
     console.log(`[${ts()}] ════ T2.6 一键测试完成 ════`);
     return 'T2.6 一键测试完成（关键输出见控制台 [T2.6 物流] / [步骤N] 日志）';
   };
@@ -1134,6 +1190,100 @@ async function main() {
     return 'T2.7 一键测试完成（关键输出见控制台 [T2.7 物流] / [步骤N] 日志）';
   };
 
+  /** 指定类型端口当前是否有堵塞（portStatuses 同源判定，T2.8 一键测试用）。 */
+  const portBlockedNow = (kind: 'input' | 'output'): boolean => {
+    const h = firstBuildingHandle();
+    if (h === null) return false;
+    const comp = game.world.getComponent<BuildingComp>(h, 'BuildingComp');
+    if (!comp) return false;
+    const def = getBuildingDefinition(comp.definitionId);
+    if (!def) return false;
+    const st = portStatuses(game.world, h, comp, def);
+    return (kind === 'input' ? st.input : st.output).some((p) => p.blocked);
+  };
+  /** T2.8 一键测试主体（并发/重复保护见 runTest 的 phase 状态机）。
+   * 场景: 精炼炉(5,5) + 下行输入带×3（→底中输入口 6,7）+ 上行输出带×3（顶中输出口 6,5→）。
+   * 演示序列（每步观察节奏对齐 t27 经验）:
+   *   working(原LOGO) → paused(深灰图标·计时冻结) → 恢复 → blocked(红X·双端口红)
+   *   → 疏通(LOGO复原·端口回黄) → 输入满槽堵停(输入口红) → 疏通回黄。
+   * 时序确定性: blocked 期间结算暂缓不消耗输入槽（A8 §2.2）→ 输入堵停演示不受生产消耗竞争。 */
+  const demoT28 = async (): Promise<string> => {
+    console.log(`[${ts()}] ════ T2.8 一键测试: 设备状态机与终末地风格状态视觉 ════`);
+    clearAllPlaced();
+    if (!placeAt('refining_unit', 5, 5)) return 'T2.8 测试失败: 精炼炉放置失败';
+    if (spawnBelt([[6, 10], [6, 9], [6, 8]], 270) !== 3) return 'T2.8 测试失败: 输入传送带创建失败';
+    if (spawnBelt([[6, 4], [6, 3], [6, 2]], 270) !== 3) return 'T2.8 测试失败: 输出传送带创建失败';
+    injectInput('originium_ore', 10);
+    injectBeltItem('originium_ore');
+    console.log(`[${ts()}] [步骤1] 场景就绪: 精炼炉(5,5) + 下行输入带×3(→底中输入口 6,7) + 上行输出带×3(顶中输出口 6,5→)，源矿已上带`);
+    const working = await waitFor(() => firstComp()?.state === 'working', 8000);
+    if (!working) {
+      console.log(`[${ts()}] T2.8 测试失败: 设备未进入 working——仿真时钟未推进（页面在后台被深度节流？切到前台再试）`);
+      return 'T2.8 测试失败: 设备未进入 working';
+    }
+    console.log(
+      `[${ts()}] [步骤2] 生产中(working): 顶层 LOGO 保持原样。观察画面: 输入/输出端口格黄色高亮(已连接)，` +
+      `源矿流进设备、晶体外壳流上输出带。端口状态:\n${portStatus()}`,
+    );
+    await sleep(4000);
+
+    // ── 暂停演示: LOGO 深灰 + 计时冻结 ──
+    console.log(`[${ts()}] [步骤3] setPaused(true) → 顶层 LOGO 变深灰暂停图标（两竖条）`);
+    setPaused(true);
+    const frozenP = firstComp()?.progress ?? 0;
+    await sleep(1500);
+    if ((firstComp()?.progress ?? 0) !== frozenP) {
+      console.log(`[${ts()}] T2.8 测试失败: 暂停期间计时仍在推进`);
+      return 'T2.8 测试失败: 暂停期间计时仍在推进';
+    }
+    console.log(`[${ts()}] [步骤4] 暂停生效: 进度冻结在 ${(frozenP * 100).toFixed(1)}%（1.5 秒采样不变），不吸入不输出（物流视同离线）:\n${productionStatus()}`);
+    await sleep(2500); // 观察深灰图标
+    console.log(`[${ts()}] [步骤5] setPaused(false) → LOGO 复原，从暂停处继续`);
+    setPaused(false);
+    const resumedOk = await waitFor(() => firstComp()?.state === 'working', 6000);
+    if (!resumedOk) {
+      console.log(`[${ts()}] T2.8 测试失败: 恢复后未继续生产:\n${productionStatus()}`);
+      return 'T2.8 测试失败: 恢复后未继续生产';
+    }
+    console.log(`[${ts()}] [步骤6] 恢复生产(working)，计时从暂停处继续（进度大于冻结值 ${(frozenP * 100).toFixed(1)}%）:\n${productionStatus()}`);
+    await sleep(1500);
+
+    // ── blocked 演示: LOGO 红 X + 双端口红 ──
+    console.log(`[${ts()}] [步骤7] 注满输出槽(×50) → 下次结算暂缓 → 顶层 LOGO 变红 X（blocked）`);
+    injectOutput('origocrust', 50);
+    const blocked = await waitFor(() => firstComp()?.state === 'blocked', 8000);
+    if (!blocked) {
+      console.log(`[${ts()}] T2.8 测试失败: 8 秒内未进入 blocked:\n${productionStatus()}`);
+      return 'T2.8 测试失败: 未进入 blocked';
+    }
+    console.log(`[${ts()}] [步骤8] blocked: 结算暂缓、原料未扣（上方 [T2.5 生产] blocked 消息），LOGO 红 X。`);
+    console.log(`[${ts()}] [步骤9] 注满输入槽(×50) + 再放一个源矿 → 物品停在门口 → 输入端口格变红；输出带被产物填满 → 输出端口格变红（观察约 8 秒，两处红 + 红 X LOGO）`);
+    injectInput('originium_ore', 50);
+    injectBeltItem('originium_ore');
+    const bothJam = await waitFor(
+      () => portBlockedNow('input') && portBlockedNow('output'), 20000,
+    );
+    if (!bothJam) {
+      console.log(`[${ts()}] T2.8 测试失败: 20 秒内未观察到双端口堵塞:\n${portStatus()}\n${beltStatus()}`);
+      return 'T2.8 测试失败: 双端口堵塞未出现';
+    }
+    console.log(`[${ts()}] [步骤10] 双端口红（输入=物品停门口 / 输出=满带留槽）:\n${portStatus()}`);
+    await sleep(4000); // 停稳观察
+
+    // ── 疏通: LOGO 复原 + 端口回黄 ──
+    console.log(`[${ts()}] [步骤11] consumeOutput(50) 疏通输出 → blocked 解除（LOGO 复原）；生产恢复消耗输入 → 门口物品进门（输入端口回黄）`);
+    consumeOutput(50);
+    const unblocked = await waitFor(() => firstComp()?.state !== 'blocked', 6000);
+    const inputClear = await waitFor(() => !portBlockedNow('input'), 8000);
+    if (!unblocked || !inputClear) {
+      console.log(`[${ts()}] T2.8 测试失败: 疏通后未恢复:\n${productionStatus()}\n${portStatus()}`);
+      return 'T2.8 测试失败: 疏通后未恢复';
+    }
+    console.log(`[${ts()}] [步骤12] 疏通完成: LOGO 复原、输入端口回黄（门口物品已进门）。输出端口如仍红属正常——断头带容量有限，产物满带留槽:\n${portStatus()}`);
+    console.log(`[${ts()}] ════ T2.8 一键测试完成 ════`);
+    return 'T2.8 一键测试完成（关键输出见控制台 [T2.8] / [步骤N] 日志，画面: LOGO 状态图标 + 端口黄/红高亮）';
+  };
+
   /**
    * 一键测试入口（含重复调用保护）。可用: 't25'（生产计时与生产循环）、't26'（传送带→设备输入对接）。
    *
@@ -1165,7 +1315,9 @@ async function main() {
     }
     return `已忽略（${hint}）`;
   };
-  const TESTS: Record<string, () => Promise<string>> = { t25: demoT25, t26: demoT26, t27: demoT27 };
+  const TESTS: Record<string, () => Promise<string>> = {
+    t25: demoT25, t26: demoT26, t27: demoT27, t28: demoT28,
+  };
   const runTest = async (name: string): Promise<string> => {
     const demo = TESTS[name];
     if (!demo) return `未知测试 '${name}'（可用: ${Object.keys(TESTS).join(', ')}）`;
@@ -1246,6 +1398,8 @@ async function main() {
     injectOutput,
     consumeOutput,
     productionLog,
+    setPaused, // T2.8: 玩家手动暂停（正式入口 T2.15 电源开关）
+    portStatus, // T2.8: 端口连接/堵塞状态（渲染高亮同源判定）
     test: runTest,
   };
 
@@ -1268,6 +1422,8 @@ async function main() {
   console.log('  T2.6 手动: placeAt("refining_unit",5,5) → spawnBelt([[6,9],[6,8]],270) 带尾指向底中输入端口 → injectBeltItem("originium_ore") → 物品到门口消失、inputBuffer() +1; injectInput(...,49) 注满 → 物品停在门口(beltStatus() 查 @0.50) → consumeInput(1) 疏通吸入');
   console.log('  T2.7 一键测试: __game.test("t27")  ← 复制这一条到控制台回车即可（放炉+输出端口铺带+产物一格一件上带流动+满带留槽+疏通恢复演示，场景切换有预告）');
   console.log('  T2.7 手动: placeAt("refining_unit",5,5) → spawnBelt([[6,4],[6,3]],270) 首段入口朝向顶中输出端口(6,5) → injectOutput("origocrust",5) → 物品逐件出现在带首、一格一件前进(productionStatus() 查输出槽递减); 1格断头带+5件 → 带上1件即满、输出槽留4件 → consumeBeltTailItem() 疏通继续出货');
+  console.log('  T2.8 一键测试: __game.test("t28")  ← 复制这一条到控制台回车即可（LOGO 状态图标: 暂停深灰/堵塞红X + 端口黄/红高亮全流程演示）');
+  console.log('  T2.8 手动: setPaused(true/false) 手动暂停/恢复（LOGO 换图标、计时冻结） → portStatus() 查端口连接黄/堵塞红（与画面高亮同源） → productionStatus() 对照 "(已暂停)" 标记');
 }
 
 main().catch((err) => {

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- T2.8 暂停状态徽标: 深灰暂停图标（玩家手动暂停时替换设备 billboard LOGO）。
+     画布与 refining_unit.svg 同尺寸（50.8×50.8 = 3×3 设备帧），图标居中约 40% 尺度
+     —— logo 子 Sprite scale=1 继承父缩放，帧尺寸与主帧一致 → 显示大小与原 LOGO 对齐。
+     深灰 #494848 与 Refining_Unit_Logo.svg 同色系。 -->
+
+<svg
+   width="57"
+   height="57"
+   viewBox="0 0 15.08125 15.08125"
+   version="1.1"
+   id="svg1"
+   sodipodi:docname="Pause_Logo.svg"
+   xml:space="preserve"
+   inkscape:version="1.4.4 (dcaf3e7, 2026-05-05)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"><defs
+     id="defs2" /><sodipodi:namedview
+     id="namedview2"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="3.0390625"
+     inkscape:cx="-115.82519"
+     inkscape:cy="28.462725"
+     inkscape:window-width="3440"
+     inkscape:window-height="1369"
+     inkscape:window-x="-8"
+     inkscape:window-y="1072"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg1" /><style
+     type="text/css"
+     id="style1">
+	.st0{fill-rule:evenodd;clip-rule:evenodd;}
+</style><g
+     id="Pause"
+     inkscape:label="Pause"
+     style="fill:#494848;fill-opacity:1"
+     transform="scale(0.29687501)"><path
+       id="path2"
+       style="display:inline;fill:#494848;fill-opacity:1;stroke:none;stroke-width:2.13966;stroke-linecap:square;stroke-linejoin:round;stroke-dasharray:17.1173, 2.13966;stroke-opacity:1"
+       d="M 25.399999,0 A 25.399996,25.399996 0 0 0 0,25.399999 a 25.399996,25.399996 0 0 0 25.399999,25.4 25.399996,25.399996 0 0 0 25.4,-25.4 A 25.399996,25.399996 0 0 0 25.399999,0 Z m 0,2.5398966 A 22.859997,22.859997 0 0 1 48.260102,25.399999 22.859997,22.859997 0 0 1 25.399999,48.260102 22.859997,22.859997 0 0 1 2.5398966,25.399999 22.859997,22.859997 0 0 1 25.399999,2.5398966 Z" /><path
+       id="rect3"
+       style="display:inline;fill:#494848;fill-opacity:1;stroke:none;stroke-width:1.23976;stroke-linecap:square;stroke-linejoin:round;stroke-dasharray:9.91809, 1.23976;stroke-opacity:1"
+       d="m 16.028478,11.948882 v 26.902235 h 5.291667 V 11.948882 Z m 13.451376,0 V 38.851117 H 34.77152 V 11.948882 Z" /></g></svg>

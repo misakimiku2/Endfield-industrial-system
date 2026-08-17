@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- T2.8 暂停状态徽标: 深灰暂停图标（玩家手动暂停时替换设备 billboard LOGO）。
+     画布与 refining_unit.svg 同尺寸（50.8×50.8 = 3×3 设备帧），图标居中约 40% 尺度
+     —— logo 子 Sprite scale=1 继承父缩放，帧尺寸与主帧一致 → 显示大小与原 LOGO 对齐。
+     深灰 #494848 与 Refining_Unit_Logo.svg 同色系。 -->
+
+<svg
+   width="57"
+   height="57"
+   viewBox="0 0 15.08125 15.08125"
+   version="1.1"
+   id="svg1"
+   sodipodi:docname="Blocked_Logo.svg"
+   xml:space="preserve"
+   inkscape:version="1.4.4 (dcaf3e7, 2026-05-05)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"><defs
+     id="defs2" /><sodipodi:namedview
+     id="namedview2"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="6.078125"
+     inkscape:cx="-27.969152"
+     inkscape:cy="24.760925"
+     inkscape:window-width="3440"
+     inkscape:window-height="1369"
+     inkscape:window-x="-8"
+     inkscape:window-y="1072"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="Pause" /><style
+     type="text/css"
+     id="style1">
+	.st0{fill-rule:evenodd;clip-rule:evenodd;}
+</style><g
+     id="Pause"
+     inkscape:label="Pause"
+     style="fill:#494848;fill-opacity:1"
+     transform="scale(0.29687501)"><path
+       id="path2"
+       style="display:inline;fill:#b10000;fill-opacity:1;stroke:none;stroke-width:2.13966;stroke-linecap:square;stroke-linejoin:round;stroke-dasharray:17.1173, 2.13966;stroke-opacity:1"
+       d="M 25.399999,0 A 25.399996,25.399996 0 0 0 0,25.399999 a 25.399996,25.399996 0 0 0 25.399999,25.4 25.399996,25.399996 0 0 0 25.4,-25.4 A 25.399996,25.399996 0 0 0 25.399999,0 Z m 0,2.5398966 A 22.859997,22.859997 0 0 1 48.260102,25.399999 22.859997,22.859997 0 0 1 25.399999,48.260102 22.859997,22.859997 0 0 1 2.5398966,25.399999 22.859997,22.859997 0 0 1 25.399999,2.5398966 Z" /><path
+       id="Close_button"
+       style="display:inline;fill:#b10000;fill-opacity:1;stroke:none;stroke-width:0.0999712;stroke-linejoin:bevel;stroke-opacity:1"
+       d="M 3.5356736,4.3366545 6.7396216,7.5406121 7.5406489,6.7396211 4.3366732,3.5356664 Z M 7.5406489,6.7396211 8.3416304,7.5406121 11.545579,4.3366545 10.744597,3.5356664 Z m 0.8009815,0.800991 -0.8009815,0.8009883 3.2039481,3.2039546 0.800982,-0.800988 z M 7.5406489,8.3416004 6.7396216,7.5406121 3.5356736,10.744567 4.3366542,11.545555 Z"
+       transform="scale(3.368421)" /></g></svg>

@@ -20,17 +20,19 @@
 // 纹理查找通过注入的 getTexture 函数（来自 AssetsLoader），使本类不直接 import
 //   AssetsLoader，便于单测用 mock。
 
-import { Sprite, Texture, type Container } from 'pixi.js';
+import { Sprite, Texture, Graphics, Container } from 'pixi.js';
 import type { World, EntityHandle } from '../ECS';
 import type { Position } from '../components/Position';
 import type { SpriteComp } from '../components/SpriteComp';
-import type { BuildingComp } from '../components/BuildingComp';
+import type { BuildingComp, LogoVisualState } from '../components/BuildingComp';
+import { resolveLogoState } from '../components/BuildingComp';
 import type { BeltSegmentComp } from '../components/BeltSegmentComp';
 import { beltTextureRotation, beltCornerTransform } from './belt/BeltPathGeometry';
 import { BeltPointerRenderer } from '../render/BeltPointerRenderer';
 import { BeltVectorRenderer } from '../render/BeltVectorRenderer';
 import { BeltItemRenderer } from '../render/BeltItemRenderer';
 import { BeltHoverRenderer } from '../render/BeltHoverRenderer';
+import { PortHighlightRenderer } from '../render/PortHighlightRenderer';
 import type { BeltSelection } from './belt/BeltSelection';
 import type { AtlasGroup } from '../render/AssetsLoader';
 import type { SceneLayers } from '../render/SceneRenderer';
@@ -42,8 +44,24 @@ export type TextureLookup = (group: AtlasGroup, key: string) => Texture | undefi
 /** 缓存单个实体的渲染态：Sprite + 上次绑定用的 SpriteComp 摘要（变更时重建）。 */
 interface SpriteEntry {
   sprite: Sprite;
-  /** billboard 徽标子 Sprite，保持屏幕朝上；无徽标时为 undefined。 */
+  /**
+   * billboard 徽标子 Sprite（保持屏幕朝上）；无徽标时为 undefined。
+   * T2.8 修订: 此层承载 LOGO 的**半透明 glow 底层**（refining_unit/logo-glow，状态切换不换），
+   * 同时作为 logoMain 的旋转锚点容器（billboard 反向旋转挂在这层，主体作为子节点跟随）。
+   */
   logo?: Sprite;
+  /**
+   * T2.8: LOGO 的**不透明主体层**（refining_unit/logo）。状态切换（paused/blocked）只换
+   * 这层纹理——用户拍板"替换上层不透明的设备 logo，下方半透明 glow 不替换"。
+   * 无徽标设备为 undefined。
+   */
+  logoMain?: Sprite;
+  /** T2.8: 上次应用的 LOGO 视觉状态——仅在状态转换时换纹理（低频，无每帧开销）。 */
+  logoState?: LogoVisualState;
+  /** T2.8: 暂停徽标程序化兜底（素材缺失时显示，logoMain 的子节点跟随旋转）。 */
+  pauseFallback?: Graphics;
+  /** T2.8: 堵塞徽标程序化兜底。 */
+  blockedFallback?: Graphics;
   /** 上次绑定时的纹理标识；SpriteComp 的 group/textureKey 变了要换纹理。 */
   group: AtlasGroup;
   textureKey: string;
@@ -55,6 +73,23 @@ interface SpriteEntry {
 
 /** 视口剔除的安全边距（世界像素）。让刚出屏的实体多保留一段距离再剔除，避免边缘闪烁。 */
 const CULL_PADDING = 128;
+
+/** T2.8 状态徽标纹理 key（devices 图集，Pause_Logo.svg / Blocked_Logo.svg）。 */
+const PAUSED_LOGO_KEY = 'pause_logo';
+const BLOCKED_LOGO_KEY = 'blocked_logo';
+/**
+ * T2.8 glow 层 tint（glow 帧 2026-08-18 改为白色源，颜色全部由 tint 控制）：
+ * 正常/暂停 = 深灰 #494848（与原 SVG 灰 glow 视觉一致）；堵塞 = 红 #B10000
+ * （用户要求"堵塞时第二层 logo 也变红"，与端口堵塞色同值）。
+ */
+const GLOW_TINT_NORMAL = 0x494848;
+const GLOW_TINT_BLOCKED = 0xb10000;
+
+/**
+ * T2.8 状态徽标程序化兜底的绘制范围（logo Sprite 本地坐标，帧中心为原点）。
+ * 与 SVG 素材图标区域同尺度（约帧宽 40%），素材缺失时视觉不缺位。
+ */
+const FALLBACK_SPAN = 34;
 
 /**
  * 传送带 sprite 是否对齐屏幕整数像素。
@@ -98,6 +133,8 @@ export class RenderSystem {
   private readonly beltVectorRenderer: BeltVectorRenderer;
   /** 传送带悬停高亮渲染器（橙色四角 L 形 + 呼吸）。挂在 layer2Building。 */
   private readonly beltHoverRenderer: BeltHoverRenderer;
+  /** 端口连接高亮渲染器（T2.8: 连接黄 #FFEF00 / 堵塞红）。挂在 layer3Item（盖过设备纹理）。 */
+  private readonly portHighlightRenderer: PortHighlightRenderer;
   /** 从游戏开始累积的总毫秒数，驱动 pointer 相位与 hover 呼吸。由 update(deltaMS) 累积。 */
   private elapsedMS = 0;
 
@@ -112,9 +149,16 @@ export class RenderSystem {
     this.camera = camera;
     this.getTexture = getTexture;
     this.pointerRenderer = new BeltPointerRenderer(world, layers.layer3Item, getTexture);
-    this.beltItemRenderer = new BeltItemRenderer(world, layers.layer3Item, getTexture);
+    // T2.8 层级修订（从下到上: 物品(进设备)→设备→端口高亮→箭头）:
+    // belowItems 挂 layer2Building 且 zIndex=-1（设备 Sprite 默认 0）→ 走进设备的
+    // 物品（progress>1.0）画在设备纹理之下，被设备遮挡 = "走进设备内部"。
+    const belowItems = new Container({ label: 'belowItems' });
+    belowItems.zIndex = -1;
+    layers.layer2Building.addChild(belowItems);
+    this.beltItemRenderer = new BeltItemRenderer(world, layers.layer3Item, belowItems, getTexture);
     this.beltVectorRenderer = new BeltVectorRenderer(world, layers.layer2Building);
     this.beltHoverRenderer = new BeltHoverRenderer(world, camera, layers.layer2Building);
+    this.portHighlightRenderer = new PortHighlightRenderer(world, layers.layer3Item, getTexture);
   }
 
   /**
@@ -213,6 +257,15 @@ export class RenderSystem {
       // billboard 徽标：反向旋转以保持屏幕朝上
       if (entry.logo) {
         entry.logo.rotation = this.camera.displayRotation - sprite.rotation;
+        // T2.8 状态视觉: 按设备状态换 LOGO 纹理（paused 深灰暂停 / blocked 红X）。
+        // 仅在状态转换时换纹理（低频），正常态不产生任何开销。
+        if (building) {
+          const st = resolveLogoState(building.paused, building.state);
+          if (st !== entry.logoState) {
+            entry.logoState = st;
+            this.applyLogoVisual(entry, spr, st);
+          }
+        }
       }
 
       // 视口剔除: 实体世界 AABB 与可见范围无交集 → 隐藏
@@ -227,6 +280,8 @@ export class RenderSystem {
     this.beltItemRenderer.update(alpha);
     // 传送带悬停高亮（橙色四角 L 形 + 呼吸）
     this.beltHoverRenderer.update(this.elapsedMS);
+    // 端口连接高亮（T2.8: 连接黄 / 堵塞红，逐端口半透明覆盖）
+    this.portHighlightRenderer.update();
   }
 
   /** 销毁所有 Sprite（场景切换/ teardown 用）。实体本身不动（由 ECS 管理）。 */
@@ -237,6 +292,7 @@ export class RenderSystem {
     this.pointerRenderer.destroy();
     this.beltItemRenderer.destroy();
     this.beltHoverRenderer.destroy();
+    this.portHighlightRenderer.destroy();
   }
 
   /** 当前管理的 Sprite entry 数（T1.10 性能/内存监控用）。 */
@@ -268,23 +324,84 @@ export class RenderSystem {
     sprite.scale.set(baseScaleX, baseScaleY);
     this.layerContainer(spr.layer).addChild(sprite);
 
-    // 可选 billboard 徽标层：作为子 Sprite 叠加，并在 update 中反向旋转保持屏幕朝上
-    // 注意：这里 scale 保持 1，让 logo 继承父 Sprite 的缩放；若单独设置 width/height 会再被父缩放一次导致过小
+    // 可选 billboard 徽标层（T2.8 修订为双层结构）：
+    //   logo（本层）= 半透明 glow 底层（`${logoTextureKey}-glow`，状态切换**不换**），
+    //                同时是 billboard 旋转锚点容器——反向旋转写在这层，主体子节点跟随。
+    //   logoMain（子层）= 不透明主体（logoTextureKey）——paused/blocked 时只替换这层。
+    // 注意：scale 保持 1，两层继承父 Sprite 缩放；帧均与主帧同画布 → anchor 0.5 自然对齐。
     let logo: Sprite | undefined;
+    let logoMain: Sprite | undefined;
+    let pauseFallback: Graphics | undefined;
+    let blockedFallback: Graphics | undefined;
     if (spr.logoTextureKey) {
-      const logoTex = this.getTexture(spr.group, spr.logoTextureKey) ?? Texture.EMPTY;
-      logo = new Sprite(logoTex);
+      const glowTex = this.getTexture(spr.group, `${spr.logoTextureKey}-glow`) ?? Texture.EMPTY;
+      logo = new Sprite(glowTex);
       logo.anchor.set(0.5);
       logo.scale.set(1);
       sprite.addChild(logo);
+
+      const mainTex = this.getTexture(spr.group, spr.logoTextureKey) ?? Texture.EMPTY;
+      logoMain = new Sprite(mainTex);
+      logoMain.anchor.set(0.5);
+      logoMain.scale.set(1);
+      logo.addChild(logoMain);
+
+      // T2.8 状态徽标程序化兜底（InventoryUI 占位图先例）: 素材缺失时 Graphics 直画。
+      // 挂 logoMain（替换的是主体层），默认隐藏，applyLogoVisual 按需切换。
+      const s = FALLBACK_SPAN;
+      pauseFallback = new Graphics({ label: 'pauseLogoFallback' });
+      pauseFallback
+        .rect(-s * 0.88, -s, s * 0.5, s * 2)
+        .rect(s * 0.38, -s, s * 0.5, s * 2)
+        .fill({ color: 0x494848 }); // 深灰（与 Pause_Logo.svg 同色）
+      pauseFallback.visible = false;
+      logoMain.addChild(pauseFallback);
+
+      blockedFallback = new Graphics({ label: 'blockedLogoFallback' });
+      blockedFallback
+        .moveTo(-s, -s).lineTo(s, s)
+        .moveTo(s, -s).lineTo(-s, s)
+        .stroke({ width: s * 0.5, color: 0xe53935, cap: 'round' }); // 红 X（与 Blocked_Logo.svg 同色）
+      blockedFallback.visible = false;
+      logoMain.addChild(blockedFallback);
     }
 
-    return { sprite, logo, group: spr.group, textureKey: spr.textureKey, layer: spr.layer, baseScaleX, baseScaleY };
+    return {
+      sprite, logo, logoMain, pauseFallback, blockedFallback,
+      group: spr.group, textureKey: spr.textureKey, layer: spr.layer, baseScaleX, baseScaleY,
+    };
+  }
+
+  /**
+   * T2.8: 应用 LOGO 视觉状态——paused/blocked 只换**主体层**（logoMain）纹理；
+   * glow 底层纹理不变，但 tint 跟随状态（白源 glow 帧 × tint）:
+   * 正常/暂停 = 深灰（原 glow 视觉）、堵塞 = 红（用户要求第二层也变红）。
+   * 纹理缺失（如素材未打包）时置 EMPTY 并显示程序化兜底 Graphics，视觉不缺位。
+   * 仅在状态转换时调用（update 中 logoState 变更检测）。
+   */
+  private applyLogoVisual(entry: SpriteEntry, spr: SpriteComp, st: LogoVisualState): void {
+    if (!entry.logoMain) return;
+    const key =
+      st === 'paused' ? PAUSED_LOGO_KEY :
+      st === 'blocked' ? BLOCKED_LOGO_KEY :
+      spr.logoTextureKey;
+    const tex = key ? this.getTexture(spr.group, key) : undefined;
+    entry.logoMain.texture = tex ?? Texture.EMPTY;
+    // glow 底层染色（白色源帧 × tint）
+    if (entry.logo) {
+      entry.logo.tint = st === 'blocked' ? GLOW_TINT_BLOCKED : GLOW_TINT_NORMAL;
+    }
+    if (entry.pauseFallback) {
+      entry.pauseFallback.visible = st === 'paused' && !tex;
+    }
+    if (entry.blockedFallback) {
+      entry.blockedFallback.visible = st === 'blocked' && !tex;
+    }
   }
 
   private disposeEntry(entry: SpriteEntry): void {
     entry.logo?.removeFromParent();
-    entry.logo?.destroy();
+    entry.logo?.destroy({ children: true }); // 连同 T2.8 fallback 子节点一并销毁
     const sprite = entry.sprite;
     sprite.removeFromParent();
     sprite.destroy();

@@ -26,6 +26,22 @@ export type Direction = 0 | 90 | 180 | 270;
 export type MachineState = 'idle' | 'working' | 'blocked';
 
 /**
+ * billboard LOGO 的视觉状态 (T2.8)。由 resolveLogoState 从 (paused, state) 派生：
+ * normal = 设备主体纹理 + 原 LOGO；paused = 深灰暂停图标；blocked = 红 X 图标。
+ */
+export type LogoVisualState = 'normal' | 'paused' | 'blocked';
+
+/**
+ * LOGO 视觉状态解析 (T2.8)：paused 与 blocked 同时成立时优先显示暂停图标
+ * （玩家主动操作意图优先于被动暂缓，implementation-phase-2.md T2.8 需求1）。
+ */
+export function resolveLogoState(paused: boolean, state: MachineState): LogoVisualState {
+  if (paused) return 'paused';
+  if (state === 'blocked') return 'blocked';
+  return 'normal';
+}
+
+/**
  * 缓冲区槽位 (A3 §3、A8 §2)。
  * 输入槽: itemId === null 表示空/未锁定；非 null 表示锁定该类型（只进同类），
  *   count 降为 0 时解锁 (A8 §2.1)。
@@ -52,6 +68,13 @@ export interface BuildingComp {
    * 设备状态 (A3 §4 状态机，A8 §6)。由 MachineSystem 在生产循环中迁移。
    */
   state: MachineState;
+  /**
+   * 玩家手动暂停 (T2.8)。true = 生产/物流视同离线：不推进计时（已走进度保留，
+   * 恢复后从暂停处继续）、不吸入输入、不输出产物；已预约(entering)物品仍放行完成
+   * 视觉行程（槽位早在预约时占用）。与 blocked 互独立——blocked 是输出满被动暂缓，
+   * paused 是玩家主动关停。正式入口是设备弹窗电源开关 (T2.15)，当前由调试钩子驱动。
+   */
+  paused: boolean;
   /**
    * 输入缓冲区 (A8 §2.1，T2.4)。长度 = BuildingDefinition.inputSlotCount，
    * 放置时初始化为全空槽，生产系统运行期间读写。
