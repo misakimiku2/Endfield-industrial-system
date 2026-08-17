@@ -10,7 +10,7 @@
 //     2. injectOutput 晶体外壳×5 → 物品逐件出现在带首（输出槽递减 + [T2.7 物流] 输出消息）
 //     3. 物品沿带前进 → 跨段 → 停在断头链尾 0.50（beltStatus 观察）
 //   满带留槽:
-//     4. 1 格断头带 + 5 件 → 带上堆 2 件(0.50/0.25) → 其余 3 件留在输出槽（停稳不变）
+//     4. 1 格断头带 + 5 件 → 带上 1 件@0.50 即满（一格一物品）→ 其余 4 件留在输出槽（停稳不变）
 //   疏通恢复:
 //     5. consumeBeltTailItem() 取走 1 件 → 输出槽物品继续上带（数量递减）
 //   方向判定:
@@ -119,28 +119,30 @@ try {
   // 物品沿带前进: 跨段到断头链尾停 0.50（首段注入 → 1.5 格行程 ≈ 3 秒）
   const atTail = await waitUntil(cdp, `(() => { const p = ${tailHeadProgress}; return p !== null && p >= 0.49; })()`, 15000);
   check('3a. 物品沿带前进跨段，停在断头链尾 0.50', atTail, await evalJs(cdp, `__game.beltStatus()`));
-  const c1 = await evalJs(cdp, outputCount);
-  await sleep(2500);
-  const c2 = await evalJs(cdp, outputCount);
-  check('3b. 连续出货（输出槽随物品上带递减）', c2 < c1 || c2 === 0, `×${c1} → ×${c2}`);
+  // 连续出货至带满: 2 格带饱和于 2 件（一格一件@0.5），输出槽停在 ×3
+  const saturated = await waitUntil(cdp, `(() => ${outputCount} === 3 && ${beltItemCount} === 2)()`, 15000);
+  check('3b. 连续出货至带满（每格恰 1 件，输出槽停在 ×3）', saturated,
+    `输出槽 ×${await evalJs(cdp, outputCount)}`, );
+  check('3b2. 每段恰 1 件（一格一物品）', (await evalJs(cdp, `__game.beltStatus().split('\\n').every(l => (l.match(/@\\d/g) || []).length <= 1)`)) === true,
+    await evalJs(cdp, `__game.beltStatus()`));
 
-  console.log('[满带留槽: 1 格断头带堆 2 件 → 其余留在输出槽]');
+  console.log('[满带留槽: 1 格断头带 1 件即满 → 其余留在输出槽]');
   await evalJs(cdp, `__game.clearAllPlaced()`);
   await evalJs(cdp, `__game.placeAt('refining_unit', 5, 5)`);
   await evalJs(cdp, `__game.spawnBelt([[6, 4]], 270)`);
   await evalJs(cdp, `__game.injectOutput('origocrust', 5)`);
-  const jammed = await waitUntil(cdp, `(() => ${outputCount} <= 3)()`, 20000);
-  check('4a. 带上堆 2 件后输出槽停在 ×3', jammed, `输出槽 ×${await evalJs(cdp, outputCount)}`);
+  const jammed = await waitUntil(cdp, `(() => ${outputCount} <= 4)()`, 20000);
+  check('4a. 带上 1 件@格中心即满，输出槽停在 ×4（一格一物品）', jammed, `输出槽 ×${await evalJs(cdp, outputCount)}`);
   await sleep(2000); // 停稳观察
-  check('4b. 停留期间输出槽保持 ×3 不变（满带 → 物品留在输出槽）',
-    (await evalJs(cdp, outputCount)) === 3, await evalJs(cdp, `__game.beltStatus()`));
-  check('4c. 带上恰 2 件（0.50/0.25）', (await evalJs(cdp, tailItemCount)) === 2,
+  check('4b. 停留期间输出槽保持 ×4 不变（满带 → 物品留在输出槽）',
+    (await evalJs(cdp, outputCount)) === 4, await evalJs(cdp, `__game.beltStatus()`));
+  check('4c. 带上恰 1 件@0.50（一格一物品）', (await evalJs(cdp, tailItemCount)) === 1,
     await evalJs(cdp, `__game.beltStatus()`));
 
   console.log('[疏通恢复]');
-  await evalJs(cdp, `__game.consumeBeltTailItem()`); // 取走 0.50 位物品（模拟下游取货）
-  const resumed = await waitUntil(cdp, `(() => ${outputCount} <= 2)()`, 10000);
-  check('5. 疏通后输出槽物品继续上带（×3→×2）', resumed, `输出槽 ×${await evalJs(cdp, outputCount)}`);
+  await evalJs(cdp, `__game.consumeBeltTailItem()`); // 取走带上物品（模拟下游取货）
+  const resumed = await waitUntil(cdp, `(() => ${outputCount} <= 3)()`, 10000);
+  check('5. 疏通后输出槽物品继续上带（×4→×3）', resumed, `输出槽 ×${await evalJs(cdp, outputCount)}`);
 
   console.log('[方向判定: 平行经过的带不接收]');
   await evalJs(cdp, `__game.clearAllPlaced()`);

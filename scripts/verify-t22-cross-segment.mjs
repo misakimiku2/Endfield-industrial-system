@@ -107,39 +107,39 @@ check('物品到达链尾段(segIdx=3)', segIdxSeen.has(maxSeg), '');
 check('物品在链尾格中心停下(head≈0.5)', reachedTail, `(head=${track?.head?.toFixed(3)})`);
 await shot(cdp, '01-cross-segment-flow');
 
-// === 测试 2: 堵塞（2格链 + 多物品，链尾满后上游停在段尾）===
+// === 测试 2: 堵塞（3格链 + 每格1物品，链尾断头 → 全部停在格中心，一格一件）===
 console.log('\n=== 测试2: 堵塞逆流 ===');
 await evalJs(cdp, `window.__game.clearAllPlaced()`);
 await delay(200);
-// 2格链：segIdx 0→1，segIdx 1 是断头链尾。注入6物品到首段
-await evalJs(cdp, `window.__game.spawnBelt([[10,10],[11,10]], 0)`);
+// 3格链：segIdx 0→2，segIdx 2 是断头链尾。一格一物品（用户 2026-08-17 澄清）：
+// 每段注入 1 件（多件同段是无效状态，正常玩法中 emit/跨段都只会往空格放）
+await evalJs(cdp, `window.__game.spawnBelt([[10,10],[11,10],[12,10]], 0)`);
 await delay(200);
 await evalJs(cdp, `(() => {
   const w=window.__game.world; const segs=w.query('BeltSegmentComp');
   for (const h of segs) { const s=w.getComponent(h,'BeltSegmentComp');
-    if (s && s.segmentIndex===0) { for(let k=0;k<6;k++) s.items.push({itemId:'cuprium_ore',progress:0}); } }
+    if (s) { s.items.push({itemId:'cuprium_ore',progress:0}); } }
 })()`);
 await delay(200);
-await evalJs(cdp, `(() => { const c=window.__game.camera; c.setPosition(10.5*64, 10*64+32); })()`);
-// 等7秒：物品流到链尾填满(segIdx1~4物品)，后续堵在segIdx0段尾
+await evalJs(cdp, `(() => { const c=window.__game.camera; c.setPosition(11*64, 10*64+32); })()`);
+// 等7秒：物品流到链尾断头 → 每格一件停在格中心（一格一物品堵塞形态）
 await delay(7000);
 let jam = JSON.parse(await evalJs(cdp, READ_ITEMS));
 console.log('[T2.2] 堵塞后分布(7s):', JSON.stringify(jam));
-const tailJam = jam.find(s => s.isTail);
-const headJam = jam.find(s => s.segIdx === 0);
-check('堵塞: 链尾段(segIdx=1)物品堆积(≥3)', tailJam && tailJam.items.length >= 3, `(链尾物品数=${tailJam?.items.length})`);
-// 堵塞标志：segIdx=0 有物品停在格中心(≈0.5)无法跨段（因链尾入口满，STOP_MAX=0.5 钳制）
-const headStuckP = headJam ? Math.max(0, ...headJam.items.map(i=>i.p)) : 0;
-check('堵塞: 上游(segIdx=0)物品停在格中心等待(≈0.5)', headStuckP >= 0.49 && headStuckP <= 0.51, `(segIdx0 max p=${headStuckP.toFixed(3)})`);
+check('堵塞: 每格恰 1 件（一格一物品）', jam.every(s => s.items.length <= 1) && jam.filter(s=>s.items.length===1).length === 3,
+  `(分布=${jam.map(s=>s.items.length).join('/')})`);
+const allCentered = jam.every(s => s.items.every(i => i.p >= 0.49 && i.p <= 0.51));
+check('堵塞: 各物品停在格中心(≈0.5)不再前进', allCentered,
+  `(p=${jam.map(s=>s.items.map(i=>i.p)).join('/')})`);
 await shot(cdp, '02-jam-backup');
 
 // === 测试 3: 疏通（consumeBeltTailItem 模拟设备消费，上游恢复跨段）===
 console.log('\n=== 测试3: 疏通 ===');
-const cnt0Before = headJam ? headJam.items.length : 0;
+const cnt0Before = jam.find(s => s.segIdx === 0)?.items.length ?? 0;
 const removed = await evalJs(cdp, `window.__game.consumeBeltTailItem()`);
 console.log('[T2.2] consumeBeltTailItem 移除链尾物品:', removed);
-// 等2.5秒：链尾腾位后 min progress 上升 → hasSpace 恢复 → segIdx0 物品跨段
-await delay(2500);
+// 等3秒：链尾腾空 → 中格物品 0.5→1.0 跨段进入链尾 → 首格物品跟进 → 恢复流动
+await delay(3000);
 let cleared = JSON.parse(await evalJs(cdp, READ_ITEMS));
 const headCleared = cleared.find(s => s.segIdx === 0);
 const cnt0After = headCleared ? headCleared.items.length : 0;

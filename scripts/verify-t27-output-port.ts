@@ -1,6 +1,7 @@
 // T2.7 验证: 设备 → 传送带输出对接（端口出货: 连接判定 + beltPhase 相位注入 + 满带留槽 + 疏通恢复）
-// 依据: implementation-phase-2.md T2.7、A9 §2.3(最小间距)/§6.7(端口连接判定)、
-//       A8 §2.2(输出槽一槽一物)/§4.2(输出轮询·每端口每Tick至多1件)/§7 步骤3(输出物流)
+// 依据: implementation-phase-2.md T2.7、A9 §6.7(端口连接判定)、A8 §2.2(输出槽一槽一物)/
+//       §4.2(输出轮询·每端口每Tick至多1件)/§7 步骤3(输出物流)、
+//       一格一物品规则（用户 2026-08-17 澄清，修订 A9 §2.3 间距）
 //
 // 用法: node --experimental-strip-types scripts/verify-t27-output-port.ts
 //
@@ -11,14 +12,13 @@
 //        转角段 entryDir 朝向端口 → 命中；转角入口背离 → null
 //     3. tryEmitToBelt: 输出槽空 → null；beltPhase > STOP_MAX → null（注入窗口）；
 //        空带 → 注入 beltPhase 相位 + 槽 count-1；扣到 0 解锁
-//     4. tryEmitToBelt: 入口最近物品间距不足（≤ p+MIN_ITEM_GAP）→ null（物品留在输出槽）
+//     4. tryEmitToBelt: 段上已有物品 → null（一格一物品，只往空段注入，物品留在输出槽）
 //   BeltSystem + MachineSystem 集成（真实 World，DD-010 顺序 belt→machine）:
-//     5. 产物上带: 输出槽 5 件 → 逐件出现在带首并沿带前进（跨段），输出槽递减至 0
-//     6. 段内间距: 同段相邻物品 progress 差 ≥ MIN_ITEM_GAP（注入不破坏 A9 §2.3）
-//     7. 满带留槽: 1 格断头带堆 2 件(0.5/0.25)后 → 第 3 件起留在输出槽（数量不变）
+//     5. 产物上带: 5 段带 + 输出槽 5 件 → 逐件上带，**每段恰 1 件**停在格中心（一格一物品）
+//     6. 流动过程不变量: 任意时刻每段 ≤ 1 件
+//     7. 满带留槽: 1 格断头带 1 件@0.5 即满 → 其余 4 件留在输出槽（数量不变）
 //     8. 疏通恢复: 取走带上 1 件 → 输出槽物品继续上带
 //     9. 方向判定: 同格但方向平行经过（朝右）→ 永不接收，物品留在输出槽
-//    10. 注入相位 ≤ STOP_MAX: 断头带上物品 progress 恒 ≤ 0.5（不出现注入后被钳回的后跳）
 //    11. 旋转设备: 90°/180°/270° 精炼炉的输出端口侧各有一条背离带 → 均出货
 //    12. 每端口每 Tick 至多 1 件: 3 条接收带（3 输出端口）→ 同 Tick 各出 1 件（单输出槽 ×3）
 //    13. 全链路: 精炼炉A 注矿 → 生产结算 → 产物上带 → 上升 → 精炼炉B 输入端口吸入（T2.5+T2.6+T2.7）
@@ -40,7 +40,7 @@ import {
   findReceiverBelt,
   tryEmitToBelt,
 } from '../src/game/systems/machine/OutputOps.ts';
-import { BeltSystem, STOP_MAX, MIN_ITEM_GAP } from '../src/game/systems/BeltSystem.ts';
+import { BeltSystem } from '../src/game/systems/BeltSystem.ts';
 import { MachineSystem } from '../src/game/systems/MachineSystem.ts';
 import type { BuildingComp } from '../src/game/components/BuildingComp.ts';
 import type { BeltSegmentComp } from '../src/game/components/BeltSegmentComp.ts';
@@ -155,18 +155,13 @@ console.log('[tryEmitToBelt 出货判定]');
     '3c2. 物品注入段首 progress=beltPhase（物品=实体 pointer，T2.1 约定）');
   assertEq(comp.bufferOutput[0], { itemId: 'origocrust', count: 1 },
     '3c3. 输出槽 count-1（未到 0 保持锁定）');
-  // 入口间距: 已有物品 0.5（断头钳制位），注入点 0.2 → 间距 0.3 > 0.25 ✓
-  assertEq(tryEmitToBelt(mk([['origocrust', 0.5]]), comp), 'origocrust',
-    '3d. 入口物品@0.5、注入点 0.2（间距 0.3 > 0.25）→ 放出');
-  BeltSystem.beltPhase = 0.3;
+  // 入口间距（一格一物品）: 段上已有物品 → 无论位置如何都不再接收
+  assertEq(tryEmitToBelt(mk([['origocrust', 0.5]]), comp), null,
+    '3d. 段上已有物品@0.5 → null（一格一物品，只往空段注入）');
   const before = comp.bufferOutput[0].count;
-  assertEq(tryEmitToBelt(mk([['origocrust', 0.5]]), comp), null,
-    '4a. 入口物品@0.5、注入点 0.3（间距 0.2 ≤ 0.25）→ null（满带，物品留在输出槽）');
-  assertEq(comp.bufferOutput[0].count, before, '4b. 输出槽数量不变');
-  // 等号边界: 物品@0.5、注入点 0.25 → 间距恰 0.25（严格大于才放）→ 留槽（满带堆放确定性）
-  BeltSystem.beltPhase = 0.25;
-  assertEq(tryEmitToBelt(mk([['origocrust', 0.5]]), comp), null,
-    '4c. 间距恰 =MIN_ITEM_GAP（等号）→ 留槽（严格 >，满带堆放确定性）');
+  assertEq(tryEmitToBelt(mk([['origocrust', 0.05]]), comp), null,
+    '4a. 段上已有物品@0.05（哪怕远在入口附近）→ null（一格一物品）');
+  assertEq(comp.bufferOutput[0].count, before, '4b. 输出槽数量不变（物品留在输出槽）');
   comp.bufferOutput[0] = { itemId: 'origocrust', count: 1 };
   tryEmitToBelt(mk([]), comp);
   assertEq(comp.bufferOutput[0], { itemId: null, count: 0 }, '3d2. 扣到 0 → 槽解锁（一槽一物，A8 §2.2）');
@@ -211,46 +206,49 @@ const tick = (n = 1): void => {
   }
 };
 
-// 5/6: happy path —— 精炼炉(5,5) 顶中输出端口 (6,5)，接收带链 (6,4)→(6,3)→(6,2) 朝上
+// 5/6: happy path —— 精炼炉(5,5) 顶中输出端口 (6,5)，接收带链 (6,4)→(6,0) 朝上 ×5
 BeltSystem.beltPhase = 0;
 const fA = place(5, 5);
 fA.bufferOutput[0] = { itemId: 'origocrust', count: 5 };
-const s0 = belt(6, 4, 270);
-const s1 = belt(6, 3, 270);
-const s2 = belt(6, 2, 270);
-tick(260); // 5 件 × ~40 Tick/件（相位窗口节流）+ 裕量
-const beltTotal = s0.items.length + s1.items.length + s2.items.length;
+const chain = [belt(6, 4, 270), belt(6, 3, 270), belt(6, 2, 270), belt(6, 1, 270), belt(6, 0, 270)];
+tick(280); // 5 件 × ~40 Tick/件（空段+相位窗口节流）+ 行程 + 裕量
 assertEq(fA.bufferOutput[0].count, 0, '5a. 输出槽 5 件全部上带（递减至 0）');
-assertEq(beltTotal, 5, '5b. 带上共 5 件（跨段分布，含断头尾堆积）');
+assertEq(chain.reduce((n, s) => n + s.items.length, 0), 5, '5b. 带上共 5 件');
+assert(chain.every((s) => s.items.length === 1),
+  '5c. 每段恰 1 件（一格一物品——满带堵塞=每格一件停在格中心）');
+assert(chain.every((s) => near(s.items[0].progress, 0.5)),
+  '5d. 各件停在格中心 0.50（注入相位 ≤ STOP_MAX + 断头钳制，无后跳）');
 const events5 = log.filter((e) => e.type === 'output');
-assertEq(events5.length, 5, '5c. 5 条 output 事件（每件一条）');
+assertEq(events5.length, 5, '5e. 5 条 output 事件（每件一条）');
 assert(events5.every((e) => e.message.includes('输出 晶体外壳 ×1（输出槽 → 传送带）')),
-  '5d. 事件消息: "精炼炉: 输出 晶体外壳 ×1（输出槽 → 传送带）"');
-let gapOk = true;
-for (const s of [s0, s1, s2]) {
-  const ps = s.items.map((it) => it.progress).sort((a, b) => b - a);
-  for (let i = 1; i < ps.length; i++) {
-    if (ps[i - 1] - ps[i] < MIN_ITEM_GAP - 0.005) gapOk = false;
-  }
-}
-assert(gapOk, '6. 同段相邻物品间距 ≥ MIN_ITEM_GAP（注入不破坏 A9 §2.3，断头堆 0.5/0.25/…）');
+  '5f. 事件消息: "精炼炉: 输出 晶体外壳 ×1（输出槽 → 传送带）"');
 
-// 7/8/10: 满带留槽 → 疏通恢复（1 格断头带）
+// 6: 流动过程不变量——重跑一遍，中途采样每段 ≤ 1 件
+BeltSystem.beltPhase = 0;
+const fA2 = place(30, 5);
+fA2.bufferOutput[0] = { itemId: 'origocrust', count: 5 };
+const chain2 = [belt(31, 4, 270), belt(31, 3, 270), belt(31, 2, 270), belt(31, 1, 270), belt(31, 0, 270)];
+let midFlowOk = true;
+for (let t = 0; t < 200; t++) {
+  tick(1);
+  if (chain2.some((s) => s.items.length > 1)) { midFlowOk = false; break; }
+}
+assert(midFlowOk, '6. 流动全程任意时刻每段 ≤ 1 件（一格一物品不变量）');
+
+// 7/8: 满带留槽 → 疏通恢复（1 格断头带）
 BeltSystem.beltPhase = 0;
 const fB = place(15, 5); // 输出端口 (16,5)，接收带 (16,4) 断头
 const sB = belt(16, 4, 270);
 fB.bufferOutput[0] = { itemId: 'origocrust', count: 5 };
-tick(200); // 堆满 2 件(0.5/0.25)需 ~2 个相位周期，200 Tick 裕量
-assertEq(sB.items.length, 2, '7a. 断头带堆 2 件（0.5 + 0.25）后停止接收');
-assert(near(Math.max(...sB.items.map((i) => i.progress)), 0.5) &&
-  near(Math.min(...sB.items.map((i) => i.progress)), 0.25),
-  '7b. 堆放位置 0.50/0.25（钳制位 + 最小间距位，注入相位恒 ≤ STOP_MAX=0.5 → 无后跳）');
-assertEq(fB.bufferOutput[0].count, 3, '7c. 其余 3 件留在输出槽（满带 → 物品留在输出槽）');
+tick(120); // 1 件上带@0.5 即满（空段+相位窗口 ~40 Tick 内），120 Tick 裕量
+assertEq(sB.items.length, 1, '7a. 断头带 1 件@格中心即满（一格一物品）');
+assert(near(sB.items[0].progress, 0.5), '7b. 物品停在 0.50（钳制位，注入相位恒 ≤ STOP_MAX → 无后跳）');
+assertEq(fB.bufferOutput[0].count, 4, '7c. 其余 4 件留在输出槽（满带 → 物品留在输出槽）');
 tick(60); // 停稳观察: 不再有新物品上带
-assertEq(fB.bufferOutput[0].count, 3, '7d. 停留期间输出槽保持不变（每 Tick 重试均被间距拒绝）');
-sB.items.splice(sB.items.findIndex((i) => i.progress > 0.4), 1); // 取走 0.5 位物品（模拟下游取货）
-tick(100); // 0.25 位物品前进到 0.5 + 下一相位窗口放出 1 件
-assert(fB.bufferOutput[0].count < 3, '8. 疏通后输出槽物品继续上带（带腾位即恢复）');
+assertEq(fB.bufferOutput[0].count, 4, '7d. 停留期间输出槽保持不变（每 Tick 重试均被一格一件拒绝）');
+sB.items.splice(0, 1); // 取走带上物品（模拟下游取货）
+tick(100); // 下一相位窗口放出 1 件
+assert(fB.bufferOutput[0].count < 4, '8. 疏通后输出槽物品继续上带（带腾位即恢复）');
 
 // 9: 方向判定 —— 同格但朝右（平行经过，入口在左侧 (25,4) 不是端口 (26,5)）→ 永不接收
 BeltSystem.beltPhase = 0;

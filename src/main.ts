@@ -1068,61 +1068,68 @@ async function main() {
   };
   /** T2.7 一键测试主体（并发/重复保护见 runTest 的 phase 状态机）。
    * 场景A: 精炼炉(5,5) + 上行传送带×3 接顶中输出端口(6,5)，输出槽预注 晶体外壳 ×5 → 观察物品
-   *        逐件出现在传送带起点并沿带前进（不依赖生产计时，时序确定）。
-   * 场景B: 1 格断头带 + 预注 5 件 → 带上堆 2 件(0.5/0.25)后满 → 其余留在输出槽 →
+   *        逐件出现在传送带起点、一格一件沿带前进（不依赖生产计时，时序确定）。
+   *        带满 3 件（一格一件@0.5）后输出槽剩 2 件 → 停留观察 → 预告 5 秒后切场景。
+   * 场景B: 1 格断头带 + 预注 5 件 → 带上 1 件@0.5 即满 → 其余 4 件留在输出槽 →
    *        consumeBeltTailItem 疏通 → 槽内物品继续上带。 */
   const demoT27 = async (): Promise<string> => {
     console.log(`[${ts()}] ════ T2.7 一键测试: 设备 → 传送带输出对接 ════`);
-    // ── 场景A: 出货流动 ──
+    // ── 场景A: 出货流动（一格一件）──
     clearAllPlaced();
     if (!placeAt('refining_unit', 5, 5)) return 'T2.7 测试失败: 精炼炉放置失败';
     const created = spawnBelt([[6, 4], [6, 3], [6, 2]], 270); // 首段 (6,4) 入口朝向顶中输出端口 (6,5)
     if (created !== 3) return 'T2.7 测试失败: 传送带创建失败';
     injectOutput('origocrust', 5);
     console.log(`[${ts()}] [步骤1] 场景就绪: 精炼炉(5,5) 顶中输出端口(6,5) + 上行传送带×3，输出槽预注 晶体外壳 ×5`);
-    console.log(`[${ts()}] [步骤2] 观察画面: 物品逐件出现在传送带起点（紧邻端口一侧）并沿带向上前进（每 ~2 秒一件）`);
+    console.log(`[${ts()}] [步骤2] 观察画面: 物品逐件出现在传送带起点（紧邻端口一侧），一格一件沿带向上前进（每 ~2 秒一件）`);
     const firstOut = await waitFor(() => outputCount() < 5, 10000);
     if (!firstOut) {
       console.log(`[${ts()}] T2.7 测试失败: 10 秒内无物品上带——仿真时钟未推进？页面在后台被深度节流时请切到前台再试`);
       return 'T2.7 测试失败: 输出槽物品未上带（仿真未推进？）';
     }
     console.log(`[${ts()}] [步骤3] 首件已上带（上方 [T2.7 物流] 即输出消息）:\n${beltStatus()}`);
-    // 等第 2 件上带（流动节奏: 每件间隔 ~40 Tick/2 秒）
-    const flowing = await waitFor(() => 5 - outputCount() >= 2, 12000);
-    if (flowing) {
-      console.log(`[${ts()}] [步骤4] 连续出货: 输出槽剩 ×${outputCount()}，传送带当前状态:\n${beltStatus()}`);
-    } else {
-      console.log(`[${ts()}] [步骤4] ⚠ 12 秒内未见第 2 件上带（继续后续步骤）`);
+    console.log(`[${ts()}] [步骤4] 观察 8 秒: 物品逐件沿带前进，每格至多一件（物品所在格的箭头隐去）...`);
+    await sleep(8000);
+    // 等带满: 3 格各 1 件@0.5 → 输出槽停在 ×2
+    const filled = await waitFor(() => outputCount() <= 2, 15000);
+    if (!filled) {
+      console.log(`[${ts()}] T2.7 测试失败: 15 秒内传送带未填满（应 3 格各 1 件、输出槽剩 2）:\n${beltStatus()}\n${outputBuffer()}`);
+      return 'T2.7 测试失败: 传送带未按一格一件填满';
     }
+    console.log(
+      `[${ts()}] [步骤5] 带满: 3 格各 1 件（一格一物品，全部停在格中心 0.50），输出槽剩 ×${outputCount()}:\n${beltStatus()}\n${outputBuffer()}`,
+    );
+    console.log(`[${ts()}] [步骤6] 场景A观察完毕，5 秒后切换到满带演示场景（换成 1 格断头带）...`);
+    await sleep(5000);
 
     // ── 场景B: 满带 → 物品留在输出槽 → 疏通恢复 ──
-    console.log(`[${ts()}] [步骤5] 换 1 格断头带演示满带: 带上最多堆 2 件 → 其余留在输出槽`);
     clearAllPlaced();
     if (!placeAt('refining_unit', 5, 5)) return 'T2.7 测试失败: 场景B 精炼炉放置失败';
     if (spawnBelt([[6, 4]], 270) !== 1) return 'T2.7 测试失败: 场景B 传送带创建失败';
     injectOutput('origocrust', 5);
-    const jammed = await waitFor(() => outputCount() <= 3, 15000);
+    console.log(`[${ts()}] [步骤7] 场景B: 1 格断头带 + 输出槽 5 件 → 带上 1 件即满（一格一物品），其余留在输出槽`);
+    const jammed = await waitFor(() => outputCount() <= 4, 15000);
     if (!jammed) {
       console.log(`[${ts()}] T2.7 测试失败: 15 秒内未观察到满带堵停:\n${beltStatus()}\n${outputBuffer()}`);
       return 'T2.7 测试失败: 满带时物品未留在输出槽';
     }
-    await sleep(1500); // 停稳观察: 输出槽应保持 3、带上 2 件不再变化
+    await sleep(1500); // 停稳观察: 输出槽应保持 4、带上 1 件不再变化
     const parked = outputCount();
     console.log(
-      `[${ts()}] [步骤6] 满带: 带上堆 2 件(0.50/0.25)，输出槽保持 晶体外壳 ×${parked} 不再减少:\n${beltStatus()}\n${outputBuffer()}`,
+      `[${ts()}] [步骤8] 满带: 带上 1 件@0.50，输出槽保持 晶体外壳 ×${parked} 不再减少:\n${beltStatus()}\n${outputBuffer()}`,
     );
-    if (parked !== 3) {
-      console.log(`[${ts()}] T2.7 测试失败: 停稳后输出槽应保持 ×3（实际 ×${parked}）`);
+    if (parked !== 4) {
+      console.log(`[${ts()}] T2.7 测试失败: 停稳后输出槽应保持 ×4（实际 ×${parked}）`);
       return 'T2.7 测试失败: 满带堵停数量异常';
     }
-    console.log(`[${ts()}] [步骤7] consumeBeltTailItem() 疏通（模拟下游取走）→ 输出槽物品继续上带`);
+    console.log(`[${ts()}] [步骤9] consumeBeltTailItem() 疏通（模拟下游取走）→ 输出槽物品继续上带`);
     consumeBeltTailItem();
-    const resumed = await waitFor(() => outputCount() <= 2, 10000);
+    const resumed = await waitFor(() => outputCount() <= 3, 10000);
     if (!resumed) {
       console.log(`[${ts()}] T2.7 测试失败: 疏通后物品未继续上带:\n${beltStatus()}\n${outputBuffer()}`);
       return 'T2.7 测试失败: 疏通后未恢复出货';
     }
-    console.log(`[${ts()}] [步骤8] 疏通恢复: 输出槽 ×${outputCount()}（物品重新上带）:\n${beltStatus()}`);
+    console.log(`[${ts()}] [步骤10] 疏通恢复: 输出槽 ×${outputCount()}（物品重新上带）:\n${beltStatus()}`);
     console.log(`[${ts()}] ════ T2.7 一键测试完成 ════`);
     return 'T2.7 一键测试完成（关键输出见控制台 [T2.7 物流] / [步骤N] 日志）';
   };
@@ -1259,8 +1266,8 @@ async function main() {
   console.log('  T2.5 手动: placeAt("refining_unit",5,5) → injectInput("originium_ore",3) → productionStatus() 监控计时(期间输入槽数量不变) → 结算 "输入槽 源矿 -1，输出槽 晶体外壳 +1" 并自动续启; injectOutput("origocrust",50)+等完成=blocked → consumeOutput(1) 疏通结算; productionLog() 查事件');
   console.log('  T2.6 一键测试: __game.test("t26")  ← 复制这一条到控制台回车即可（自动放炉+铺带+物品上门消失+满槽堵停+疏通吸入演示）');
   console.log('  T2.6 手动: placeAt("refining_unit",5,5) → spawnBelt([[6,9],[6,8]],270) 带尾指向底中输入端口 → injectBeltItem("originium_ore") → 物品到门口消失、inputBuffer() +1; injectInput(...,49) 注满 → 物品停在门口(beltStatus() 查 @0.50) → consumeInput(1) 疏通吸入');
-  console.log('  T2.7 一键测试: __game.test("t27")  ← 复制这一条到控制台回车即可（自动放炉+输出端口铺带+产物逐件上带流动+满带留槽+疏通恢复演示）');
-  console.log('  T2.7 手动: placeAt("refining_unit",5,5) → spawnBelt([[6,4],[6,3]],270) 首段入口朝向顶中输出端口(6,5) → injectOutput("origocrust",5) → 物品逐件出现在带首沿带前进(productionStatus() 查输出槽递减); 1格断头带+5件 → 带上堆2件、输出槽留3件 → consumeBeltTailItem() 疏通继续出货');
+  console.log('  T2.7 一键测试: __game.test("t27")  ← 复制这一条到控制台回车即可（放炉+输出端口铺带+产物一格一件上带流动+满带留槽+疏通恢复演示，场景切换有预告）');
+  console.log('  T2.7 手动: placeAt("refining_unit",5,5) → spawnBelt([[6,4],[6,3]],270) 首段入口朝向顶中输出端口(6,5) → injectOutput("origocrust",5) → 物品逐件出现在带首、一格一件前进(productionStatus() 查输出槽递减); 1格断头带+5件 → 带上1件即满、输出槽留4件 → consumeBeltTailItem() 疏通继续出货');
 }
 
 main().catch((err) => {

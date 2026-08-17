@@ -3,17 +3,20 @@
 //
 // 职责:
 //   - 每 Simulation Tick 推进每段传送带上物品的 progress（+0.025/tick，0.5 格/秒）。
-//   - 同段多物品最小间距夹紧（A9 §2.3，MIN_ITEM_GAP=0.25）。
-//   - 跨段传输 (A9 §2.2/§3, T2.2): 队首 progress≥1.0 → 出口方向相邻 Cell 有下游段且入口有空位
-//     → 物品移到下游段 progress=0（重新走）；无下游/下游满 → 钳制段尾 0.99 等待。
-//   - 堵塞逆流 (A9 §3.4, T2.2): 下游满 → 本段队首停段尾 → 后方被间距夹住 → 本段塞满 →
-//     更上游跨段失败 → 逆流向源头传播。下游疏通（入口腾位）→ hasSpace 恢复 → 上游恢复流动。
+//   - 一格一物品（用户 2026-08-17 澄清，修订 A9 §2.3 的 0.25 间距）:
+//     一格传送带只承载一个物品（"箭头"或"物品"二选一）。同段 items[] 实际至多 1 件
+//     （多件仅调试注入可致，跟随夹紧按 MIN_ITEM_GAP=1.0 冻结后方）。
+//   - 跨段传输 (A9 §2.2/§3, T2.2): 队首 progress≥1.0 且**下游段为空** → 进入下游段首
+//     progress=0（重新走）；下游占用 → 本段队首推进不得越过下游最近物品的 progress
+//     （世界间距 ≥ 1 格，反向遍历读到下游本 Tick 最新位置 → 整链 lockstep 流动）。
+//   - 堵塞逆流 (A9 §3.4, T2.2): 下游占用 → 本段队首停在下游最近物品的 progress（≤0.5）
+//     → 本段视为满 → 上游跨段失败 → 逆流向源头传播。下游疏通（腾空）→ 上游恢复流动。
 //
 // 不在本系统（留给后续）:
 //   - 端口吸入设备输入槽（T2.6 已实现，由 MachineSystem/machine/IntakeOps 处理:
 //     物品在本系统钳制到 STOP_MAX=0.5 停在门口，MachineSystem 同 Tick 吸入输入槽）
 //   - 设备输出物品注入传送带（T2.7 已实现，由 MachineSystem/machine/OutputOps 处理:
-//     输出槽物品在 beltPhase 相位注入段首 items[]，本系统下一 Tick 起正常推进）
+//     输出槽物品在 beltPhase 相位注入**空段**首，本系统下一 Tick 起正常推进）
 //
 // 执行顺序 (A5 §5/DD-010): BeltSystem 先于 MachineSystem，保证物品先到达。
 //   dt 恒为 50ms，progress 增量用固定常量 ITEM_PROGRESS_PER_TICK。
@@ -33,12 +36,12 @@ import { CELL_SIZE } from '../render/constants.ts';
 const ITEM_PROGRESS_PER_TICK = 0.025;
 
 /**
- * 同段相邻物品的最小 progress 间距 (A9 §2.3，1/4 格)。同时用作跨段入口空位判定。
- *
- * 导出供 machine/OutputOps 复用（T2.7 设备输出注入的空位判定）：注入点与入口最近
- * 物品的间距标准必须与跨段传输一致，否则设备输出与跨段争抢入口时判定口径不一。
+ * 相邻物品的最小世界间距（格）。一格一物品（用户 2026-08-17 澄清，修订 A9 §2.3 的
+ * 0.25）→ 间距 = 1 格: 同段内两件物品 progress 差 ≥ 1.0（即同段实际至多 1 件），
+ * 跨段跟随由队首推进钳制保证（不得越过下游段最近物品的 progress）。
+ * 吞吐换算: 1 件/格 × 0.5 格/秒 = 每 2 秒 1 件，与全部已定义配方节拍一致。
  */
-export const MIN_ITEM_GAP = 0.25;
+export const MIN_ITEM_GAP = 1.0;
 
 /**
  * 断头/堵塞时物品停止的 progress（格中心 0.5）。
@@ -47,6 +50,7 @@ export const MIN_ITEM_GAP = 0.25;
  *
  * 导出供 machine/IntakeOps 复用（T2.6 端口吸入触发点）：物品"停在设备门口"与
  * "触发吸入判定"必须是同一 progress，否则槽满时停的位置与疏通后吸入的位置不一致。
+ * 也供 machine/OutputOps 复用（T2.7 注入相位窗口上限）。
  */
 export const STOP_MAX = 0.5;
 
@@ -88,11 +92,17 @@ export class BeltSystem implements SimulationSystem {
   }
 
   /**
-   * 推进一段传送带的物品：队首跨段/段尾停止 + 后方间距夹紧。
+   * 推进一段传送带的物品：队首跨段/间距钳制/段尾停止 + 后方夹紧。
    *
-   * 物品按 progress 降序处理（队首=progress 最大=最靠近出口）。队首先确定去向
-   * （跨段离开 / 停段尾 / 正常前进），后方物品相对前方做间距夹紧 (A9 §2.3)。
-   * 物品永不后退（防御异常重叠注入）。
+   * 物品按 progress 降序处理（队首=progress 最大=最靠近出口）。一格一物品模型下
+   * 队首的推进规则:
+   *   - 无下游段（断头/设备门口）→ 钳制 STOP_MAX=0.5 格中心（T2.6 吸入触发点同源）。
+   *   - 下游段空 → 自由前进，progress ≥ 1.0 时跨段进入下游段首 progress=0。
+   *   - 下游段占用 → 推进不得越过下游最近物品的 progress（世界间距 ≥ 1 格；
+   *     反向遍历保证读到的是下游本 Tick 已推进的位置 → 流动时整链 lockstep，
+   *     堵塞时队首停在下游物品位置后方，随堵塞解除逐格跟进）。
+   * 后方物品相对前方做同段夹紧（MIN_ITEM_GAP=1.0 → 正常情况同段仅队首 1 件，
+   * 多件仅调试注入可致，后方冻结不前进）。物品永不后退（防御异常重叠注入）。
    */
   private processSegment(
     world: World,
@@ -104,21 +114,36 @@ export class BeltSystem implements SimulationSystem {
     // 按 progress 降序（队首在前），不改原数组顺序
     const ordered = items.slice().sort((a, b) => b.progress - a.progress);
 
-    // === 队首：跨段 / 段尾停止 / 正常前进 ===
+    // === 队首：跨段 / 间距钳制 / 段尾停止 ===
     const head = ordered[0];
     const oldHead = head.progress;
     const headAdvanced = oldHead + ITEM_PROGRESS_PER_TICK;
     /** 后方物品的限制基准（前方物品的 progress）；队首跨段离开后用 1.0=段尾边界(=下游段首)。 */
     let leaderProgress: number;
 
-    // 下游是否可跨段（本 tick 判定，堵塞时动态变化）
     const downstream = this.findDownstream(world, handle, pos, seg);
-    const canTransfer = downstream !== null && this.hasSpaceAtEntry(world, downstream);
+    // 下游段最近入口物品的 progress（空段 = Infinity = 可自由前进/跨段）
+    let downMin = Infinity;
+    let downSeg: BeltSegmentComp | null | undefined = null;
+    if (downstream !== null) {
+      downSeg = world.getComponent<BeltSegmentComp>(downstream, 'BeltSegmentComp');
+      const downItems = downSeg?.items;
+      if (downItems && downItems.length > 0) {
+        for (const it of downItems) {
+          if (it.progress < downMin) downMin = it.progress;
+        }
+      }
+    }
 
-    if (canTransfer && headAdvanced >= 1.0) {
-      // 跨段: 队首离开本段，进入下游段首 progress=0（A9 §2 "重新走"）。
+    if (downstream === null) {
+      // 断头（无下游带）: 停在格中心不凸出位置（A9 §3.1-B / §3.4 堵塞，T2.6 门口同点）。
+      const stopAt = Math.min(headAdvanced, STOP_MAX);
+      head.progress = stopAt;
+      head.delta = Math.max(0, stopAt - oldHead); // 停稳后 delta=0（渲染静止，不插值）
+      leaderProgress = stopAt;
+    } else if (headAdvanced >= 1.0 && downMin === Infinity) {
+      // 跨段: 下游空，队首离开本段进入下游段首 progress=0（A9 §2 "重新走"）。
       // 段尾边界与下游段首边界在世界坐标重合 → 视觉无跳跃。
-      const downSeg = world.getComponent<BeltSegmentComp>(downstream, 'BeltSegmentComp');
       if (downSeg) {
         const downItems = downSeg.items ?? (downSeg.items = []);
         downItems.push({ itemId: head.itemId, progress: 0, delta: ITEM_PROGRESS_PER_TICK }); // delta=流动量，渲染插值连续（避免跨段顿）
@@ -128,21 +153,17 @@ export class BeltSystem implements SimulationSystem {
       }
       // 队首已离开本段；次首的前方现在是"下游段首"(世界=本段 progress 1.0 边界)
       leaderProgress = 1.0; // 后方相对段尾(=下游首)保持间距
-    } else if (!canTransfer) {
-      // 无下游 / 下游入口满 → 停在段尾不凸出位置（A9 §3.1-B / §3.4 堵塞）。
-      // 钳到 STOP_MAX：物品完全在格内（出口边缘=格边缘，不凸出）。
-      const stopAt = Math.min(headAdvanced, STOP_MAX);
-      head.progress = stopAt;
-      head.delta = Math.max(0, stopAt - oldHead); // 停稳后 delta=0（渲染静止，不插值）
-      leaderProgress = stopAt;
     } else {
-      // 能跨段但未到段尾：正常前进
-      head.progress = headAdvanced;
-      head.delta = ITEM_PROGRESS_PER_TICK;
-      leaderProgress = headAdvanced;
+      // 下游占用（或未到段尾）: 推进不得越过下游最近物品的 progress（一格一物品）。
+      // 下游本 Tick 已处理（反向遍历）→ downMin 为最新值: 流动时队首正常 +0.025 前进
+      // （下游物品同 Tick 也前进了），堵塞时停在下游物品位置后方。
+      const stopAt = Math.min(headAdvanced, downMin);
+      head.progress = Math.max(oldHead, stopAt); // 不后退（防御异常重叠注入）
+      head.delta = head.progress - oldHead; // 被夹住不动时 delta=0（渲染静止，不插值）
+      leaderProgress = head.progress;
     }
 
-    // === 后方物品：间距夹紧（相对前方 leaderProgress）===
+    // === 后方物品：间距夹紧（相对前方 leaderProgress，仅调试注入的多件场景可达）===
     for (let i = 1; i < ordered.length; i++) {
       const item = ordered[i];
       const old = item.progress;
@@ -179,22 +200,5 @@ export class BeltSystem implements SimulationSystem {
       }
     }
     return null;
-  }
-
-  /**
-   * 下游段入口（progress=0 侧）是否有空间接收新物品 (A9 §2.4 跨段间距)。
-   * 新物品进 progress=0，需与下游最靠近入口的物品（progress 最小）保持 ≥ MIN_ITEM_GAP。
-   * @returns true=可接收（空段 或 入口最近物品 progress ≥ GAP）。
-   */
-  private hasSpaceAtEntry(world: World, downHandle: EntityHandle): boolean {
-    const down = world.getComponent<BeltSegmentComp>(downHandle, 'BeltSegmentComp');
-    if (!down) return true;
-    const items = down.items;
-    if (!items || items.length === 0) return true;
-    let minProgress = Infinity;
-    for (const it of items) {
-      if (it.progress < minProgress) minProgress = it.progress;
-    }
-    return minProgress >= MIN_ITEM_GAP;
   }
 }

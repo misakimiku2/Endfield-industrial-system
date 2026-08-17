@@ -245,14 +245,15 @@ assertEq(f90.bufferInput[0].count, 1, '12a. 90° 精炼炉（输入在左列）�
 assertEq(f180.bufferInput[0].count, 1, '12b. 180° 精炼炉（输入在顶排）→ 上方供给带吸入');
 assertEq(f270.bufferInput[0].count, 1, '12c. 270° 精炼炉（输入在右列）→ 右侧供给带吸入');
 
-// 13: 每端口每 Tick 至多 1 件（只吸队首，队尾按间距跟随）
-const f6 = place(5, 20); // 端口 (6,22)，供给带 (6,23)
-const b7 = belt(6, 23, 270, [['originium_ore', 0.5], ['originium_ore', 0.25]]);
+// 13: 每端口每 Tick 至多 1 件（一格一物品: 门口格只容 1 件，上游件依次到达再吸）
+const f6 = place(5, 20); // 端口 (6,22)，供给链 (6,24)→(6,23)
+const b7 = belt(6, 24, 270, [['originium_ore', 0.5]]); // 上游段，物品停在段中
+belt(6, 23, 270, [['originium_ore', 0.5]]); // 门口段（下游）
 tick(1);
-assertEq(f6.bufferInput[0].count, 1, '13a. 首 Tick 只吸队首 1 件');
-assertEq(b7.items.length, 1, '13b. 队尾留在段上');
-tick(10); // 队尾 0.25 → 0.5
-assertEq(b7.items.length, 0, '13c. 队尾到达门口后被吸入（段上清空）');
+assertEq(f6.bufferInput[0].count, 1, '13a. 首 Tick 只吸门口段队首 1 件');
+assertEq(b7.items.length, 1, '13b. 上游件留在上游段（门口腾空后才开始前进）');
+tick(40); // 上游件 0.5→1.0 跨段(20 Tick) + 门口 0→0.5(10 Tick) + 吸入，裕量
+assertEq(b7.items.length, 0, '13c. 上游件跨段到达门口后被吸入（段上清空）');
 assertEq(f6.bufferInput[0].count, 2, '13d. 输入槽 源矿 ×2（同槽合堆）');
 
 // 14: 多端口同 Tick 各吸 1 件（三条供给带 → 三个输入端口）
