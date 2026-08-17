@@ -1,5 +1,5 @@
-// T2.6 浏览器验收: 传送带 → 设备输入对接（端口吸入）
-// 依据: implementation-phase-2.md T2.6 验收标准
+// T2.6 浏览器验收: 传送带 → 设备输入对接（预约制端口格中心吸入）
+// 依据: implementation-phase-2.md T2.6 验收标准（2026-08-17 修订: 物品走到端口格中心消失）
 //
 // 前置: vite dev server 在 localhost:5173，Chrome 带 --remote-debugging-port=9222。
 // 运行: node scripts/verify-t26-input-port.mjs
@@ -7,13 +7,14 @@
 // 断言:
 //   核心链路（物品进入输入槽）:
 //     1. placeAt 精炼炉(5,5) + 上行传送带×2（链尾 (6,8) 指向底中输入端口 (6,7)）
-//     2. injectBeltItem 源矿 → 沿带前进 → 到门口消失（beltStatus 链尾无物品）
+//     2. injectBeltItem 源矿 → 沿带前进 → 到门口(0.5)预约（输入槽 count+1）
+//        → 预约物品继续前进走进设备（progress 越过 0.5）→ 到端口格中心(1.5)消失
 //     3. 精炼炉输入槽 count+1（"输入槽0: 源矿 × 1/50 (已锁定)"）+ [T2.6 物流] 吸入消息
 //   满槽堵停:
-//     4. 注满输入槽 50/50 → 再放一件 → 物品停在精炼炉门口（progress=0.50 不再前进）
+//     4. 注满输入槽 50/50 → 再放一件 → 物品停在供给格中心（progress=0.50 不再前进）
 //     5. 停留期间输入槽保持 50/50
 //   疏通恢复:
-//     6. consumeInput(1) 腾位 → 门口物品被吸入 → 输入槽回满 50/50、带上清空
+//     6. consumeInput(1) 腾位 → 门口物品被预约走进设备 → 输入槽回满 50/50、带上清空
 //   方向判定:
 //     7. 同一格传送带但方向背离端口（朝右）→ 物品停在门口、永不吸入
 //
@@ -97,11 +98,20 @@ try {
   check('1b. 上行传送带×2（链尾 (6,8) 指向底中输入端口 (6,7)）', created === 2, `创建 ${created} 段`);
   check('1c. 链首注入源矿', await evalJs(cdp, `__game.injectBeltItem('originium_ore')`) === true);
 
-  // 1.5 格行程（(6,9) p0 → (6,8) p0.5）≈ 3 秒，等吸入完成（输入槽 ≥1 即物品已消失进槽）
-  const gone = await waitUntil(cdp, `(() => ${inputCount} >= 1)()`, 10000);
-  check('2a. 物品到精炼炉门口消失（被吸入输入槽）', gone, await evalJs(cdp, `__game.beltStatus()`));
+  // 1.5 格行程（(6,9) p0 → (6,8) p0.5）≈ 3 秒 → 门口预约（输入槽 +1 即预约成功）
+  const reserved = await waitUntil(cdp, `(() => ${inputCount} >= 1)()`, 10000);
+  check('2a. 物品到门口(0.5)被预约进槽（输入槽 count+1）', reserved, await evalJs(cdp, `__game.beltStatus()`));
+  // 预约物品应正走进设备（progress 越过 0.5 前进，entering 标记）
+  const walking = await waitUntil(cdp,
+    `(() => { const p = ${tailHeadProgress}; return p !== null && p > 0.51; })()`, 3000);
+  const wp = await evalJs(cdp, tailHeadProgress);
+  check('2b. 预约后物品继续前进走进设备（progress > 0.5，beltStatus 含"进设备中"）', walking,
+    `progress=${wp}`);
+  // 0.5→1.5 需 40 Tick(2 秒) → 到端口格中心消失（链上无残留）
+  const gone = await waitUntil(cdp,
+    `(() => { const p = ${tailHeadProgress}; return p === null; })()`, 8000);
+  check('2c. 物品到端口格中心(1.5)消失（带上清空）', gone, await evalJs(cdp, `__game.beltStatus()`));
   const inCount1 = await evalJs(cdp, inputCount);
-  check('2b. 链上无残留物品', !(await evalJs(cdp, `__game.beltStatus()`)).match(/@\d/));
   check('3a. 输入槽 count+1（源矿 × 1/50）', inCount1 === 1, `实际 ×${inCount1}`);
   const logs = await evalJs(cdp, `__game.productionLog().map(e => e.message)`);
   check('3b. 吸入消息: "精炼炉: 吸入 源矿 ×1（传送带 → 输入槽）"',
@@ -123,7 +133,8 @@ try {
 
   console.log('[疏通恢复]');
   await evalJs(cdp, `__game.consumeInput(1)`); // 腾出 1 空位（模拟生产消耗）
-  const resumed = await waitUntil(cdp, `(() => { const p = ${tailHeadProgress}; return p === null && ${inputCount} >= 50; })()`, 4000);
+  // 预约瞬间输入槽即回 50；预约物品 2 秒后走到端口格中心消失 → 带上清空
+  const resumed = await waitUntil(cdp, `(() => { const p = ${tailHeadProgress}; return p === null && ${inputCount} >= 50; })()`, 6000);
   check('6a. 疏通后门口物品被吸入（带上清空）', resumed, await evalJs(cdp, `__game.beltStatus()`));
   check('6b. 输入槽回满 50/50', (await evalJs(cdp, inputCount)) === 50);
 

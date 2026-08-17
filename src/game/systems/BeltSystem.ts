@@ -13,8 +13,10 @@
 //     → 本段视为满 → 上游跨段失败 → 逆流向源头传播。下游疏通（腾空）→ 上游恢复流动。
 //
 // 不在本系统（留给后续）:
-//   - 端口吸入设备输入槽（T2.6 已实现，由 MachineSystem/machine/IntakeOps 处理:
-//     物品在本系统钳制到 STOP_MAX=0.5 停在门口，MachineSystem 同 Tick 吸入输入槽）
+//   - 端口吸入设备输入槽（T2.6 已实现，由 MachineSystem/machine/IntakeOps 处理）:
+//     物品在供给格中心 0.5 被预约（IntakeOps.tryAbsorbHeadItem: 槽 count+1 + entering=true），
+//     本系统放行 entering 物品推进到 PORT_ENTER_DONE=1.5（端口格中心），MachineSystem
+//     同 Tick releaseArrivedItems 移除（视觉消失走进设备半格深处）。未预约物品钳 0.5 停在门口。
 //   - 设备输出物品注入传送带（T2.7 已实现，由 MachineSystem/machine/OutputOps 处理:
 //     输出槽物品在 beltPhase 相位注入**空段**首，本系统下一 Tick 起正常推进）
 //
@@ -53,6 +55,18 @@ export const MIN_ITEM_GAP = 1.0;
  * 也供 machine/OutputOps 复用（T2.7 注入相位窗口上限）。
  */
 export const STOP_MAX = 0.5;
+
+/**
+ * 预约进入设备的物品的推进上限（端口格中心 1.5 = STOP_MAX + 1 格，2026-08-17 用户拍板）。
+ * 物品在供给格中心 0.5 做判定（IntakeOps.tryAbsorbHeadItem 预约: 槽 count+1 + entering=true），
+ * 预约后本系统放行其推进 0.5 → 1.5（走进设备半格深处），到达 1.5 由 MachineSystem
+ * 调 releaseArrivedItems 从 items[] 移除（视觉消失在端口格中心）。
+ * 未预约物品仍钳 STOP_MAX（堵塞停在供给格中心，与精炼炉说明"堵塞停留在 0,3 这一格"一致）。
+ *
+ * 定义在本文件与 STOP_MAX 同源（1.5 恒等于 0.5+1 格）；IntakeOps 导入复用
+ * （反向导入会造成 BeltSystem ↔ IntakeOps 循环依赖）。
+ */
+export const PORT_ENTER_DONE = STOP_MAX + 1.0;
 
 /**
  * 传送带系统。处理所有带 BeltSegmentComp 实体的物品移动、跨段传输与堵塞。
@@ -135,7 +149,16 @@ export class BeltSystem implements SimulationSystem {
       }
     }
 
-    if (downstream === null) {
+    if (head.entering) {
+      // 已预约进入设备（IntakeOps 在供给格中心 0.5 判定 tryAcceptItem 成功 + entering=true）:
+      // 放行推进 0.5 → PORT_ENTER_DONE=1.5（端口格中心，走进设备半格深处），不参与跨段/间距钳制
+      // （预约物品已属设备，即使下游拓扑中途变化——如玩家在门口插带——也必定走完进设备）。
+      // 到达 1.5 由 MachineSystem.releaseArrivedItems 从 items[] 移除（视觉消失）。
+      const stopAt = Math.min(headAdvanced, PORT_ENTER_DONE);
+      head.progress = stopAt;
+      head.delta = Math.max(0, stopAt - oldHead);
+      leaderProgress = stopAt;
+    } else if (downstream === null) {
       // 断头（无下游带）: 停在格中心不凸出位置（A9 §3.1-B / §3.4 堵塞，T2.6 门口同点）。
       const stopAt = Math.min(headAdvanced, STOP_MAX);
       head.progress = stopAt;
@@ -157,7 +180,9 @@ export class BeltSystem implements SimulationSystem {
       // 下游占用（或未到段尾）: 推进不得越过下游最近物品的 progress（一格一物品）。
       // 下游本 Tick 已处理（反向遍历）→ downMin 为最新值: 流动时队首正常 +0.025 前进
       // （下游物品同 Tick 也前进了），堵塞时停在下游物品位置后方。
-      const stopAt = Math.min(headAdvanced, downMin);
+      // cap 1.0: 下游 entering 物品（预约走进端口格）progress 可达 1.5 > 段尾——
+      // 非 entering 物品仍不得越过本段段尾 1.0（>1.0 仅预约物品合法，其走 entering 分支）。
+      const stopAt = Math.min(headAdvanced, Math.min(downMin, 1.0));
       head.progress = Math.max(oldHead, stopAt); // 不后退（防御异常重叠注入）
       head.delta = head.progress - oldHead; // 被夹住不动时 delta=0（渲染静止，不插值）
       leaderProgress = head.progress;
