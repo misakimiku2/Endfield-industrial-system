@@ -4,6 +4,9 @@
 > **状态**: 📋 方案设计完成，待实施（任务编号 T1.12，见 implementation-phase-1.md）
 > **提出背景**: 2026-08-20 端口三组并入切片（S2 §11.4）后，切片端口采用"顶/底行每格一口"假设。
 > 用户提出未来需要**无端口变体**（部分格/整行无端口的设备），要求预先出设计规范。
+> **2026-08-20 第二轮补充（用户）**: 液体输入输出口（现精炼炉侧边的液口）未来也可能出现在
+> **顶边/底边**——液体口与固体口功能相同（输入/输出），只是传输物品与造型不同。
+> 方案据此升级为"**每格端口类型掩码**"（无/固体/液体），液体口进 kit。
 > **原则**: 视觉端口 = 逻辑端口的派生（单一真相源是 `BuildingDefinition.ports`，
 > 不新增设备定义字段）。
 
@@ -11,9 +14,10 @@
 
 ## 0. 一句话
 
-把端口内容从切片组里**再拆一层**成为独立的 `port-*` 切片组，运行时按
-`def.ports` 派生的**端口掩码**逐格叠加——任意"哪些格有端口"的组合都是拼装参数，
-美术只需维护 6 个端口小件，零新增绘制工作。
+把端口内容从切片组里**再拆一层**成为独立的切片组——固体口 `port-*`、液体口
+`lport-*`——运行时按 `def.ports` 派生的**四边端口掩码**（顶/底行逐格 + 左/右列
+逐行）逐位叠加：任意"哪些格有什么类型的口"的组合都是拼装参数，美术每种口型
+只维护一份，新增设备零端口美术成本。
 
 ---
 
@@ -23,23 +27,36 @@
 
 `nineslice_unit.svg` 的顶/底行 6 类切片（tl/t/tr/bl/b/br）各自**固定携带**
 mid 面板 + top 面板 + 箭头。拼装规则只看 w×h，不知道逻辑端口在哪——即默认
-"顶行每格一个输出口、底行每格一个输入口"（精炼炉模式）。
+"顶行每格一个输出口、底行每格一个输入口"（精炼炉模式）。液体口（精炼炉
+`liquid_export`/`liquid_import`）画在设备 SVG 的 `layer-equipment`，逐设备自带。
 
-### 1.2 不满足的未来场景
+### 1.2 要满足的场景
 
 | 场景 | 例子 | 现状问题 |
 |------|------|----------|
 | 部分格端口 | 采种机 5×5：底行 dx=1..3 三个输入口，两角无口 | 角格被强塞端口，视觉与逻辑不符 |
-| 整行无端口 | 装饰性平台、无对接的储罐类设备 | 顶/底行全是端口，视觉噪音 |
-| 完全无端口 | 同上 | 同上 |
+| 整行/完全无端口 | 装饰平台、无对接的储罐类设备 | 顶/底行全是端口，视觉噪音 |
+| **液体口上/下边** | 未来化工设备：顶边液体出口、底边液体入口（管道竖接） | 液体口只能走 equipment，逐设备画 |
+| **液体口侧边多行** | 高设备（5×5）左侧两行各一个液口 | 现精炼炉液口固定在中间行，equipment 逐设备画 |
 
-### 1.3 方案选型
+### 1.3 端口模型认知（用户确认的功能等价性）
+
+液体输入输出口与固体（传送带）口的**功能完全相同**：都有输入/输出方向，只是
+传输的物品（液体 vs 固体）与造型不同。因此：
+
+- 视觉层：两种口都是"逐格重复件"，同等对待进 kit；
+- 数据层（⚠️ 前置依赖，见 §7）：现 `PortType = 'input' | 'output' | 'liquid'`
+  把"方向"与"介质"耦合（液体口无方向字段，靠位置约定左出右入）。液体口上/下边
+  落地时，A3 端口模型应演进为 `方向(in/out) × 介质(solid/liquid)` 二维表达；
+  S3 的掩码派生规则按新模型书写，旧模型按 §5.2 的过渡规则映射。
+
+### 1.4 方案选型
 
 | 路线 | 说明 | 结论 |
 |------|------|------|
-| ① 变体帧（slice-tl-np 等） | 每类切片做"有口/无口"两份 | ✗ 底座内容双份维护（边框改一次要改两处），帧数同样翻倍 |
+| ① 变体帧（slice-tl-np 等） | 每类切片做"有口/无口"两份 | ✗ 底座内容双份维护，组合爆炸（还要 ×固体/液体） |
 | ② 设备 SVG 自画端口盖住 | 无端口切片 + 设备自己画 | ✗ 回到逐设备美术，违背"零美术成本" |
-| ③ **拆层 + 掩码（本方案）** | 底座切片去端口化 + 独立 port-* 切片组，运行时按掩码叠加 | ✓ 每个元件只维护一份；任意组合零美术成本 |
+| ③ **拆层 + 类型掩码（本方案）** | 底座切片去端口化 + 独立 port-*/lport-* 切片组，运行时按四边掩码叠加 | ✓ 每个元件只维护一份；任意组合零美术成本 |
 
 ---
 
@@ -47,60 +64,52 @@ mid 面板 + top 面板 + 箭头。拼装规则只看 w×h，不知道逻辑端�
 
 ```
 拼装结果 = 底座切片网格（slice-*，无端口）
-          + 端口切片叠加（port-*，仅掩码命中的格）
-          + 设备 equipment 层（现状不变）
+          + 固体端口切片（port-*，仅顶/底掩码命中的格）
+          + 液体端口切片（lport-*，四边掩码命中的格）
+          + 设备 equipment 层（剩余专属部件）
           + logo 层（现状不变）
 ```
 
-**端口掩码**从设备定义派生，不新增字段：
+**端口掩码**从设备定义派生，不新增字段。四边各一组位图，每种介质一位：
 
 ```ts
-// 每行一个 w 位位图：第 dx 位 = 1 表示该格有端口
-interface PortMask { top: number; bottom: number }
+/** 一条边的端口位图（solid/liquid 各一张；顶/底边按列 dx 置位，左右边按行 dy 置位） */
+interface EdgePorts { solid: number; liquid: number }
 
-function portMaskFromDef(def: BuildingDefinition): PortMask {
-  // 顶行（dy=0）: 输出口所在格置位
-  // 底行（dy=h-1）: 输入口所在格置位
-  // 其余行（侧口/中间行）不进掩码——那是 equipment 层的事（见 §7 不做）
+interface PortMask {
+  top: EdgePorts;     // w 位
+  bottom: EdgePorts;  // w 位
+  left: EdgePorts;    // h 位（液体侧口；固体侧口见 §7 不做）
+  right: EdgePorts;   // h 位
 }
 ```
 
-- 精炼炉（3×3，顶 3 出 + 底 3 入）→ top=0b111, bottom=0b111 = 全掩码 → **渲染与现状逐像素一致**（迁移零视觉变化）
-- 采种机式（5×5，dx=1..3）→ top=0b01110, bottom=0b01110 → 两角无口
-- 无端口设备 → ports 为空 → mask 0 → 纯底座
+- 精炼炉（3×3）→ top.solid=0b111、bottom.solid=0b111、left.liquid=0b010
+  （dy=1 行）、right.liquid=0b010 → **渲染与现状逐像素一致**（迁移零视觉变化）
+- 采种机式（5×5，dx=1..3）→ top.solid=bottom.solid=0b01110 → 两角无口
+- 化工塔式（4×4，顶行 2 个液体出口 + 底行 2 个液体入口）→ top.liquid=0b0101 等
+- 无端口设备 → 全 0 → 纯底座
 
 旋转：掩码定义在默认朝向（0°），容器整体旋转，视觉口随逻辑口一起转（与现有
 port 旋转语义一致）。
 
+**方向约定**（沿现有素材惯例，kit 切片按此定型）：顶边 = 输出口造型、底边 =
+输入口造型；左右边 = 左出口、右进口（现精炼炉 liquid_export 左 / liquid_import 右）。
+设备若需要违反约定（如顶边放输入口），该口走 equipment 层自画（§7）。
+
 ---
 
-## 3. 美术规范（nineslice_unit.svg 改造）——你只需要做这一步
+## 3. 美术规范（nineslice_unit.svg 改造）
 
-### 3.1 调整内容（Inkscape 操作，约 30 分钟）
+### 3.1 固体口（剪切-粘贴，坐标零修改，约 30 分钟）
 
-**剪切-粘贴**：把现有 6 个顶/底行切片组里的 3 个端口元素（`*-port-mid`、
-`*-port-top`、`*-port-arrow`）剪切出来，按同格放入新建的 `port-*` 组。
-**坐标一个数都不用改**——只是换组。
-
-### 3.2 改造后的组结构
+把现有 6 个顶/底行切片组里的 3 个端口元素（`*-port-mid`、`*-port-top`、
+`*-port-arrow`）剪切出来，按同格放入新建的 `port-*` 组：
 
 ```
-slice-tl   ← 只剩底座（底板+边框）          port-tl   ← mid面板+top面板+箭头（外列几何）
-slice-t    ← 底座+A柱                      port-t    ← 端口（中列几何）
-slice-tr   ← 底座+B柱                      port-tr   ← 端口（外列镜像几何）
-slice-l    ← 左轨（不变）                  port-bl   ← 底行端口（外列）
-slice-c    ← 空（不变）                    port-b    ← 底行端口（中列）
-slice-r    ← 右轨（不变）                  port-br   ← 底行端口（外列镜像）
-slice-bl / slice-b / slice-br ← 底座（不变）
+port-tl / port-t / port-tr     ← 顶行（输出口造型，箭头朝上）
+port-bl / port-b / port-br     ← 底行（输入口造型，箭头朝上）
 ```
-
-命名规则：
-- 底座组维持 `slice-{方位}`（S2 现状）
-- 端口组用 **`port-{方位}`**（`port-tl` … `port-br`，共 6 组；中间行无端口组）
-- 两组内容仍画在**各自对应的格内**（顶行组在 3×3 画布的第 0 行，底行组在第 2 行），
-  提取窗口与切片相同（±1.0583 单位边距，72px 源窗）
-
-### 3.3 元素坐标（从现 nineslice_unit.svg 原样迁移，备忘）
 
 | 组 | mid 面板（#cbc9c9, 12.153×8.669） | top 面板（#e0dede, 10.455×5.859） | 箭头（#828080 描边 0.79375 圆帽） |
 |----|----------------------------------|-----------------------------------|----------------------------------|
@@ -111,31 +120,54 @@ slice-bl / slice-b / slice-br ← 底座（不变）
 | port-b  | x=19.323446 y=39.087875 | x=20.172321 y=41.898422 | 顶点(25.400002, 44.542969) |
 | port-br | x=35.595318 y=39.087891 | x=36.444194 y=41.898422 | 顶点(41.671873, 44.542969) |
 
-- 顶行箭头朝上（输出口，物流向外），底行箭头朝上（输入口，物流向内）——即现状方向。
-- 外列（tl/bl、tr/br）与中列（t/b）的面板几何差异、箭头外列偏移格心 +0.662 均沿用原素材。
+### 3.2 液体口（新绘 + 改制，一次性 kit 投资）
 
-### 3.4 未来新端口皮肤（预留，不在本任务）
+液体口切片 = 现有 `liquid_export.svg` / `liquid_import.svg` 造型按所在边适配，
+共 8 组。**顶/底边是新造型（半圆盘贴合横边带，需旋转改制），左右边直接沿用
+现有侧边造型归组**：
 
-若某类设备要不同风格的端口件（如农业口/电力口），另建 `nineslice_port_xxx.svg`
-按同规范切 6 组，键名前缀区分（`nineslice/port-x/tl` …）。管线零改动（§4 按
-`port-` 前缀识别即可扩展），运行时按设备类别选皮肤——**待第一个真实需求出现再定**。
+| 组 | 内容 | 造型基准 | 状态 |
+|----|------|----------|------|
+| lport-tl / lport-t / lport-tr | 顶边液体**出口** | liquid_export 旋转 90°（半圆盘挂顶边带，箭头朝上，黄色指示点 #ffef00） | 新绘 |
+| lport-bl / lport-b / lport-br | 底边液体**入口** | liquid_import 旋转 90°（半圆盘挂底边带，白色指示点 #ffffff） | 新绘 |
+| lport-l | 左边液体**出口** | liquid_export 现造型（贴合左竖轨） | 现素材归组 |
+| lport-r | 右边液体**入口** | liquid_import 现造型（贴合右竖轨） | 现素材归组 |
+
+绘制硬约束：
+1. 每组内容画在自己对应的格内（顶行组在第 0 行、底行组在第 2 行、lport-l 在
+   第 1 行第 0 列、lport-r 在第 1 行第 2 列），提取窗口与切片相同
+   （±1.0583 单位边距，72px 源窗）——侧口造型允许像柱子一样小幅越出格界，
+   越界内容随窗口保留（先测量确认 ≤ 1.0583，超出则调小造型）。
+2. 半圆盘贴边安装：顶/底口贴合横边带外沿（y≈1.32~1.85 一带），左右口贴合竖轨
+   （x≈1.32~1.85 / 48.95~49.48），与现素材对侧边的贴合方式一致。
+3. 出口/入口的区分沿用现素材语言：出口 = 黄色指示点 + 箭头朝**外**（物流方向），
+   入口 = 白色指示点 + 箭头朝**外**（指向对接来路），即各自保持 liquid_export /
+   liquid_import 的既有约定，不做新发明。
+4. 顶/底边的左 中 右三列是否需要像固体口那样区分外列/中列几何，由美术定夺
+   （液体口是圆形件，左右对称，建议三列同款居中，仅按掩码落位——比固体口简单）。
+
+### 3.3 未来新端口皮肤（预留，不在本任务）
+
+若某类设备要不同风格的端口件（农业口/电力口），另建 `nineslice_port_xxx.svg`
+按同规范切组，键名前缀区分。管线零改动（§4 按 `port-`/`lport-` 前缀识别），
+运行时按设备类别选皮肤——待第一个真实需求出现再定。
 
 ---
 
 ## 4. 打包管线（pack-assets.ts）
 
-`extractNinesliceSlices` 扩展：除 9 个 `slice-*` 组外，识别 6 个 `port-*` 组，
-同样按"所在格 ± 边距"窗口提取。输出键：
+`extractNinesliceSlices` 扩展：除 9 个 `slice-*` 组外，识别 `port-*`（6 组）与
+`lport-*`（8 组），同样按"所在格 ± 边距"窗口提取。输出键：
 
 | 组 | 纹理 key |
 |----|----------|
-| port-tl / port-t / port-tr | nineslice/port-tl、nineslice/port-t、nineslice/port-tr |
-| port-bl / port-b / port-br | nineslice/port-bl、nineslice/port-b、nineslice/port-br |
+| port-tl…port-br | nineslice/port-tl … nineslice/port-br（6 帧） |
+| lport-tl…lport-br | nineslice/lport-tl … nineslice/lport-br（6 帧） |
+| lport-l / lport-r | nineslice/lport-l、nineslice/lport-r（2 帧） |
 
 - 帧尺寸与切片一致（288²，4× 超采样；全透明组跳过的规则同 c 块）
-- 图集增量：+6 帧 ≈ +0.5M 像素（4096×2048 充裕）
-- 端口帧可选 trim（内容仅约 50×40 源px，PixiJS 原生 trim 对消费方透明）——
-  为保持与切片统一的窗口数学，v1 不 trim，留作后续优化
+- 图集增量：+14 帧 ≈ +1.17M 像素（4096×2048 = 8.4M 仍有余量；若紧张，端口帧
+  可开 trim——内容仅约 50×40 源px，PixiJS 原生 trim 对消费方透明，留作优化项）
 
 ---
 
@@ -144,61 +176,101 @@ slice-bl / slice-b / slice-br ← 底座（不变）
 ### 5.1 组装 API
 
 ```ts
-/** 端口掩码 → 顶/底行每格是否有口（位图，低位 = dx=0） */
-export function portMaskFromDef(def: BuildingDefinition): { top: number; bottom: number }
+/** 四边端口位图（§2 的 PortMask），从 BuildingDefinition.ports 派生 */
+export function portMaskFromDef(def: BuildingDefinition): PortMask
 
 /** 底座网格（现状 buildNineSliceBase，去端口化） */
 buildNineSliceBase(w, h, getTexture): Container
 
-/** 端口叠加层：仅掩码命中的格放 port-* Sprite（同格同窗，z 序在底座之上） */
+/** 端口叠加层：四边掩码命中的格各放一个 port-*/lport-* Sprite（z 序在底座之上） */
 buildNineSlicePorts(w, h, mask, getTexture): Container
 
-/** 烘焙：底座+端口 → 单张 RenderTexture；缓存键 = `${w}x${h}|t${top.toString(36)}b${bottom.toString(36)}` */
+/** 烘焙：底座+全部端口 → 单张 RenderTexture；缓存键含四边 solid/liquid 位图 */
 getBakedNineSliceTexture(w, h, mask, renderer, getTexture): Texture
 ```
 
-- 烘焙缓存含掩码：同尺寸同掩码的设备共享一张（如 100 台同款 5×5 采种机 = 1 张烘焙纹理）
-- 掩码组合数理论很大，但现实中 = 设备种类数 ×（每种的 ports 定义唯一）——缓存规模 = 设备款数
+- 烘焙缓存含掩码：同尺寸同掩码的设备共享一张；缓存规模 ≈ 设备款数（每款 ports 唯一）
+- 预览 / 工具栏图标同构（叠一层 ports，tint 逐 Sprite 自动覆盖）
+- PortHighlightRenderer **零改动**（逐端口高亮帧仍来自设备 SVG 隐藏层；kit 白帧
+  泛化见 §7）
 
-### 5.2 接线
+### 5.2 掩码派生规则（含旧数据模型过渡）
 
-- **RenderSystem.createNinesliceEntry**: 烘焙调用加 mask（从 def 派生）；无 renderer
-  的回退路径 = base 容器 + ports 容器两层叠放
-- **PlacementSystem 预览 / InventoryUI 图标**: 同样叠一层 ports（tint 逐 Sprite 自动覆盖）
-- **PortHighlightRenderer**: **零改动**（逐端口高亮帧仍来自设备 SVG 的隐藏层，
-  现状机制不变；kit 白帧泛化见 §7）
+**目标模型**（A3 演进后，端口 = 方向 × 介质）：
+
+| 端口定义 | 掩码动作 |
+|----------|----------|
+| medium=solid, direction=out, dy=0 | top.solid \|= 1<<dx |
+| medium=solid, direction=in, dy=h-1 | bottom.solid \|= 1<<dx |
+| medium=liquid, direction=out, dx=0 | left.liquid \|= 1<<dy |
+| medium=liquid, direction=in, dx=w-1 | right.liquid \|= 1<<dy |
+| medium=liquid, direction=out/in, dy=0 / dy=h-1 | top.liquid \|= 1<<dx / bottom.liquid \|= 1<<dx |
+
+**过渡规则**（现 `PortType = 'input'|'output'|'liquid'`，液体口无方向）：
+
+| 现定义 | 映射 |
+|--------|------|
+| type=input/output, dy=h-1/0 | bottom.solid / top.solid（同目标模型） |
+| type=liquid, dx=0（任意 dy） | left.liquid \|= 1<<dy（左=出口，现约定） |
+| type=liquid, dx=w-1（任意 dy） | right.liquid \|= 1<<dy（右=进口） |
+| type=liquid, dy=0 或 dy=h-1 | **不进掩码**（顶/底液体口需方向信息，等 §7 数据模型拆分后启用；此前此类口走 equipment 自画） |
+
+精炼炉用过渡规则派生：left.liquid=0b010、right.liquid=0b010 → 与现状逐像素一致。
 
 ---
 
 ## 6. 兼容与验收
 
-1. **精炼炉零变化**: 全掩码渲染与 S2 §11.4 现状逐像素一致（离线 0 差异 + zoom2 0%）
-2. **无端口设备**: ports 为空的 demo（`test_nineslice_4x3` 改 ports: []）渲染纯底座
-3. **部分端口**: demo 掩码 0b0101（4×3 两角有口）→ 只有命中格有面板/箭头；旋转 90° 后位置正确
-4. **图集**: +6 帧后仍 ≤ 4096×2048
-5. **回归**: verify-t1.11（对比基准 = slice-*+port-* 全叠加 vs 原四组素材）、t28 高亮对齐
+1. **精炼炉零变化**: 固体全掩码 + 左右液体位 → 与 S2 §11.4 现状逐像素一致
+   （离线 0 差异 + zoom2 0%；可选加做：精炼炉液口从 equipment 迁到 lport-l/r
+   切片，equipment 帧进一步清空——同样 0 差异验收）
+2. **无端口设备**: ports 为空的 demo 渲染纯底座
+3. **部分固体端口**: demo 掩码 0b0101 → 只有命中格有面板/箭头；旋转后位置正确
+4. **液体口**: 顶/底液体 demo（新绘造型落位）+ 侧边液体多行 demo（如 5×5 左边
+   两个 lport-l）→ 贴边正确、方向正确
+5. **图集**: +14 帧后仍 ≤ 4096×2048
+6. **回归**: verify-t1.11（对比基准 = slice-*+port-* 全叠加 vs 原四组素材）、t28 高亮对齐
 
 ---
 
-## 7. 明确不做（排除项）
+## 7. 依赖与明确不做
 
-- **侧边/中间行端口进 kit**: 侧口（如精炼炉液口）继续走设备 equipment 层——
-  现有设备均为顶出/底入的 solid 口约定，侧口是个性化部件
-- **PortHighlightRenderer 的 kit 白帧泛化**: 让新设备免画 12 个高亮隐藏层的自然
-  后续（kit 出 `port-*-white` 帧 + 渲染器按端口格放 72px 小 Sprite），但牵扯 T2.8
-  状态视觉回归面较大，与端口变体解耦，待第一台"无自有 SVG 端口层"的设备立项时再做
-- **端口皮肤变体**: §3.4 预留命名，不实现
+### 7.1 ⚠️ 前置依赖：A3 端口数据模型拆分（仅液体上/下边需要）
+
+液体口要出现在顶/底边，`PortType` 需从 `'input'|'output'|'liquid'` 演进为
+**方向 × 介质** 二维（如 `{ direction: 'in'|'out', medium: 'solid'|'liquid' }`
+或 `type: 'input'|'output'` + `medium: 'solid'|'liquid'`），否则顶边液体口无法
+表达"它是出口还是入口"。这是 A3（building-spec）层面的数据模型修订，波及
+buildings.ts / MachineSystem / PortStatusOps 等 Phase 2 消费方——**独立小任务**，
+在第一台顶/底液体口设备立项时先做。S3 的掩码派生按目标模型书写（§5.2），
+过渡规则保证旧模型设备（精炼炉）即时可用。
+
+### 7.2 明确不做（排除项）
+
+- **固体口出现在左右边**: 现有固体物流约定为传送带竖接（顶出/底入），左右边
+  固体口无需求；真出现时按 lport 同款扩 `port-l/port-r` 切片 + left.solid/right.solid
+  位（结构已预留，勿需改架构）
+- **违反"顶出/底入/左出/右入"方向约定的口**: 走设备 equipment 层自画
+  （kit 切片按方向定型，避免每方向 × 每介质 × 每位置的组合爆炸）
+- **PortHighlightRenderer 的 kit 白帧泛化**: 让新设备免画逐端口高亮隐藏层的
+  自然后续（kit 出白源端口帧 + 渲染器按端口格放小 Sprite，固体+液体通用），
+  牵扯 T2.8 状态视觉回归面较大，与端口变体解耦，待第一台"无自有 SVG 端口层"
+  的设备立项时再做
+- **端口皮肤变体**: §3.3 预留命名，不实现
 
 ---
 
-## 8. 实施拆分（T1.12，预估 1 次会话）
+## 8. 实施拆分（T1.12，预估 1~2 次会话，可按阶段裁剪）
 
 | 步骤 | 内容 | 交付物 |
 |------|------|--------|
-| a | 美术：nineslice_unit.svg 剪切重组（§3.1） | slice-*/port-* 组结构 |
-| b | 管线：extractNinesliceSlices 识别 port-* | nineslice/port-* 6 帧 |
-| c | 运行时：portMaskFromDef + buildNineSlicePorts + 烘焙缓存键 | 渲染链路 |
-| d | 验收：§6 五项 + 文档同步（S1 §9.2 ⚠️ 条目解除） | 验收报告 |
+| a | 美术-固体: slice 组端口三元素剪切到 port-*（§3.1，坐标零修改） | port-* 6 组 |
+| b | 美术-液体: lport 左右组归组 + 顶/底组新绘（§3.2） | lport-* 8 组 |
+| c | 管线: extractNinesliceSlices 识别 port-*/lport-* | nineslice/* +14 帧 |
+| d | 运行时: portMaskFromDef（含过渡规则）+ buildNineSlicePorts + 烘焙缓存键 | 渲染链路 |
+| e | 验收: §6 六项 + 文档同步（S1 §9.2 ⚠️ 条目解除） | 验收报告 |
 
-执行时机：**第一台部分端口/无端口设备美术立项时**（或之前任何时候——改动小、
-收益即时，refining 等现有设备零影响）。
+**阶段裁剪**: 只需固体变体时执行 a+c+d+e（b/液体部分延后，掩码结构不变）；
+精炼炉液口迁移 equipment→lport 为可选项（§6-1）。
+执行时机：**第一台部分端口/无端口/液体上下面设备美术立项时**（或之前任何时候
+——改动小、收益即时，refining 等现有设备零影响）。

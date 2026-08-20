@@ -231,10 +231,12 @@ slice-bl  slice-b   slice-br
      （默认朝向：顶行输出朝上、底行输入朝上，随容器整体旋转）
   即：**九宫格设备不再在自己的 SVG 里画 ports/arrows**——设备 SVG 只剩 equipment
   （如精炼炉液口）与 logo 等专属层；端口外观由切片自动铺满顶/底行。
-  ⚠️ 该模式当前假设 logical ports "每格一口"（精炼炉模式）。部分格/无端口的
-  设备已由 **S3 端口变体方案**（[nineslice-port-variant.md](nineslice-port-variant.md)，
-  任务 T1.12 待实施）解决：端口拆为独立 `port-*` 切片组，按 `def.ports` 派生
-  掩码逐格叠加，零美术成本。实施前，此类设备需设备 SVG 自画端口盖住切片端口。
+  ⚠️ 该模式当前假设 logical ports "每格一口"（精炼炉模式）。部分格/无端口/液体口
+  任意边（含液体口上/下边）的设备已由 **S3 端口变体方案**
+  （[nineslice-port-variant.md](nineslice-port-variant.md)，任务 T1.12 待实施）解决：
+  端口拆为独立 `port-*`（固体）+ `lport-*`（液体）切片组，按 `def.ports` 派生
+  四边类型掩码逐位叠加，零美术成本。实施前，此类设备需设备 SVG 自画端口盖住
+  切片端口；精炼炉侧液口在此之前也继续走 equipment。
 
 ### 9.3 平铺规则（w×h 设备）
 
