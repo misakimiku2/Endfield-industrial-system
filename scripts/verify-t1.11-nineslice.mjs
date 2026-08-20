@@ -87,7 +87,7 @@ console.log('\n[A] 3×3 拼装 vs 3x3_unit.svg layer-base 逐像素（像素级�
 
 // ── B. 多尺寸结构探针 ──
 console.log('\n[B] 多尺寸结构（边框环 / 内部竖线柱 / 无缝）');
-for (const [w, h] of [[6, 3], [6, 6], [2, 2], [5, 5]]) {
+for (const [w, h] of [[4, 3], [6, 3], [6, 6], [2, 2], [5, 5]]) {
   const { png, PAD } = await assemble(w, h);
   const { data, info } = await sharp(png).raw().toBuffer({ resolveWithObject: true });
   const W = info.width;

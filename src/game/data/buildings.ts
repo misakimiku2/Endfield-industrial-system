@@ -244,6 +244,24 @@ export const BUILDING_DEFINITIONS: Record<string, BuildingDefinition> = {
   // RenderSystem/PlacementSystem 对缺失 equip 帧天然跳过）。仅供
   // __game.placeAt('test_nineslice_*', gx, gy, dir) 程序化验收：
   // 边框完整一圈、柱子钉在每条内部竖格线端部、无平铺接缝、旋转后正确。
+  test_nineslice_4x3: {
+    id: 'test_nineslice_4x3',
+    name: '九宫格4×3',
+    category: 'production',
+    footprint: { w: 4, h: 3 },
+    ports: [
+      { type: 'input', position: { dx: 1, dy: 2 } },
+      { type: 'output', position: { dx: 2, dy: 0 } },
+    ],
+    texture: 'test_nineslice_4x3',
+    baseStyle: 'nineslice',
+    selectable: true,
+    buildCost: [{ itemId: 'stone', count: 1 }], // 名义占位（验收 demo 设备，无经济语义）
+    powerConsumption: 0,
+    inputSlotCount: 1,
+    outputSlotCount: 1,
+    bufferCapacity: 50,
+  },
   test_nineslice_6x3: {
     id: 'test_nineslice_6x3',
     name: '九宫格6×3',
