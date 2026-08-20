@@ -21,6 +21,7 @@
 | T1.9 设备删除 | ✅ 完成 | `DeleteSystem.ts`（Delete 键删除选中设备、释放 footprint 占用、RenderSystem 自动移除 Sprite、无选中无反应） |
 | T1.10 性能基准测试 | ✅ 完成 | 100 设备 FPS ≥ 55 + 内存监控（JS 堆 / GPU 纹理内存） |
 | T1.11 九宫格设备底座 | ✅ 完成 | `nineslice_unit.svg` 9 切片 + pack-assets 切片提取/层帧白名单/trim + `NineSliceAssembler`（RenderTexture 烘焙）+ refining_unit 迁移。图集 8192→**4096×2048**（帧面积 16.6M→3.8M），3×3 拼装**像素级还原**（离线 0 差异/zoom2 0 差异），100×3×3+50×6×6 FPS avg 144。方案 [S2](nine-slice-device-base.md) |
+| T1.12 九宫格端口变体 | 📋 方案就绪待实施 | 端口从切片拆层为独立 `port-*` 组 + 按 `def.ports` 派生端口掩码逐格叠加——部分端口/无端口设备零美术成本（方案 [S3](nineslice-port-variant.md)，建议第一台部分端口设备立项时实施） |
 
 > **文档修订**: DD-008 已修订（设备 SVG / 物品 PNG 双格式，见 core-decisions.md）。  
 > **PixiJS 踩坑**: 见文末 [附录 A：PixiJS v8 踩坑记录](#附录-a-pixijs-v8-踩坑记录)，T1.5/T1.6 开发前务必阅读。
@@ -845,3 +846,35 @@ app.ticker.add(() => {
 
 > **签入**: Phase 1 每个任务完成后 commit，提交信息格式 `Phase 1.x: 简短描述`  
 > **分支策略**: 直接在 master 开发（单人项目），不进 Phase 2 不做 tag
+
+---
+
+## T1.12 — 九宫格端口变体（📋 方案就绪待实施）
+
+> **性质**: T1.11 的自然延伸（渲染/素材管线基建），不依赖 Phase 2 生产逻辑。
+> **完整方案**: [nineslice-port-variant.md](nineslice-port-variant.md)（S3）——本节只做任务卡。
+
+### 目标
+
+解决 S2 §11.4 端口并入切片后的"顶/底行每格一口"假设：把端口内容拆为独立
+`port-*` 切片组，运行时按 `BuildingDefinition.ports` 派生的端口掩码逐格叠加。
+部分端口（采种机式）、整行无端口、完全无端口设备全部零美术成本。
+
+### 需求（详细设计见 S3 §8）
+
+- **a 美术**: `nineslice_unit.svg` 把 6 个顶/底行切片组里的端口三元素剪切到同格
+  新建的 `port-*` 组（坐标零修改）
+- **b 管线**: `extractNinesliceSlices` 识别 `port-*` 组 → `nineslice/port-*` 6 帧
+- **c 运行时**: `portMaskFromDef` + `buildNineSlicePorts` + 烘焙缓存键加掩码
+- **d 验收**: 精炼炉全掩码零变化（0 差异）、无端口/部分端口 demo、图集 ≤4096、回归
+
+### 验收标准（你在浏览器看到的效果）
+
+- **精炼炉外观不变**（全掩码 = 现状，像素级一致）
+- **无端口 demo**: 底座无面板无箭头
+- **部分端口 demo**: 如 4×3 掩码 `0101` → 仅两格有端口；旋转后位置正确
+- **零回归**: verify-t1.11 / t28 全绿
+
+### 建议排期
+
+第一台**部分端口/无端口**设备美术立项时（或之前任何时候——改动小、现有设备零影响）。预估 1 次会话。
