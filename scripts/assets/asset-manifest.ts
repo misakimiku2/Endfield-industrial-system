@@ -96,7 +96,46 @@ export const DEVICE_FILES: readonly string[] = [
   // T2.8 状态徽标（billboard LOGO 状态切换用，随设备层 4× 栅格化）
   'Pause_Logo.svg',
   'Blocked_Logo.svg',
+  // T1.11 九宫格底座切片源（不输出主帧，只输出 nineslice/* 9 切片帧，见 NINESLICE_FILES）
+  'nineslice_unit.svg',
 ];
+
+/**
+ * 九宫格底座切片源文件白名单（T1.11b，方案 S2）。
+ * 这些文件**不输出整机主帧**——pack-assets 对每个 slice-* 组按其所在格
+ * ±NINESLICE_MARGIN_SRC_PX 的窗口光栅化，输出 `nineslice/<方位>` 8~9 帧
+ * （全透明的切片如中心 c 块跳过）。运行时由 NineSliceAssembler 按 footprint 平铺。
+ */
+export const NINESLICE_FILES: readonly string[] = ['nineslice_unit.svg'];
+
+/**
+ * 切片提取的窗口边距（源像素）。切片内容允许越出自己格子（柱子突出、
+ * 边框带切分重叠 0.3 单位≈1.13px、B 形柱左探 0.99 单位≈3.75px），
+ * 窗口 = 64px 格 + 每边 4px 边距 = 72px 源（4× 光栅化后 288²）。
+ * 运行时每个切片 Sprite 覆盖 72×72 世界像素、中心对齐格中心。
+ */
+export const NINESLICE_MARGIN_SRC_PX = 4;
+
+/**
+ * 设备 SVG 功能层帧白名单（T1.11b 瘦身，S2 §4.2）。
+ * base/ports/arrows/indicators/equipment 整层帧运行时无人消费（用的是主帧整图 +
+ * 逐端口小帧），打包即浪费（每帧全画布占位）。只保留运行时实际消费的层：
+ *   - logo / logo-glow: billboard 徽标双层（RenderSystem T2.8）
+ *   - port-* / arrow-*: 逐端口面板/箭头帧（PortHighlightRenderer T2.8）
+ *   - state-*: 预留未来状态层
+ */
+export const DEVICE_LAYER_WHITELIST: { exact: readonly string[]; prefixes: readonly string[] } = {
+  exact: ['logo', 'logo-glow'],
+  prefixes: ['port-', 'arrow-', 'state-'],
+};
+
+/** 判断功能层名是否在打包白名单内（layer- 后的名字，如 'port-in-0'）。 */
+export function isLayerWhitelisted(layerName: string): boolean {
+  return (
+    DEVICE_LAYER_WHITELIST.exact.includes(layerName) ||
+    DEVICE_LAYER_WHITELIST.prefixes.some((p) => layerName.startsWith(p))
+  );
+}
 
 /**
  * UI 部件白名单(src/assets/svg/ 中属于 UI 的文件 + png/window/Close_button.svg)。
@@ -114,13 +153,13 @@ export const EXCLUDE_FILES: readonly string[] = [
 
 /**
  * 图集最大边长(POT)。
- * 8192：WebGL2 下现代 GPU（集成核显亦然）MAX_TEXTURE_SIZE 普遍 ≥8192。
- * devices 图集因 T2.8 逐端口帧（12 个 768² 全画布帧：port 与 arrow 各 6）+ logo-glow
- * 达 37 块，4096² 装不下（shelfPack 报需 4096×8192）→ 提升到 8192。
- * ⚠️ 若未来需兼容低端移动 GPU（MAX_TEXTURE_SIZE=4096），需改为裁剪子帧内容
- *    bounds 打包（当前子帧为全画布透明占位，浪费面积）。
+ * 4096：WebGL2 安全上限。T1.11 后 devices 图集已瘦身——九宫格底座（9 帧 288²，
+ * 与设备尺寸解耦）+ 层帧白名单（砍掉无人消费的 base/ports/arrows/indicators/
+ * equipment 整层帧）+ 层帧 trim（裁掉 alpha bounds 外透明，逐端口帧从全画布
+ * 768² 缩到实际内容大小）——总量 < 10M，4096²（16.7M）足够。
+ * （T2.8 期间曾临时扩到 8192，T1.11b 回落，兼容性最稳。）
  */
-export const MAX_ATLAS_SIZE = 8192;
+export const MAX_ATLAS_SIZE = 4096;
 
 /**
  * 图集中每个图块之间的 padding(像素)，避免纹理采样溢出(bleeding)。

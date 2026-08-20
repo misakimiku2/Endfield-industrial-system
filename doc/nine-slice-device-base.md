@@ -1,7 +1,7 @@
 # 九宫格设备底座方案（Nine-Slice Device Base）
 
 > **编号**: S2（素材/渲染方案，S1 asset-drawing-standard.md 的姊妹篇）
-> **状态**: ✅ 方案已批准，待实施（任务编号 T1.11，见 implementation-phase-1.md）
+> **状态**: ✅ **已实施完成**（T1.11a~d，2026-08-20。实施记录见文末 §11，实测修正 §11.2）
 > **Phase 归属**: 🔵 Phase 1 补充任务（渲染/素材管线基建，不依赖 Phase 2 生产逻辑）
 > **依据**: [S1 asset-drawing-standard.md](asset-drawing-standard.md)、[A3 building-spec.md](architecture/building-spec.md) §2.4（SVG 功能层）、implementation-phase-1.md T1.3/T1.6/T1.7
 > **提出背景**: 2026-08-18 T2.8 开发期间 devices 图集 37 帧顶满 4096² → 临时扩容 8192。讨论设备尺寸增长（6×6 等）时图集面积 ∝ n² 爆炸的问题，用户提出九宫格平铺方案。经与素材实际结构（3x3_unit.svg 本就按 `base-pos-{r}-{c}` 分块绘制）核对，方案成立且是三种路线（扩容 / trim / 九宫格）中收益最大者。
@@ -254,3 +254,49 @@ src/game/render/NineSliceAssembler.ts
 - 九宫格件旋转归并（4 角共享 1 帧 + 运行时 rotation，可再省 ~0.4M）——收益小、增加拼装复杂度，v1 直接存 9 帧
 - 传送带、UI、物品图集改造（不涉及）
 - 已放置存量设备的自动迁移（whole 路径永久兼容，迁移按设备逐个自愿）
+
+---
+
+## 11. 实施记录（2026-08-20，T1.11a~d 全部完成）
+
+### 11.1 验收结果对照（§8 逐条）
+
+| # | 验收项 | 结果 |
+|---|--------|------|
+| 1 | 3×3 像素级还原 | ✅ 离线 8× 光栅 **0 差异像素**；浏览器 zoom2 **0.00%**（2px/60592，GPU 重采样尾差 maxΔ36）、zoom1 2.03%（289px 全在 1px 抗锯齿边界带）、zoom4 截图留档（`gui-test-screenshots/t111_*`） |
+| 2 | 任意尺寸正确性 | ✅ 6×3/5×5/6×6 + 90°/180° 放置；边框环完整、每条内部竖格线端部有柱、顶带 0 缺口（`scripts/verify-t1.11-nineslice.mjs` 11 断言 + 浏览器探针） |
+| 3 | 端口高亮联动 | ✅ t28 CDP 测试 17/17（连接黄/堵塞红/箭头白在迁移+trim 后逐端口对齐） |
+| 4 | 图集瘦身 | ✅ 8192×4096 → **4096×2048**；帧面积 16.62M → **3.80M**（-77%）；逐端口帧 768² → 160×89 |
+| 5 | 性能 | ✅ 100×3×3 + 50×6×6 FPS avg **144** / p95 147 / min 137（门槛 55）；纹理内存 46.8MB 恒定 |
+| 6 | 回归 | ✅ t1.x/t2x Node + CDP 全绿（t21:7 t22:7 t23-24:9 t25:18+45 t26:15+48 t27:15+42 t28:17+41） |
+
+### 11.2 与原方案的实测修正
+
+1. **底板 6 块非 9 块（§1.3 笔误）**: 实测 `3x3_unit.svg` base 层只有顶/底行各 3 块底板，
+   中间行是空心"画框"（仅左右 2px 竖轨）。c/l/r 切片**无底板**（c 全空，不打包帧），
+   §8-2 "底板每格一块"按实际素材为"仅顶/底行"。这是 3×3 像素级还原的前提。
+2. **柱子归属（§3.3-3 修正）**: 原素材两条内部竖线上的柱子互为镜像（A 形线左 0.33/线右
+   0.99；B 形反之）。t/b 切片左端画 A 柱、**tr/br 切片左端画 B 柱**（"角块无柱"修正为
+   "tl/bl 无柱"）——w=3 时与原素材 4 柱逐坐标一致，任意 w≥2 每条内部竖线恰好一根柱。
+3. **切分缝 ε 重叠**: 边框带按格切分时缝两侧各多画 0.3 单位不透明同色重叠（切片窗口
+   ±1.0583 单位保留越界内容），避免抗锯齿切割缝出现半透明接缝。
+4. **已放置设备走 RenderTexture 烘焙（§5.2 v2 方案提前启用）**: 逐切片 Sprite 方案在
+   zoom<1 的 mipmap 半透明区，ε 重叠带双重绘制会在 2px 细轨上出周期性暗斑（实测
+   178↔143 交替）。`getBakedNineSliceTexture(w,h)` 按尺寸烘焙缓存（resolution 4 对齐
+   DEVICE_RASTER_SCALE），每设备 1 Sprite、mip 行为与原整帧一致。注意
+   `autoGenerateMipmaps` 必须经 `textureSourceOptions` 在 generateTexture 创建时传入
+   （事后设置赶不上其内部立即调用的 updateMipmaps，实测低 zoom 闪烁）。预览染色与
+   工具栏图标仍用拼装容器。
+5. **trim 无需运行时补偿（§4.3 预想的 layerFrameAnchor() 不需要）**: PixiJS v8
+   `Texture.width` 返回 orig（sourceSize），anchor 0.5 按 orig 对齐——PortHighlightRenderer
+   /RenderSystem 现有数学零改动。唯一例外: `*_arrow_mask` 帧**不 trim**（PreviewTintFilter
+   把设备局部 [0,1] 映射到 mask 帧的图集 UV rect，帧=全画布是该 shader 的隐含契约）。
+6. **logo 显式缩放**: nineslice 根容器 scale=1（whole 靠设备 Sprite 缩放继承），logo 全画布
+   帧需按 设备px/纹理px 显式缩放，否则以 4× 尺寸溢出（实施中实测修复）。
+7. **nineslice 预览箭头不变白**: 预览染色为容器逐 Sprite tint（§5.3 原设计），
+   whole 路径的 PreviewTintFilter（箭头白）保留，nineslice 无整机 mask 帧可用。
+
+### 11.3 新增设备接入方式
+
+见 S1 §9.7：`baseStyle: 'nineslice'` + 只画 equipment/ports/arrows/logo 层的设备 SVG，
+重跑 pack-assets 即可——底座零美术成本。验收 demo: `__game.placeAt('test_nineslice_6x6', x, y, dir)`。

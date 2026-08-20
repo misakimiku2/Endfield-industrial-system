@@ -19,6 +19,7 @@ import {
   type Application,
 } from 'pixi.js';
 import { World } from '../src/game/ECS.ts';
+import { createBufferSlots } from '../src/game/systems/machine/BufferOps';
 import { Camera } from '../src/game/render/Camera.ts';
 import type { SceneLayers } from '../src/game/render/SceneRenderer.ts';
 import { RenderSystem } from '../src/game/systems/RenderSystem.ts';
@@ -28,6 +29,13 @@ import type { Direction } from '../src/game/components/BuildingComp.ts';
 import { MapInstance } from '../src/game/world/MapInstance.ts';
 import { OccupancyMap } from '../src/game/world/OccupancyMap.ts';
 import { CELL_SIZE } from '../src/game/render/constants.ts';
+/** T1.11c: 设备渲染根有两种形态（whole=Sprite / nineslice=Container label 前缀）。 */
+const deviceRenderRoots = (layer: { children: unknown[] }): unknown[] =>
+  layer.children.filter((c) =>
+    c instanceof Sprite ||
+    (c instanceof Container &&
+      String((c as Container).label ?? '').startsWith('nineslice-device')));
+
 
 let passed = 0;
 let failed = 0;
@@ -83,6 +91,24 @@ function makeSharedTextures(): Map<string, Texture> {
       label: 'devices/refining_unit/logo',
     }),
   );
+  map.set(
+    'devices/refining_unit/logo-glow',
+    new Texture({
+      source: new TextureSource({ width: 64, height: 64, label: 'refining_unit/logo-glow' }),
+      label: 'devices/refining_unit/logo-glow',
+    }),
+  );
+  // T1.11c: refining_unit 底座走九宫格切片（无 renderer 的测试环境为逐切片容器）
+  for (const k of ['tl', 't', 'tr', 'l', 'c', 'r', 'bl', 'b', 'br']) {
+    if (k === 'c') continue; // 中心块空心，图集不打包
+    map.set(
+      `devices/nineslice/${k}`,
+      new Texture({
+        source: new TextureSource({ width: 288, height: 288, label: `nineslice/${k}` }),
+        label: `devices/nineslice/${k}`,
+      }),
+    );
+  }
   return map;
 }
 
@@ -112,6 +138,10 @@ function spawnBenchmarkDevices(
     world.addComponent(hEntity, 'Position', { x: gx * CELL_SIZE, y: gy * CELL_SIZE });
     world.addComponent(hEntity, 'BuildingComp', {
       definitionId: def.id, direction: 0 as Direction, state: 'idle' as const,
+    paused: false, // T2.8 字段（PortStatusOps 渲染需要；测试实体补全与 placeAt 同形）
+    bufferInput: createBufferSlots(def.inputSlotCount), // T2.4
+    bufferOutput: createBufferSlots(def.outputSlotCount), // T2.5
+    currentRecipeId: null, progress: 0, elapsed: 0, // T2.5
     });
     world.addComponent(hEntity, 'SpriteComp', {
       group: 'devices' as const, textureKey: def.texture,
@@ -161,7 +191,7 @@ console.log('\n[A] 一键 100 设备（真实放置路径: 随机落点 + 占用
 
   render.update();
   assert(render.spriteCount === 100, `RenderSystem Sprite = 100（实际 ${render.spriteCount}）`);
-  assert(layers.layer2Building.children.filter((c) => c instanceof Sprite).length === 100, 'building 层挂载 100 个 Sprite');
+  assert(deviceRenderRoots(layers.layer2Building).length === 100, 'building 层挂载 100 个渲染根');
 
   // 缩小到整图可见: 动态最小缩放 = min(0.25, 720/4096) ≈ 0.176
   // （T1.10 要求: 64×64 地图在 1280×720 视口下能整图可见）
@@ -197,31 +227,39 @@ console.log('\n[B] 纹理共享（100 设备只引用图集共享纹理，不产
 
   // T2.0 起 layer2Building 常驻 BeltHoverRenderer 的 beltHover Graphics（构造即挂载），
   // 只统计/取用 Sprite 实例，忽略渲染器自有对象。
-  const sprites = layers.layer2Building.children.filter((c) => c instanceof Sprite);
-  const used = new Set<Texture>();
-  for (const sprite of sprites) {
-    used.add(sprite.texture);
-    for (const child of sprite.children) {
-      used.add((child as Sprite).texture);
+  const sprites = deviceRenderRoots(layers.layer2Building) as Array<{
+    visible: boolean; destroyed?: boolean; children?: Array<unknown>;
+  }>;
+  // 递归收集渲染根子树的全部纹理实例（whole: Sprite.texture + logo；
+  // nineslice: [底座切片容器(8 Sprite), equipment Sprite, logo] —— 10 个共享纹理）
+  const collectTextures = (node: { texture?: Texture; children?: unknown[] }): Texture[] => {
+    const out: Texture[] = [];
+    if (node.texture) out.push(node.texture);
+    for (const child of node.children ?? []) {
+      out.push(...collectTextures(child as { texture?: Texture; children?: unknown[] }));
     }
-  }
-  // 精炼炉定义带 logoTextureKey → 每个设备 = 主体 + logo 两个共享纹理
-  assert(used.size === 2, `100 设备只引用 2 个共享纹理（主体+logo，实际 ${used.size} 个）`);
+    return out;
+  };
+  const used = new Set<Texture>();
+  // ⚠️ Set.add 非变参——必须逐个 add（used.add(...list) 只会加第一个）
+  for (const sprite of sprites) for (const t of collectTextures(sprite as never)) used.add(t);
+  // T1.11c: refining 迁移九宫格后 = 8 切片 + equipment + logo + logo-glow +
+  // 1 个全设备共享的程序化兜底 Graphics 纹理（pause/blocked fallback）= 12
+  assert(used.size === 12, `100 设备只引用 12 个共享纹理（8切片+equip+logo+glow+兜底，实际 ${used.size} 个）`);
   assert(
-    [...used].every((t) => [...textures.values()].includes(t)),
-    '所有引用纹理均来自图集共享集合（无逐设备新建纹理）',
+    [...used].filter((t) => t.label).every((t) => [...textures.values()].includes(t)),
+    '所有图集引用纹理均来自共享集合（无逐设备新建纹理；无 label 的 Graphics 兜底纹理除外）',
   );
   assert(
-    sprites.every((s) => s.children.length === 1),
-    '每个设备 Sprite 都挂载 1 个 logo 子 Sprite（精炼炉完整显示）',
+    sprites.every((s) => (s.children ?? []).length === 3),
+    '每个设备渲染根 = [底座, equipment, logo] 三子树（nineslice 结构）',
   );
   // 图集共享是"增删设备不涨纹理内存"的前提: 同 key 的 Sprite 必须是同一 Texture 实例
-  const first = sprites[0];
-  const last = sprites[99];
-  assert(first.texture === last.texture, '第 1 个与第 100 个设备主体共享同一纹理实例');
+  const firstTex = collectTextures(sprites[0] as never);
+  const lastTex = collectTextures(sprites[99] as never);
   assert(
-    (first.children[0] as Sprite).texture === (last.children[0] as Sprite).texture,
-    '第 1 个与第 100 个设备 logo 也共享同一纹理实例',
+    firstTex.length === lastTex.length && firstTex.every((t, i) => t === lastTex[i]),
+    '第 1 个与第 100 个设备全部纹理实例一一共享（底座/主体/logo）',
   );
 }
 
@@ -247,6 +285,10 @@ console.log('\n[C] 视口剔除（放大看局部 FPS 压力小，缩小全可�
     world.addComponent(h, 'Position', { x: gx * CELL_SIZE, y: gy * CELL_SIZE });
     world.addComponent(h, 'BuildingComp', {
       definitionId: def.id, direction: 0 as Direction, state: 'idle' as const,
+    paused: false, // T2.8 字段（PortStatusOps 渲染需要；测试实体补全与 placeAt 同形）
+    bufferInput: createBufferSlots(def.inputSlotCount), // T2.4
+    bufferOutput: createBufferSlots(def.outputSlotCount), // T2.5
+    currentRecipeId: null, progress: 0, elapsed: 0, // T2.5
     });
     world.addComponent(h, 'SpriteComp', {
       group: 'devices' as const, textureKey: def.texture,
@@ -306,12 +348,12 @@ console.log('\n[D] 清空/内存释放（生成 100 → 清空 ×3 轮，无 Spr
     render.update();
     assert(placed === 100 && render.spriteCount === 100, `第${cycle}轮: 生成 100 个`);
     // beltHover Graphics 常驻 building 层（T2.0 起），只收集 Sprite 实例做泄漏断言
-    const sprites = layers.layer2Building.children.filter((c) => c instanceof Sprite);
+    const sprites = deviceRenderRoots(layers.layer2Building) as Array<{ visible: boolean; destroyed?: boolean }>;
     clearAll();
     assert(world.entityCount() === 0, `第${cycle}轮: 实体清空`);
     assert(occ.occupiedCount === 0 && occ.snapshot().length === 0, `第${cycle}轮: 占用零泄漏`);
     assert(render.spriteCount === 0, `第${cycle}轮: RenderSystem entries 清空`);
-    assert(layers.layer2Building.children.filter((c) => c instanceof Sprite).length === 0, `第${cycle}轮: building 层无残留 Sprite`);
+    assert(deviceRenderRoots(layers.layer2Building).length === 0, `第${cycle}轮: building 层无残留渲染根`);
     assert(
       sprites.every((s) => isDestroyed(s)),
       `第${cycle}轮: 旧 Sprite 全部 destroy（无泄漏）`,

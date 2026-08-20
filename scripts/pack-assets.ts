@@ -5,13 +5,20 @@
 // 流程:
 //   阶段 A 扫描+光栅化: 遍历各图集分组的输入目录，SVG 用 sharp 光栅化为 PNG buffer，
 //                        PNG 直接读取。所有图块得到 {key, width, height, png}
+//                        （T1.11b: devices 图块做 alpha trim，砍掉透明占位面积）
 //   阶段 B 打包: 对每个分组调用 shelfPack，得到放置坐标 + 图集尺寸
 //   阶段 C 合成+输出: 用 sharp 把图块 composite 到透明底图集，写出 {group}.png + {group}.json
+//
+// devices 组的额外产物（T1.11b 后）:
+//   - 功能层子帧: 仅白名单层（logo/logo-glow/port-*/arrow-*/state-*，见 asset-manifest）
+//   - 箭头 mask 帧: ${baseKey}_arrow_mask（whole 设备预览染色用，不 trim）
+//   - 九宫格切片帧: nineslice/<方位>（NINESLICE_FILES 源，切片窗口提取，见 S1 §9）
 //
 // 输出: public/spritesheets/{devices,items,ui}.{png,json}
 // 产物不入库(.gitignore)，dev 时 Vite 自动 serve public/。
 //
-// 依据: DD-008(revised) 双格式、DD-013 分组、T1.3 验收(运行时 Assets.get 可取)
+// 依据: DD-008(revised) 双格式、DD-013 分组、T1.3 验收(运行时 Assets.get 可取)、
+//       T1.11b（S2 nine-slice-device-base.md: 切片提取/层帧白名单/trim）
 
 import sharp from 'sharp';
 import * as fs from 'node:fs';
@@ -20,6 +27,9 @@ import {
   ATLAS_GROUPS,
   isDeviceFile,
   isExcluded,
+  isLayerWhitelisted,
+  NINESLICE_FILES,
+  NINESLICE_MARGIN_SRC_PX,
   OUTPUT_DIR,
   type AtlasGroup,
 } from './assets/asset-manifest.ts';
@@ -221,6 +231,137 @@ function extractLayerSvg(svgContent: string, layerName: string): string | null {
   return svgContent.replace(headMatch[0], `${headMatch[0]}\n${styleBlock}`);
 }
 
+// ───────────────────────── 九宫格切片提取（T1.11b，S2 §4.1） ─────────────────────────
+
+/**
+ * 9 个切片的方位名与其在 3×3 源画布中的所在格（行, 列）。
+ * 切片内容画在源画布自己对应的格内（S1 §9.2），提取窗口 = 所在格 ± 边距。
+ */
+const NINESLICE_SLICES: ReadonlyArray<{ name: string; row: number; col: number }> = [
+  { name: 'tl', row: 0, col: 0 }, { name: 't', row: 0, col: 1 }, { name: 'tr', row: 0, col: 2 },
+  { name: 'l', row: 1, col: 0 }, { name: 'c', row: 1, col: 1 }, { name: 'r', row: 1, col: 2 },
+  { name: 'bl', row: 2, col: 0 }, { name: 'b', row: 2, col: 1 }, { name: 'br', row: 2, col: 2 },
+];
+
+/**
+ * 从九宫格源 SVG 提取全部切片帧。
+ *
+ * 每个切片：CSS 隐藏其它 slice-* 组 + 重写 viewBox 到"所在格 ± NINESLICE_MARGIN_SRC_PX"
+ * 的窗口（切片越界内容——柱子突出、边框带切分重叠——随窗口保留），按分组倍率光栅化。
+ * 全透明切片（如中心 c 块，中间行空心设计见 S1 §9.6）跳过，运行时查不到纹理自然不拼。
+ *
+ * @returns 切片图块数组（key = `nineslice/<方位>`）
+ */
+async function extractNinesliceSlices(
+  svgContent: string,
+  baseWidth: number,
+  baseHeight: number,
+  rasterScale: number,
+): Promise<PackInput[]> {
+  const headMatch = svgContent.match(/<svg\b[^>]*>/);
+  if (!headMatch) return [];
+  // viewBox 宽（SVG 单位）与源像素的换算：192px 画布 ↔ 50.8 单位
+  const vbMatch = svgContent.match(/viewBox=["']([\d.\s,-]+)["']/);
+  if (!vbMatch) return [];
+  const vbWidth = parseFloat(vbMatch[1].trim().split(/[\s,]+/)[2]);
+  const pxPerUnit = baseWidth / vbWidth;             // 3.7795
+  const cellPx = baseWidth / 3;                      // 每格源像素宽（64）
+  const cellUnit = vbWidth / 3;                      // 每格 SVG 单位（16.9333）
+  const marginUnit = NINESLICE_MARGIN_SRC_PX / pxPerUnit;
+
+  const blocks: PackInput[] = [];
+  for (const slice of NINESLICE_SLICES) {
+    if (!svgContent.includes(`id="slice-${slice.name}"`)) {
+      console.warn(`  ⚠ nineslice 源缺少 slice-${slice.name} 组，跳过`);
+      continue;
+    }
+    const x0 = slice.col * cellUnit - marginUnit;
+    const y0 = slice.row * cellUnit - marginUnit;
+    const winUnit = cellUnit + marginUnit * 2;
+    const winPx = Math.round(cellPx + NINESLICE_MARGIN_SRC_PX * 2);
+    const winSvg = svgContent
+      .replace(headMatch[0], `${headMatch[0]}\n<style>g[id^="slice-"] { display: none !important; } g#slice-${slice.name} { display: inline !important; }</style>`)
+      .replace(/viewBox=["'][^"']*["']/, `viewBox="${x0} ${y0} ${winUnit} ${winUnit}"`)
+      .replace(/width=["']\d+["']/, `width="${winPx}"`)
+      .replace(/height=["']\d+["']/, `height="${winPx}"`);
+    try {
+      const px = Math.round(winPx * rasterScale);
+      const { png } = await rasterizeMaskSvg(winSvg, winPx, winPx, rasterScale);
+      // 全透明切片跳过（中心块空心设计）
+      const { hasAlpha } = await scanAlpha(png);
+      if (!hasAlpha) {
+        console.log(`  · nineslice/${slice.name} 全透明，跳过打包`);
+        continue;
+      }
+      blocks.push({ key: `nineslice/${slice.name}`, width: px, height: px, png });
+    } catch (e) {
+      console.warn(`  ⚠ 跳过 nineslice/${slice.name}: ${(e as Error).message}`);
+    }
+  }
+  return blocks;
+}
+
+// ───────────────────────── alpha trim（T1.11b，S2 §4.3） ─────────────────────────
+
+/**
+ * 扫描 PNG 的 alpha bounds。
+ * @returns hasAlpha: 是否存在不透明像素；bounds: 不透明内容包围盒（无内容时 undefined）
+ */
+async function scanAlpha(
+  png: Buffer,
+): Promise<{ hasAlpha: boolean; bounds?: { x: number; y: number; width: number; height: number } }> {
+  const { data, info } = await sharp(png).raw().toBuffer({ resolveWithObject: true });
+  const W = info.width, H = info.height;
+  let minX = -1, minY = -1, maxX = -1, maxY = -1;
+  // ⚠️ 必须扫完全部行：内容可能是垂直分离的多段（如 refining_unit 主帧 =
+  // 顶端口带 + 中间液口 + 底端口带），"过第一段内容就 break"会把后面的段裁丢
+  // （实测曾把 768² 裁成只剩顶带 676×132，底行端口整体丢失）。
+  for (let y = 0; y < H; y++) {
+    const row = y * W * 4;
+    for (let x = 0; x < W; x++) {
+      if (data[row + x * 4 + 3] > 0) {
+        if (minX < 0 || x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (minY < 0) minY = y;
+        maxY = y;
+      }
+    }
+  }
+  if (minX < 0) return { hasAlpha: false };
+  return { hasAlpha: true, bounds: { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 } };
+}
+
+/**
+ * trim 阈值：裁剪节省面积低于此值不裁（避免 1~2px 的无意义裁剪增加元数据噪音）。
+ */
+const TRIM_MIN_SAVING_PX = 4096;
+
+/**
+ * 对图块做 alpha bounds trim（S2 §4.3 配套子任务）。
+ * 层帧多为全画布透明占位（如逐端口帧 768² 只含一个 169×94 面板），trim 后
+ * 存储面积与内容成正比。JSON 写 trimmed/spriteSourceSize/sourceSize，
+ * PixiJS 原生支持（anchor 0.5 按 orig 对齐），运行时零补偿代码。
+ *
+ * @returns trim 后的图块（不划算或不需要时原样返回）
+ */
+async function trimBlock(block: PackInput): Promise<PackInput> {
+  const { hasAlpha, bounds } = await scanAlpha(block.png);
+  if (!hasAlpha) return block; // 全透明帧保持原样（由调用方决定去留）
+  const saving = block.width * block.height - bounds!.width * bounds!.height;
+  if (saving < TRIM_MIN_SAVING_PX) return block;
+  const png = await sharp(block.png)
+    .extract({ left: bounds!.x, top: bounds!.y, width: bounds!.width, height: bounds!.height })
+    .png()
+    .toBuffer();
+  return {
+    ...block,
+    png,
+    width: bounds!.width,
+    height: bounds!.height,
+    trim: { offsetX: bounds!.x, offsetY: bounds!.y, origWidth: block.width, origHeight: block.height },
+  };
+}
+
 // ───────────────────────── 图集分组扫描 ─────────────────────────
 
 /**
@@ -260,6 +401,8 @@ async function collectGroup(group: AtlasGroup): Promise<PackInput[]> {
     // devices/ui 分流(svg 目录)
     if (group.name === 'devices') {
       if (!isDeviceFile(basename)) continue;
+      // 九宫格切片源不输出主帧（只输出 nineslice/* 切片帧，见下方专项提取）
+      if (NINESLICE_FILES.includes(basename)) continue;
     } else if (group.name === 'ui') {
       // ui 收 svg 目录下非 device 的；但 inputDir 对 ui 也是 src/assets/svg
       // svg 目录里的 device 文件跳过
@@ -286,13 +429,25 @@ async function collectGroup(group: AtlasGroup): Promise<PackInput[]> {
       continue;
     }
     keySeen.add(key);
-    blocks.push({ key, width: raster.width, height: raster.height, png: raster.png });
+    // T1.11b: devices 组做 alpha trim（层帧多为全画布透明占位）；
+    // *_arrow_mask 例外——PreviewTintFilter 把设备局部 [0,1] 映射到 mask 帧的
+    // 图集 UV rect，trim 会破坏该映射（帧=全画布是该 shader 的隐含契约）。
+    let block: PackInput = { key, width: raster.width, height: raster.height, png: raster.png };
+    if (group.name === 'devices' && !key.endsWith('_arrow_mask')) {
+      block = await trimBlock(block);
+      if (block.trim) {
+        console.log(`  · trim ${key}: ${raster.width}×${raster.height} → ${block.width}×${block.height}`);
+      }
+    }
+    blocks.push(block);
   }
 
-  // devices 组额外生成功能层子帧 + 箭头 mask 帧
+  // devices 组额外生成功能层子帧 + 箭头 mask 帧 + 九宫格切片帧
   //   A. 对 SVG 中每个 `layer-<name>` 分组输出一帧，key = ${baseKey}/${layerName}。
-  //      运行时可以把 base/ports/arrows/indicators 等层按状态叠加渲染。
-  //   B. 继续生成 ${baseKey}_arrow_mask（T1.7 预览染色兼容），后续可迁移到 ${baseKey}/arrows。
+  //      T1.11b 起按 DEVICE_LAYER_WHITELIST 白名单过滤——base/ports/arrows/indicators/
+  //      equipment 整层帧运行时无人消费，不再打包（S2 §4.2）。
+  //   B. 继续生成 ${baseKey}_arrow_mask（T1.7 预览染色兼容，whole 路径设备在用）。
+  //   C. 九宫格切片源 → nineslice/<方位> 8~9 帧（T1.11b，S2 §4.1）。
   if (group.name === 'devices') {
     const rasterScale = group.rasterScale ?? 1;
     for (const file of allFiles) {
@@ -322,8 +477,18 @@ async function collectGroup(group: AtlasGroup): Promise<PackInput[]> {
       }
       if (!baseWidth || !baseHeight) continue;
 
-      // A. 功能层子帧
-      const layers = listSvgLayers(svgContent);
+      // C. 九宫格切片源 → nineslice/* 帧（无主帧无层帧，只有切片）
+      if (NINESLICE_FILES.includes(basename)) {
+        for (const slice of await extractNinesliceSlices(svgContent, baseWidth, baseHeight, rasterScale)) {
+          if (keySeen.has(slice.key)) continue;
+          keySeen.add(slice.key);
+          blocks.push(slice);
+        }
+        continue;
+      }
+
+      // A. 功能层子帧（白名单过滤）
+      const layers = listSvgLayers(svgContent).filter(isLayerWhitelisted);
       for (const layerName of layers) {
         const layerSvg = extractLayerSvg(svgContent, layerName);
         if (!layerSvg) continue;
@@ -332,13 +497,18 @@ async function collectGroup(group: AtlasGroup): Promise<PackInput[]> {
         try {
           const { png, width, height } = await rasterizeMaskSvg(layerSvg, baseWidth, baseHeight, rasterScale);
           keySeen.add(layerKey);
-          blocks.push({ key: layerKey, width, height, png });
+          // 层帧做 alpha trim（logo/逐端口帧内容远小于全画布，S2 §4.3）
+          const block = await trimBlock({ key: layerKey, width, height, png });
+          if (block.trim) {
+            console.log(`  · trim ${layerKey}: ${width}×${height} → ${block.width}×${block.height}`);
+          }
+          blocks.push(block);
         } catch (e) {
           console.warn(`  ⚠ 跳过 layer ${layerKey}: ${(e as Error).message}`);
         }
       }
 
-      // B. 箭头 mask 帧（T1.7 预览染色用）
+      // B. 箭头 mask 帧（T1.7 预览染色用；不 trim——见 collectGroup 主循环注释）
       const maskSvg = buildArrowMaskSvg(svgContent);
       if (maskSvg) {
         const maskKey = `${baseKey}_arrow_mask`;
@@ -422,13 +592,22 @@ async function buildAtlas(groupName: string, blocks: PackInput[]): Promise<void>
   const frames: Record<string, SpriteFrame> = {};
   for (const rect of pack.rects) {
     const block = blocks.find(b => b.key === rect.key)!;
-    // PixiJS frame key 惯例带 .png 后缀
+    // PixiJS frame key 惯例带 .png 后缀。
+    // trim 帧（T1.11b）: frame = 裁剪后内容在图集中的位置；spriteSourceSize = 内容在
+    // 原始全画布帧中的偏移与尺寸；sourceSize = 原始全画布尺寸。PixiJS 原生解析，
+    // texture.width/anchor 0.5 均按 orig（sourceSize）计算，运行时零补偿。
+    const trimmed = !!block.trim;
     frames[`${rect.key}.png`] = {
       frame: { x: rect.x, y: rect.y, w: rect.width, h: rect.height },
       rotated: false,
-      trimmed: false,
-      spriteSourceSize: { x: 0, y: 0, w: rect.width, h: rect.height },
-      sourceSize: { w: block.width, h: block.height },
+      trimmed,
+      spriteSourceSize: trimmed
+        ? { x: block.trim!.offsetX, y: block.trim!.offsetY, w: rect.width, h: rect.height }
+        : { x: 0, y: 0, w: rect.width, h: rect.height },
+      sourceSize: {
+        w: trimmed ? block.trim!.origWidth : rect.width,
+        h: trimmed ? block.trim!.origHeight : rect.height,
+      },
     };
   }
   const json = {

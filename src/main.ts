@@ -59,7 +59,7 @@ async function main() {
 
   // ── Game: ECS World + WorldData(含 MapInstance) + Camera + RenderSystem ──
   // 相机的世界边界取自 worldData.map（A11 WV-003 §4.4）。
-  const game = new Game(scene, { width: app.screen.width, height: app.screen.height });
+  const game = new Game(scene, { width: app.screen.width, height: app.screen.height }, app.renderer);
   const camera = game.camera;
   camera.bindWorldContainer(scene.layers.worldContainer);
 

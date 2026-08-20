@@ -20,7 +20,7 @@
 | T1.8 基础交互系统 | ✅ 完成 | `SelectionSystem.ts`（pointerdown/pointerup 短按选中 + 黄色高亮填充 + 白色选中框，跟随相机缩放/平移/旋转） |
 | T1.9 设备删除 | ✅ 完成 | `DeleteSystem.ts`（Delete 键删除选中设备、释放 footprint 占用、RenderSystem 自动移除 Sprite、无选中无反应） |
 | T1.10 性能基准测试 | ✅ 完成 | 100 设备 FPS ≥ 55 + 内存监控（JS 堆 / GPU 纹理内存） |
-| T1.11 九宫格设备底座 | 📋 待排期（补充任务） | 底座九宫格切件 + 平铺拼装渲染，图集面积与设备尺寸解耦（方案 [S2](nine-slice-device-base.md)，建议 T2.12 前执行） |
+| T1.11 九宫格设备底座 | ✅ 完成 | `nineslice_unit.svg` 9 切片 + pack-assets 切片提取/层帧白名单/trim + `NineSliceAssembler`（RenderTexture 烘焙）+ refining_unit 迁移。图集 8192→**4096×2048**（帧面积 16.6M→3.8M），3×3 拼装**像素级还原**（离线 0 差异/zoom2 0 差异），100×3×3+50×6×6 FPS avg 144。方案 [S2](nine-slice-device-base.md) |
 
 > **文档修订**: DD-008 已修订（设备 SVG / 物品 PNG 双格式，见 core-decisions.md）。  
 > **PixiJS 踩坑**: 见文末 [附录 A：PixiJS v8 踩坑记录](#附录-a-pixijs-v8-踩坑记录)，T1.5/T1.6 开发前务必阅读。
@@ -673,7 +673,7 @@ T1.7 只做了"放置"。删除是放置的逆操作（`OccupancyMap.release` + 
 
 ---
 
-## T1.11 — 九宫格设备底座（Phase 1 补充任务，📋 待排期）
+## T1.11 — 九宫格设备底座（Phase 1 补充任务，✅ 完成）
 
 > **性质**: Phase 1 性质的渲染/素材管线基建（T1.3 资源管线 + T1.6 渲染 + T1.7 放置的自然延伸），不依赖任何 Phase 2 生产逻辑。Phase 1 主体已完成，本任务为**补充包**，在 Phase 2 窗口内择机执行。
 > **完整方案**: [nine-slice-device-base.md](nine-slice-device-base.md)（S2）——背景论证、素材规范、管线/渲染设计、验收标准全部在那份文档，本节只做任务卡。
@@ -706,6 +706,34 @@ T2.8 期间 devices 图集 37 帧顶满 4096² → 临时扩容 8192（asset-man
 ### 建议排期
 
 Phase 2 窗口内、**T2.12（取/存货口，第一台 3×1 Depot 素材启用）之前或并行**执行最佳——Depot 之后设备种类开始扩容（5×5 采种机已在工具栏定义、尚无真实素材），九宫格就位后新设备立项直接按新规格出稿。最晚不迟于第一台 ≥5×5 设备美术立项。预估 2 次会话（a+b 一次、c+d 一次）。
+
+### ✅ 实现备注（2026-08-20 完成）
+
+**产出文件**:
+- `src/assets/svg/nineslice_unit.svg` — 9 切片源（几何经光栅化逐像素测量自原 base 层）
+- `src/game/render/NineSliceAssembler.ts` — `buildNineSliceBase`（拼装）+ `getBakedNineSliceTexture`（RenderTexture 烘焙，尺寸级缓存）+ `tintContainer`
+- `scripts/pack-assets.ts` / `scripts/assets/asset-manifest.ts` / `packer.ts` — 切片提取 + 层帧白名单 + alpha trim（PixiJS 原生 trimmed/spriteSourceSize/sourceSize）
+- `src/game/data/buildings.ts` — `baseStyle?: 'whole'|'nineslice'` 字段 + refining_unit 迁移 + 3 个 `test_nineslice_*` 验收 demo 设备
+- `src/game/systems/RenderSystem.ts` — nineslice 渲染分支（根 Container[底座, equipment, logo]，position/rotation 数学与 whole 完全一致）
+- `src/game/systems/PlacementSystem.ts` — nineslice 预览分支（逐 Sprite tint 蓝/橙红，PreviewTintFilter 保留给 whole）
+- `src/game/ui/InventoryUI.ts` — nineslice 工具栏组合图标（底座+equipment 烘焙 RenderTexture）
+- `scripts/verify-t1.11-nineslice.mjs` — 永久验证（11 断言）
+- S1（asset-drawing-standard.md）v1.1 增补 §9 九宫格设备章节
+
+**与 S2 原文的实测修正**（详见 S2 §11 实施记录 / S1 §9.6）:
+1. **底板 6 块非 9 块**: 实测 `3x3_unit.svg` base 层只有顶/底行各 3 块底板，中间行是空心"画框"（左右 2px 竖轨）。c/l/r 切片无底板（c 全空不打包），保证 3×3 像素级还原。
+2. **柱子归属**: 原素材柱子在两条内部竖线上互为镜像（A 形/B 形）→ t/b 切片左端画 A 柱、tr/br 切片左端画 B 柱（S2 原文"角块无柱"按此修正），任意 w≥2 每条内部竖线恰好一根柱。
+3. **ε 重叠防缝**: 边框带切分缝两侧各多画 0.3 单位不透明同色重叠，避免抗锯齿切割缝。
+4. **已放置设备走 RenderTexture 烘焙**（S2 §5.2 预留的 v2 方案，提前启用）: 逐切片 Sprite 在 zoom<1 的 mipmap 半透明区，ε 重叠带双重绘制会在细轨上出周期暗斑；烘焙后单 Sprite/设备、mip 行为与原整帧一致。`autoGenerateMipmaps` 必须经 `textureSourceOptions` 在 generateTexture 时传入（事后设置赶不上其内部的 updateMipmaps）。预览/工具栏图标仍用拼装容器。
+5. **trim 无需运行时补偿**: PixiJS v8 `Texture.width` 返回 orig（sourceSize），anchor 0.5 按 orig 对齐——PortHighlightRenderer/RenderSystem 现有数学零改动。S2 §4.3 预想的 `layerFrameAnchor()` 不需要。唯一例外: `*_arrow_mask` 帧不 trim（PreviewTintFilter 把设备局部 [0,1] 映射到 mask 帧 UV rect）。
+6. **logo 显式缩放**: nineslice 根容器 scale=1（whole 靠设备 Sprite 缩放继承），logo 全画布帧需按 设备px/纹理px 显式缩放，否则 4× 尺寸溢出（实施中实测修复）。
+
+**验收结果**:
+- 像素级还原: 离线 8× 光栅 **0 差异像素**；浏览器 zoom2 **0.00%**（2px/60592，GPU 重采样尾差 maxΔ36）、zoom1 2.03%（289px 全在 1px 抗锯齿边界带）、zoom4 截图留档
+- 任意尺寸: 6×3/5×5/6×6 + 90°/180° 放置，边框环完整、内部竖线柱齐全、顶带 0 缺口（verify-t1.11 断言 + 浏览器探针）
+- 图集: 8192×4096 → **4096×2048**，帧面积 16.62M → **3.80M**（-77%）；逐端口帧 768² → 160×89
+- 性能: 100×3×3 + 50×6×6（烘焙底座）FPS avg **144** / p95 147 / min 137，纹理内存 46.8MB 恒定
+- 回归: t1.1~t1.10/t23~t28 Node 全绿（含 t1.9/t1.10 修复 T2.8 遗留的 BuildingComp 测试助手缺字段崩溃）+ t21~t28 CDP 浏览器全绿（t28 17/17: 状态 LOGO/端口黄红高亮在迁移后正常）
 
 ---
 

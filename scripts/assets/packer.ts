@@ -20,6 +20,20 @@ export interface PackInput {
   height: number;
   /** 已光栅化的 PNG Buffer (或文件路径)，打包时合成到图集。 */
   png: Buffer;
+  /**
+   * trim 元数据（T1.11b）。width/height 是裁剪后内容尺寸；本字段记录
+   * 内容在**原始全画布帧**中的偏移与原始尺寸，spritesheet JSON 以
+   * trimmed/spriteSourceSize/sourceSize 输出（PixiJS 原生支持，anchor 0.5
+   * 按 orig 尺寸对齐，运行时无需偏移补偿）。
+   */
+  trim?: {
+    /** 内容左上角在原始帧中的偏移。 */
+    offsetX: number;
+    offsetY: number;
+    /** 原始帧全尺寸。 */
+    origWidth: number;
+    origHeight: number;
+  };
 }
 
 /** 一个图块在图集中的放置结果。 */

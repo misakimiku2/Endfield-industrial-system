@@ -31,7 +31,7 @@
 //   故 sprite.rotation = +worldAngle_rad（worldAngle = screenAngle − viewRotation）。
 //   若浏览器实测发现反向（设备逆时针转），改 ROTATION_SIGN 即可，单点修正。
 
-import { Sprite, Texture } from 'pixi.js';
+import { Sprite, Texture, Container } from 'pixi.js';
 import type { World } from '../ECS';
 import type { Camera } from '../render/Camera';
 import type { SceneLayers } from '../render/SceneRenderer';
@@ -42,6 +42,7 @@ import type { Direction } from '../components/BuildingComp';
 import type { OccupancyMap } from '../world/OccupancyMap';
 import { CELL_SIZE } from '../render/constants';
 import { PreviewTintFilter } from '../render/PreviewTintFilter';
+import { buildNineSliceBase, tintContainer } from '../render/NineSliceAssembler';
 import { createBufferSlots } from './machine/BufferOps';
 
 /** 放置模式状态。 */
@@ -58,9 +59,14 @@ const ROTATION_SIGN = 1;
 
 /**
  * 预览半透明度。
- * 染色由 PreviewTintFilter 完成（主体纯色 + 箭头白），不再用 Sprite.tint。
+ * whole 染色由 PreviewTintFilter 完成（主体纯色 + 箭头白）；nineslice 染色为
+ * 容器内逐 Sprite tint（S2 §5.3，无整帧 mask 可用）。
  */
 const PREVIEW_ALPHA = 0.7;
+
+/** T1.11c: nineslice 预览染色（与 PreviewTintFilter 的 VALID/INVALID 同色）。 */
+const PREVIEW_TINT_VALID = 0x76bbea;
+const PREVIEW_TINT_INVALID = 0xe45050;
 
 /**
  * 放置系统。
@@ -84,21 +90,26 @@ export class PlacementSystem {
   /** 屏幕呈现角（按 R 递增）。 */
   private screenAngle: ScreenAngle = 0;
   /**
-   * 预览 Sprite（placing 态下挂 buildingLayer，idle 时隐藏）。
+   * 预览渲染根（placing 态下挂 buildingLayer，idle 时隐藏）。
    *
-   * 染色方式（用户要求"设备整体直接变蓝、端口箭头变白"）:
-   *   PreviewTintFilter 双纹理 mask 方案——设备原图染主体纯色（蓝/橙红），
-   *   箭头 mask 纹理精确指示箭头区域 → 白。mask 由 pack-assets 构建期在矢量层
-   *   分离箭头生成（不依赖颜色识别，避免端口灰色抗锯齿缝隙误染）。
+   * whole 设备（T1.7 v4）: 根 = Sprite + PreviewTintFilter 双纹理 mask——设备原图
+   *   染主体纯色（蓝/橙红），箭头 mask 纹理精确指示箭头区域 → 白。mask 由
+   *   pack-assets 构建期在矢量层分离箭头生成。
    *
-   *   仅作用于预览 Sprite；已放置设备用原图无 filter，保持原始外观。
+   * nineslice 设备（T1.11c，S2 §5.3）: 根 = Container[底座切片拼装, equipment
+   *   Sprite, logo]，染色 = 容器内逐 Sprite tint（蓝/橙红）——nineslice 无整机
+   *   mask 帧，PreviewTintFilter 仅保留给 whole 设备。
+   *
+   * 仅作用于预览；已放置设备用原图无 filter/tint，保持原始外观。
    */
-  private preview: Sprite | null = null;
-  /** 预览染色 filter（主体纯色 + 箭头 mask 白）。按 canPlace 切换蓝/橙红。 */
+  private preview: Container | null = null;
+  /** whole 路径的预览染色 filter（nineslice 路径为 null）。 */
   private previewFilter: PreviewTintFilter | null = null;
+  /** 当前预览是否为 nineslice 路径（null = 尚未创建）。 */
+  private previewNineslice: boolean | null = null;
   /** 预览当前显示的纹理 key（def 变化时换纹理）。 */
   private previewTextureKey: string | null = null;
-  /** 预览的 billboard 徽标子 Sprite（preview 的子节点，跟随 filter 染色并保持屏幕朝上）。 */
+  /** 预览的 billboard 徽标子 Sprite（preview 的子节点，跟随染色并保持屏幕朝上）。 */
   private previewLogo: Sprite | null = null;
 
   /** 当前鼠标屏幕坐标（由 main 转发 pointermove 更新，或 update 时由调用方设置）。 */
@@ -139,8 +150,7 @@ export class PlacementSystem {
     this.currentDef = def;
     this.screenAngle = 0; // 每次进入重置屏幕角
     this.mode = 'placing';
-    this.ensurePreview();
-    this.preview!.visible = true;
+    // 预览根节点按 def.baseStyle 走 whole/nineslice 路径（refreshPreview 内创建）
     this.refreshPreview();
   }
 
@@ -228,58 +238,85 @@ export class PlacementSystem {
 
   // ───────────────────────── 内部 ─────────────────────────
 
-  /** 确保预览 Sprite + 染色 filter 已创建（懒创建，首次 enterMode 时建）。 */
-  private ensurePreview(): void {
-    if (this.preview) return;
-    this.preview = new Sprite(Texture.EMPTY);
-    this.preview.anchor.set(0.5);
+  /**
+   * 确保预览根节点已创建且路径类型（whole/nineslice）匹配。
+   * 路径类型变化时销毁重建（whole 的 Sprite+filter ↔ nineslice 的 Container）。
+   */
+  private ensurePreview(nineslice: boolean): void {
+    if (this.preview && this.previewNineslice === nineslice) return;
+    if (this.preview) {
+      this.preview.removeFromParent();
+      this.preview.destroy({ children: true });
+      this.preview = null;
+      this.previewLogo = null;
+      this.previewFilter?.destroy();
+      this.previewFilter = null;
+    }
+    this.previewNineslice = nineslice;
+    this.previewTextureKey = null; // 强制重建内容
+    if (nineslice) {
+      this.preview = new Container({ label: 'placementPreview-nineslice' });
+    } else {
+      const sprite = new Sprite(Texture.EMPTY);
+      sprite.anchor.set(0.5);
+      // 染色 filter: 主体纯色 + 端口白（可放置=蓝 / 不可放置=橙红）
+      this.previewFilter = new PreviewTintFilter();
+      sprite.filters = [this.previewFilter];
+      this.preview = sprite;
+    }
     this.preview.alpha = PREVIEW_ALPHA;
     this.preview.visible = false;
     // 高 zIndex: 预览浮在已放置设备之上（layer2Building 已开 sortableChildren）
     this.preview.zIndex = 10000;
-    // 染色 filter: 主体纯色 + 端口白（可放置=蓝 / 不可放置=橙红）
-    this.previewFilter = new PreviewTintFilter();
-    this.preview.filters = [this.previewFilter];
     this.layers.layer2Building.addChild(this.preview);
   }
 
   /**
-   * 刷新预览：换纹理/尺寸、定位到吸附网格、设置旋转、按 canPlace 切换 filter 颜色。
+   * 刷新预览：换内容/尺寸、定位到吸附网格、设置旋转、按 canPlace 切换染色。
    *
-   * 染色: PreviewTintFilter 双纹理 mask 采样——箭头 mask 指示区域 → 白，
-   *   设备主体 → 纯色（可放置=蓝 #76BBEA / 不可放置=橙红 #FF8233）。
+   * whole: PreviewTintFilter 双纹理 mask——箭头白、主体纯色（蓝/橙红）。
+   * nineslice: 底座拼装 + equipment Sprite，逐 Sprite tint 染色。
    */
   private refreshPreview(): void {
-    if (!this.preview || !this.currentDef) return;
+    if (!this.currentDef) return;
     const def = this.currentDef;
+    const nineslice = def.baseStyle === 'nineslice';
+    this.ensurePreview(nineslice);
+    const preview = this.preview!;
 
     const wp = def.footprint.w * CELL_SIZE; // footprint 世界像素宽
     const hp = def.footprint.h * CELL_SIZE;
 
-    // 换纹理/尺寸（def 或 textureKey 变化时）
+    // 换内容（def 或 textureKey 变化时）
     if (this.previewTextureKey !== def.texture) {
-      const tex = this.getTexture('devices', def.texture) ?? Texture.EMPTY;
-      this.preview.texture = tex;
-      this.preview.width = wp;
-      this.preview.height = hp;
+      if (nineslice) {
+        this.rebuildNineslicePreview(def, wp, hp);
+      } else {
+        const sprite = preview as Sprite;
+        const tex = this.getTexture('devices', def.texture) ?? Texture.EMPTY;
+        sprite.texture = tex;
+        sprite.width = wp;
+        sprite.height = hp;
+        // 同步注入箭头 mask（双纹理 filter 用，精确识别箭头变白，避免端口灰色缝隙误染）
+        this.previewFilter!.setMask(this.getTexture('devices', `${def.texture}_arrow_mask`));
+      }
       this.previewTextureKey = def.texture;
-      // 同步注入箭头 mask（双纹理 filter 用，精确识别箭头变白，避免端口灰色缝隙误染）
-      this.previewFilter!.setMask(this.getTexture('devices', `${def.texture}_arrow_mask`));
     }
 
-    // billboard 徽标层：作为 preview 子 Sprite，跟随 PreviewTintFilter 染色并保持屏幕朝上
+    // billboard 徽标层：作为 preview 子 Sprite，跟随染色并保持屏幕朝上
     if (def.logoTextureKey) {
       if (!this.previewLogo) {
         this.previewLogo = new Sprite(Texture.EMPTY);
         this.previewLogo.anchor.set(0.5);
         this.previewLogo.alpha = PREVIEW_ALPHA;
-        this.preview.addChild(this.previewLogo);
+        preview.addChild(this.previewLogo);
       }
       const logoTex = this.getTexture('devices', def.logoTextureKey) ?? Texture.EMPTY;
       if (this.previewLogo.texture !== logoTex) {
         this.previewLogo.texture = logoTex;
-        // 继承父 Sprite 的缩放，避免再单独设 width/height 导致叠加缩小
-        this.previewLogo.scale.set(1);
+        // whole: 根 Sprite 已按 设备px/纹理px 缩放，scale 1 继承；nineslice: 根 scale=1，
+        // logo 帧是全画布尺寸（orig=设备画布）→ 显式缩放到设备世界尺寸（T1.11c 修复）
+        this.previewLogo.scale.set(nineslice && logoTex.width > 0 ? wp / logoTex.width : 1);
       }
       this.previewLogo.visible = true;
     } else if (this.previewLogo) {
@@ -290,23 +327,49 @@ export class PlacementSystem {
     const world = this.camera.screenToWorld(this.mouseScreenX, this.mouseScreenY);
     const { w, h } = def.footprint;
     const place = placementFromMouse(world.x, world.y, w, h);
-    // Sprite anchor 0.5 → position = 左上角世界 + 半宽高 = 设备中心（= 鼠标位置）
-    this.preview.position.set(place.topLeftWorld.x + wp / 2, place.topLeftWorld.y + hp / 2);
+    // 根节点 position = 设备中心（whole 的 Sprite anchor 0.5 / nineslice 子树以原点为中心）
+    preview.position.set(place.topLeftWorld.x + wp / 2, place.topLeftWorld.y + hp / 2);
 
     // 旋转: 世界角度 = screenAngle − viewRotation（A6 §4.0），与落盘 direction 同公式
     const worldAngle = this.worldAngleFromScreen();
-    this.preview.rotation = ROTATION_SIGN * (worldAngle * Math.PI) / 180;
-    // 同步 filter mask 旋转，使端口箭头跟随预览一起转
-    this.previewFilter!.setRotation(this.preview.rotation);
+    preview.rotation = ROTATION_SIGN * (worldAngle * Math.PI) / 180;
+    // 同步 filter mask 旋转，使端口箭头跟随预览一起转（whole 路径）
+    this.previewFilter?.setRotation(preview.rotation);
 
     // billboard 徽标反向旋转（保持屏幕朝上）
     if (this.previewLogo && def.logoTextureKey) {
-      this.previewLogo.rotation = this.camera.displayRotation - this.preview.rotation;
+      this.previewLogo.rotation = this.camera.displayRotation - preview.rotation;
     }
 
-    // 有效性反馈: filter 切换主体纯色（蓝↔橙红），箭头始终白
+    // 有效性反馈: whole → filter 切主体纯色；nineslice → 逐 Sprite tint
     this.previewValid = this.occupancy.canPlace(place.topLeftGrid.x, place.topLeftGrid.y, w, h);
-    this.previewFilter!.setValid(this.previewValid);
+    if (nineslice) {
+      tintContainer(preview, this.previewValid ? PREVIEW_TINT_VALID : PREVIEW_TINT_INVALID);
+    } else {
+      this.previewFilter!.setValid(this.previewValid);
+    }
+  }
+
+  /**
+   * 重建 nineslice 预览内容：清空根容器，放入底座拼装 + equipment Sprite。
+   * logo 子 Sprite 由 refreshPreview 统一管理（会重新 addChild）。
+   */
+  private rebuildNineslicePreview(def: BuildingDefinition, wp: number, hp: number): void {
+    const preview = this.preview!;
+    // 移除旧子节点（logo 除外——previewLogo 由 refreshPreview 复用）
+    for (const child of [...preview.children]) {
+      if (child === this.previewLogo) continue;
+      child.destroy();
+    }
+    preview.addChild(buildNineSliceBase(def.footprint.w, def.footprint.h, this.getTexture));
+    const equipTex = this.getTexture('devices', def.texture);
+    if (equipTex && equipTex.width > 0) {
+      const equip = new Sprite(equipTex);
+      equip.anchor.set(0.5);
+      equip.width = wp;
+      equip.height = hp;
+      preview.addChild(equip);
+    }
   }
 
   /**
@@ -365,14 +428,17 @@ export class PlacementSystem {
     // 预览继续跟随鼠标，refreshPreview 会在下一帧更新 tint（新位置可能 valid/invalid）
   }
 
-  /** 销毁预览 Sprite（teardown 用）。 */
+  /** 销毁预览节点与 filter（teardown 用）。 */
   destroy(): void {
     if (this.preview) {
       this.preview.removeFromParent();
-      this.preview.destroy();
+      this.preview.destroy({ children: true });
       this.preview = null;
       this.previewLogo = null; // 子节点会随 preview 一起销毁
     }
+    this.previewFilter?.destroy();
+    this.previewFilter = null;
+    this.previewNineslice = null;
   }
 }
 

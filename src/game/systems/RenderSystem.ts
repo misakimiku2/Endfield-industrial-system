@@ -33,17 +33,28 @@ import { BeltVectorRenderer } from '../render/BeltVectorRenderer';
 import { BeltItemRenderer } from '../render/BeltItemRenderer';
 import { BeltHoverRenderer } from '../render/BeltHoverRenderer';
 import { PortHighlightRenderer } from '../render/PortHighlightRenderer';
+import { buildNineSliceBase, getBakedNineSliceTexture } from '../render/NineSliceAssembler';
+import { getBuildingDefinition } from '../data/buildings';
 import type { BeltSelection } from './belt/BeltSelection';
 import type { AtlasGroup } from '../render/AssetsLoader';
 import type { SceneLayers } from '../render/SceneRenderer';
 import type { Camera } from '../render/Camera';
+import type { Renderer } from 'pixi.js';
 
 /** 纹理查找函数（与 AssetsLoader.getTexture 同签名）。注入以便单测。 */
 export type TextureLookup = (group: AtlasGroup, key: string) => Texture | undefined;
 
-/** 缓存单个实体的渲染态：Sprite + 上次绑定用的 SpriteComp 摘要（变更时重建）。 */
+/** 缓存单个实体的渲染态：根节点 + 上次绑定用的 SpriteComp 摘要（变更时重建）。 */
 interface SpriteEntry {
-  sprite: Sprite;
+  /**
+   * 渲染根节点。whole 设备/普通实体 = Sprite（anchor 0.5）；
+   * nineslice 设备（T1.11c）= Container（原点=设备中心），子树 =
+   * [九宫格底座容器, equipment Sprite, logo 子树]。position/rotation/scale/visible
+   * 的每帧同步数学对两者一致（Container 同名属性）。
+   */
+  sprite: Sprite | Container;
+  /** T1.11c: 本 entry 是否为九宫格底座设备（纹理 diff 键的一部分）。 */
+  nineslice: boolean;
   /**
    * billboard 徽标子 Sprite（保持屏幕朝上）；无徽标时为 undefined。
    * T2.8 修订: 此层承载 LOGO 的**半透明 glow 底层**（refining_unit/logo-glow，状态切换不换），
@@ -122,6 +133,8 @@ export class RenderSystem {
   private layers: SceneLayers;
   private camera: Camera;
   private getTexture: TextureLookup;
+  /** T1.11c: 可选渲染器——nineslice 底座 RenderTexture 烘焙用；缺省（单测）回退逐切片容器。 */
+  private renderer?: Renderer;
 
   /** handle → 渲染态。每帧 diff 维护。 */
   private entries = new Map<EntityHandle, SpriteEntry>();
@@ -143,11 +156,13 @@ export class RenderSystem {
     layers: SceneLayers,
     camera: Camera,
     getTexture: TextureLookup,
+    renderer?: Renderer,
   ) {
     this.world = world;
     this.layers = layers;
     this.camera = camera;
     this.getTexture = getTexture;
+    this.renderer = renderer;
     this.pointerRenderer = new BeltPointerRenderer(world, layers.layer3Item, getTexture);
     // T2.8 层级修订（从下到上: 物品(进设备)→设备→端口高亮→箭头）:
     // belowItems 挂 layer2Building 且 zIndex=-1（设备 Sprite 默认 0）→ 走进设备的
@@ -210,16 +225,25 @@ export class RenderSystem {
       // 这里跳过 Sprite 创建；SpriteComp 仍保留（占位/一致性），但不再被本系统渲染。
       if (this.world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp')) continue;
       let entry = this.entries.get(handle);
+      const building = this.world.getComponent<BuildingComp>(handle, 'BuildingComp');
+      const beltSeg = this.world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp');
 
-      // 新实体 或 纹理/层级变更 → (重新)绑定 Sprite
+      // 新实体 或 纹理/层级/底座方式变更 → (重新)绑定渲染节点。
+      // nineslice 标志参与 diff：whole↔nineslice 切换（迁移期同一 textureKey 可能
+      // 两种路径）必须重建，防旧 Sprite 残留（S2 §5.3 "纹理 diff 键防误重建"）。
+      const def = building
+        ? getBuildingDefinition(building.definitionId)
+        : undefined;
+      const isNineslice = def?.baseStyle === 'nineslice';
       if (
         !entry ||
         entry.group !== spr.group ||
         entry.textureKey !== spr.textureKey ||
-        entry.layer !== spr.layer
+        entry.layer !== spr.layer ||
+        entry.nineslice !== isNineslice
       ) {
         if (entry) this.disposeEntry(entry);
-        entry = this.createEntry(handle, spr);
+        entry = this.createEntry(handle, spr, isNineslice);
         this.entries.set(handle, entry);
       }
 
@@ -232,8 +256,6 @@ export class RenderSystem {
       // - 带 BeltSegmentComp 的实体使用传送带纹理旋转（Transport_Belt_Move.svg 默认朝下）。
       //   转角段用 belt_corner：CW = 按出口方向旋转；CCW = 按出口方向旋转 + scale.x 取负（水平镜像）。
       //   预览/落盘/渲染三方共用 BeltPathGeometry 的同一套数学，保证一致。
-      const building = this.world.getComponent<BuildingComp>(handle, 'BuildingComp');
-      const beltSeg = this.world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp');
       if (building) {
         sprite.scale.set(entry.baseScaleX, entry.baseScaleY);
         sprite.rotation = (building.direction * Math.PI) / 180;
@@ -311,7 +333,14 @@ export class RenderSystem {
 
   // ───────────────────────── 内部 ─────────────────────────
 
-  private createEntry(_handle: EntityHandle, spr: SpriteComp): SpriteEntry {
+  private createEntry(handle: EntityHandle, spr: SpriteComp, nineslice: boolean): SpriteEntry {
+    // T1.11c: 九宫格底座设备——根节点 = Container[底座拼装, equipment Sprite]。
+    // texture 字段语义 = equipment 层帧 key（透明底纯设备内容），底座由
+    // buildNineSliceBase 按 footprint 平铺 nineslice/* 切片。position/rotation
+    // 数学与 whole Sprite 完全一致（update 循环无需分支）。
+    if (nineslice) {
+      return this.createNinesliceEntry(handle, spr);
+    }
     const tex = this.getTexture(spr.group, spr.textureKey) ?? Texture.EMPTY;
     const sprite = new Sprite(tex);
     sprite.anchor.set(0.5);
@@ -324,52 +353,109 @@ export class RenderSystem {
     sprite.scale.set(baseScaleX, baseScaleY);
     this.layerContainer(spr.layer).addChild(sprite);
 
-    // 可选 billboard 徽标层（T2.8 修订为双层结构）：
-    //   logo（本层）= 半透明 glow 底层（`${logoTextureKey}-glow`，状态切换**不换**），
-    //                同时是 billboard 旋转锚点容器——反向旋转写在这层，主体子节点跟随。
-    //   logoMain（子层）= 不透明主体（logoTextureKey）——paused/blocked 时只替换这层。
-    // 注意：scale 保持 1，两层继承父 Sprite 缩放；帧均与主帧同画布 → anchor 0.5 自然对齐。
-    let logo: Sprite | undefined;
-    let logoMain: Sprite | undefined;
-    let pauseFallback: Graphics | undefined;
-    let blockedFallback: Graphics | undefined;
-    if (spr.logoTextureKey) {
-      const glowTex = this.getTexture(spr.group, `${spr.logoTextureKey}-glow`) ?? Texture.EMPTY;
-      logo = new Sprite(glowTex);
-      logo.anchor.set(0.5);
-      logo.scale.set(1);
-      sprite.addChild(logo);
-
-      const mainTex = this.getTexture(spr.group, spr.logoTextureKey) ?? Texture.EMPTY;
-      logoMain = new Sprite(mainTex);
-      logoMain.anchor.set(0.5);
-      logoMain.scale.set(1);
-      logo.addChild(logoMain);
-
-      // T2.8 状态徽标程序化兜底（InventoryUI 占位图先例）: 素材缺失时 Graphics 直画。
-      // 挂 logoMain（替换的是主体层），默认隐藏，applyLogoVisual 按需切换。
-      const s = FALLBACK_SPAN;
-      pauseFallback = new Graphics({ label: 'pauseLogoFallback' });
-      pauseFallback
-        .rect(-s * 0.88, -s, s * 0.5, s * 2)
-        .rect(s * 0.38, -s, s * 0.5, s * 2)
-        .fill({ color: 0x494848 }); // 深灰（与 Pause_Logo.svg 同色）
-      pauseFallback.visible = false;
-      logoMain.addChild(pauseFallback);
-
-      blockedFallback = new Graphics({ label: 'blockedLogoFallback' });
-      blockedFallback
-        .moveTo(-s, -s).lineTo(s, s)
-        .moveTo(s, -s).lineTo(-s, s)
-        .stroke({ width: s * 0.5, color: 0xe53935, cap: 'round' }); // 红 X（与 Blocked_Logo.svg 同色）
-      blockedFallback.visible = false;
-      logoMain.addChild(blockedFallback);
-    }
-
+    const logoTree = this.buildLogoSubtree(spr, sprite);
     return {
-      sprite, logo, logoMain, pauseFallback, blockedFallback,
+      sprite, nineslice: false,
+      ...logoTree,
       group: spr.group, textureKey: spr.textureKey, layer: spr.layer, baseScaleX, baseScaleY,
     };
+  }
+
+  /**
+   * T1.11c: 创建九宫格设备的渲染子树。
+   * 根 Container（原点=设备中心）→ [底座, equipment Sprite, logo 子树]。
+   * 底座：有 renderer 时走 RenderTexture 烘焙（每尺寸一张缓存纹理，单 Sprite，
+   * 与原整帧 mip 行为一致——逐切片 ε 重叠在低 zoom mipmap 半透明区会双重绘制
+   * 出暗斑）；无 renderer（单测）回退逐切片容器。
+   * baseScale = 1：底座与 equipment 均按世界像素直接定尺寸，不靠根缩放。
+   */
+  private createNinesliceEntry(handle: EntityHandle, spr: SpriteComp): SpriteEntry {
+    const building = this.world.getComponent<BuildingComp>(handle, 'BuildingComp');
+    const def = building ? getBuildingDefinition(building.definitionId) : undefined;
+    const { w, h } = def?.footprint ?? { w: spr.width / 64, h: spr.height / 64 };
+
+    const root = new Container({ label: `nineslice-device-${spr.textureKey}` });
+    if (this.renderer) {
+      // 烘焙纹理含 ±4px 窗口边距（透明），anchor 0.5 + scale 1 内容恰覆盖 footprint
+      const base = new Sprite(getBakedNineSliceTexture(w, h, this.renderer, this.getTexture));
+      base.anchor.set(0.5);
+      root.addChild(base);
+    } else {
+      root.addChild(buildNineSliceBase(w, h, this.getTexture));
+    }
+
+    // equipment 层帧（texture 字段）：与底座同设备画布 → anchor 0.5 + 按设备
+    // 世界尺寸缩放即可对齐（trim 帧的 texture.width 返回 orig 全画布尺寸）。
+    const equipTex = this.getTexture(spr.group, spr.textureKey);
+    if (equipTex && equipTex.width > 0) {
+      const equip = new Sprite(equipTex);
+      equip.anchor.set(0.5);
+      equip.width = spr.width;
+      equip.height = spr.height;
+      root.addChild(equip);
+    }
+
+    this.layerContainer(spr.layer).addChild(root);
+    // logo 帧为全画布尺寸（orig=设备画布），nineslice 根 scale=1 → 显式缩放到设备世界尺寸
+    const glowTex = this.getTexture(spr.group, spr.logoTextureKey ? `${spr.logoTextureKey}-glow` : '');
+    const logoScale = glowTex && glowTex.width > 0 ? spr.width / glowTex.width : undefined;
+    const logoTree = this.buildLogoSubtree(spr, root, logoScale);
+    return {
+      sprite: root, nineslice: true,
+      ...logoTree,
+      group: spr.group, textureKey: spr.textureKey, layer: spr.layer,
+      baseScaleX: 1, baseScaleY: 1,
+    };
+  }
+
+  /**
+   * 可选 billboard 徽标层（T2.8 修订为双层结构）：
+   *   logo（本层）= 半透明 glow 底层（`${logoTextureKey}-glow`，状态切换**不换**），
+   *                同时是 billboard 旋转锚点容器——反向旋转挂在这层，主体子节点跟随。
+   *   logoMain（子层）= 不透明主体（logoTextureKey）——paused/blocked 时只替换这层。
+   * scale: whole 路径父 Sprite 已按 设备px/纹理px 缩放，logo scale 1 继承即可；
+   *   nineslice 路径根容器 scale 恒 1，logo 帧是全画布尺寸（sourceSize=设备画布），
+   *   必须显式按 设备px/纹理px 缩放（T1.11c 修复: 否则 logo 以全画布世界尺寸绘制）。
+   * T1.11c: 挂载父节点从 Sprite 泛化为 Container（nineslice 根也可带 logo）。
+   */
+  private buildLogoSubtree(
+    spr: SpriteComp,
+    parent: Container,
+    logoScale?: number,
+  ): Pick<SpriteEntry, 'logo' | 'logoMain' | 'pauseFallback' | 'blockedFallback'> {
+    if (!spr.logoTextureKey) return {};
+    const glowTex = this.getTexture(spr.group, `${spr.logoTextureKey}-glow`) ?? Texture.EMPTY;
+    const logo = new Sprite(glowTex);
+    logo.anchor.set(0.5);
+    logo.scale.set(logoScale ?? 1);
+    parent.addChild(logo);
+
+    const mainTex = this.getTexture(spr.group, spr.logoTextureKey) ?? Texture.EMPTY;
+    const logoMain = new Sprite(mainTex);
+    logoMain.anchor.set(0.5);
+    logoMain.scale.set(1);
+    logo.addChild(logoMain);
+
+    // T2.8 状态徽标程序化兜底（InventoryUI 占位图先例）: 素材缺失时 Graphics 直画。
+    // 挂 logoMain（替换的是主体层），默认隐藏，applyLogoVisual 按需切换。
+    const s = FALLBACK_SPAN;
+    const pauseFallback = new Graphics({ label: 'pauseLogoFallback' });
+    pauseFallback
+      .rect(-s * 0.88, -s, s * 0.5, s * 2)
+      .rect(s * 0.38, -s, s * 0.5, s * 2)
+      .fill({ color: 0x494848 }); // 深灰（与 Pause_Logo.svg 同色）
+    pauseFallback.visible = false;
+    logoMain.addChild(pauseFallback);
+
+    const blockedFallback = new Graphics({ label: 'blockedLogoFallback' });
+    blockedFallback
+      .moveTo(-s, -s).lineTo(s, s)
+      .moveTo(s, -s).lineTo(-s, s)
+      .stroke({ width: s * 0.5, color: 0xe53935, cap: 'round' }); // 红 X（与 Blocked_Logo.svg 同色）
+    blockedFallback.visible = false;
+    logoMain.addChild(blockedFallback);
+
+    return { logo, logoMain, pauseFallback, blockedFallback };
   }
 
   /**
@@ -404,7 +490,9 @@ export class RenderSystem {
     entry.logo?.destroy({ children: true }); // 连同 T2.8 fallback 子节点一并销毁
     const sprite = entry.sprite;
     sprite.removeFromParent();
-    sprite.destroy();
+    // T1.11c: nineslice 根是 Container，子树（底座切片/equipment）需随销毁；
+    // whole Sprite 路径 logo 已单独移除销毁，children:true 无副作用。
+    sprite.destroy({ children: true });
   }
 
   private layerContainer(layer: number): Container {

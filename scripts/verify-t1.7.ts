@@ -55,6 +55,10 @@ console.log('\n[A] BuildingDefinition 数据表 (A3 §1.1)');
     'moulding_unit',
     'seed_picking_unit',
     'planting_unit',
+    // T1.11 九宫格验收 demo 设备（S2 §8-2 任意尺寸正确性，不进 TOOLBAR）
+    'test_nineslice_6x3',
+    'test_nineslice_5x5',
+    'test_nineslice_6x6',
   ];
   for (const id of expectedIds) {
     const def = getBuildingDefinition(id);

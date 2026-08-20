@@ -87,13 +87,17 @@ for (const group of ATLAS_GROUPS) {
   assert(pngMeta.width === atlasW && pngMeta.height === atlasH,
     `${group.name}.png 实际尺寸 (${pngMeta.width}×${pngMeta.height}) == JSON 声明 (${atlasW}×${atlasH})`);
 
-  // A/B. 各纹理 frame 尺寸 = 源 × scale
+  // A/B. 各纹理 sourceSize 尺寸 = 源 × scale（T1.11b 后 frame 可能被 trim 缩小，
+  //      全画布尺寸看 sourceSize；纹素 1:1 的关键是 sourceSize 而非 frame）
   //   devices/ui 源是 SVG（提倍生效）；items 源是 PNG（scale 应为 1，直接对比源 PNG 尺寸）
   const frameCount = Object.keys(sheet.frames).length;
   let checked = 0;
   let mismatches = 0;
   for (const [frameKey, frame] of Object.entries(sheet.frames) as Array<[string, {
     frame: { x: number; y: number; w: number; h: number };
+    trimmed: boolean;
+    spriteSourceSize: { x: number; y: number; w: number; h: number };
+    sourceSize: { w: number; h: number };
   }]>) {
     const texKey = frameKey.replace(/\.png$/, '');
     // 反查源文件：用 keyOverrides 反映射，否则 toTextureKey 规则
@@ -113,23 +117,41 @@ for (const group of ATLAS_GROUPS) {
       };
       const expect = samples[texKey];
       if (expect) {
-        const ok = Math.abs(frame.frame.w - expect.w * scale) <= scale &&
-                   Math.abs(frame.frame.h - expect.h * scale) <= scale;
+        const ok = Math.abs(frame.sourceSize.w - expect.w * scale) <= scale &&
+                   Math.abs(frame.sourceSize.h - expect.h * scale) <= scale;
         if (!ok) mismatches++;
         checked++;
+      }
+      // trim 元数据一致性（T1.11b）: trimmed 帧的 spriteSourceSize 偏移 + frame 尺寸
+      // 必须落在 sourceSize 内，否则 PixiJS 定位错乱
+      if (frame.trimmed) {
+        const inBounds =
+          frame.spriteSourceSize.x >= 0 && frame.spriteSourceSize.y >= 0 &&
+          frame.spriteSourceSize.x + frame.spriteSourceSize.w <= frame.sourceSize.w &&
+          frame.spriteSourceSize.y + frame.spriteSourceSize.h <= frame.sourceSize.h &&
+          frame.spriteSourceSize.w === frame.frame.w && frame.spriteSourceSize.h === frame.frame.h;
+        if (!inBounds) mismatches++;
       }
     }
   }
   if (group.name === 'devices') {
     assert(checked >= 7 && mismatches === 0,
-      `${group.name} 各纹理 frame = 源尺寸 × ${scale}（已校验 ${checked} 个，不匹配 ${mismatches}）`);
-    // 重点: 1×1 设备应有 256×256，3×3 应有 768×768（zoom=4 纹素 1:1 的关键）
+      `${group.name} 各纹理 sourceSize = 源尺寸 × ${scale}，trim 元数据一致（已校验 ${checked} 个，不匹配 ${mismatches}）`);
+    // 重点: 1×1 设备 sourceSize 应为 256×256，3×3 应为 768×768（zoom=4 纹素 1:1 的关键）
     const belt = sheet.frames['transport_belt.png'];
     const furnace = sheet.frames['refining_unit.png'];
-    assert(belt && belt.frame.w === DEVICE_RASTER_SCALE * 64 && belt.frame.h === DEVICE_RASTER_SCALE * 64,
-      `transport_belt (1×1) 纹理 = ${DEVICE_RASTER_SCALE * 64}×${DEVICE_RASTER_SCALE * 64}（zoom=4 纹素 1:1）`);
-    assert(furnace && furnace.frame.w === DEVICE_RASTER_SCALE * 192 && furnace.frame.h === DEVICE_RASTER_SCALE * 192,
-      `refining_unit (3×3) 纹理 = ${DEVICE_RASTER_SCALE * 192}×${DEVICE_RASTER_SCALE * 192}`);
+    assert(belt && belt.sourceSize.w === DEVICE_RASTER_SCALE * 64 && belt.sourceSize.h === DEVICE_RASTER_SCALE * 64,
+      `transport_belt (1×1) sourceSize = ${DEVICE_RASTER_SCALE * 64}×${DEVICE_RASTER_SCALE * 64}（zoom=4 纹素 1:1）`);
+    assert(furnace && furnace.sourceSize.w === DEVICE_RASTER_SCALE * 192 && furnace.sourceSize.h === DEVICE_RASTER_SCALE * 192,
+      `refining_unit (3×3) sourceSize = ${DEVICE_RASTER_SCALE * 192}×${DEVICE_RASTER_SCALE * 192}`);
+    // T1.11: 九宫格切片帧存在且为窗口尺寸（64+2×4 px 源 × 4）
+    const ns = ['tl', 't', 'tr', 'l', 'r', 'bl', 'b', 'br'] as const; // c 空心跳过
+    const nsWin = (64 + 2 * 4) * DEVICE_RASTER_SCALE;
+    const nsOk = ns.every((n) => {
+      const f = sheet.frames[`nineslice/${n}.png`];
+      return f && f.frame.w === nsWin && f.frame.h === nsWin;
+    });
+    assert(nsOk, `nineslice/* 8 切片帧存在且 = ${nsWin}×${nsWin}（窗口 72px 源 × 4）`);
   }
   console.log(`  (${frameCount} 个纹理，图集 ${atlasW}×${atlasH})\n`);
 }

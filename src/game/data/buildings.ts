@@ -58,8 +58,18 @@ export interface BuildingDefinition {
   footprint: Footprint;
   /** 输入/输出口（默认方向 0° 下的位置，A3 §2） */
   ports: Port[];
-  /** 纹理图集 key（devices 图集内的 texture key） */
+  /**
+   * 纹理图集 key（devices 图集内的 texture key）。
+   * baseStyle='nineslice' 时语义 = equipment 专属层帧 key（透明底纯设备内容，
+   * 底座由 nineslice/* 9 切片拼装，见 S1 §9）；'whole'/缺省 = 整机外观帧。
+   */
   texture: string;
+  /**
+   * 底座渲染方式（T1.11，S2）。缺省 'whole' = 现状整图（向后兼容，已放置设备
+   * 零迁移成本）。'nineslice' = 底座走 NineSliceAssembler 拼装，图集面积与
+   * 设备尺寸解耦（w,h ≥ 2 的设备适用；1×n/n×1 仍走 whole）。
+   */
+  baseStyle?: 'whole' | 'nineslice';
   /** 可选： billboard 徽标层 key，会叠加在主体上方并保持屏幕朝上 (devices 图集内的 texture key) */
   logoTextureKey?: string;
   /** 是否可被玩家选中 (T1.8 用) */
@@ -107,6 +117,7 @@ export const BUILDING_DEFINITIONS: Record<string, BuildingDefinition> = {
       { type: 'liquid', position: { dx: 2, dy: 1 } },
     ],
     texture: 'refining_unit',
+    baseStyle: 'nineslice',
     logoTextureKey: 'refining_unit/logo',
     selectable: true,
     buildCost: [{ itemId: 'stone', count: 5 }],
@@ -223,6 +234,66 @@ export const BUILDING_DEFINITIONS: Record<string, BuildingDefinition> = {
     selectable: true,
     buildCost: [{ itemId: 'iron_plate', count: 15 }],
     powerConsumption: 20,
+    inputSlotCount: 1,
+    outputSlotCount: 1,
+    bufferCapacity: 50,
+  },
+
+  // ── T1.11 九宫格验收 demo 设备（S2 §8-2 任意尺寸正确性）──
+  // 不进 TOOLBAR、无 SVG equipment（texture 帧不存在 → 仅渲染底座拼装，
+  // RenderSystem/PlacementSystem 对缺失 equip 帧天然跳过）。仅供
+  // __game.placeAt('test_nineslice_*', gx, gy, dir) 程序化验收：
+  // 边框完整一圈、柱子钉在每条内部竖格线端部、无平铺接缝、旋转后正确。
+  test_nineslice_6x3: {
+    id: 'test_nineslice_6x3',
+    name: '九宫格6×3',
+    category: 'production',
+    footprint: { w: 6, h: 3 },
+    ports: [
+      { type: 'input', position: { dx: 2, dy: 2 } },
+      { type: 'output', position: { dx: 3, dy: 0 } },
+    ],
+    texture: 'test_nineslice_6x3',
+    baseStyle: 'nineslice',
+    selectable: true,
+    buildCost: [{ itemId: 'stone', count: 1 }], // 名义占位（验收 demo 设备，无经济语义）
+    powerConsumption: 0,
+    inputSlotCount: 1,
+    outputSlotCount: 1,
+    bufferCapacity: 50,
+  },
+  test_nineslice_5x5: {
+    id: 'test_nineslice_5x5',
+    name: '九宫格5×5',
+    category: 'production',
+    footprint: { w: 5, h: 5 },
+    ports: [
+      { type: 'input', position: { dx: 2, dy: 4 } },
+      { type: 'output', position: { dx: 2, dy: 0 } },
+    ],
+    texture: 'test_nineslice_5x5',
+    baseStyle: 'nineslice',
+    selectable: true,
+    buildCost: [{ itemId: 'stone', count: 1 }], // 名义占位（验收 demo 设备，无经济语义）
+    powerConsumption: 0,
+    inputSlotCount: 1,
+    outputSlotCount: 1,
+    bufferCapacity: 50,
+  },
+  test_nineslice_6x6: {
+    id: 'test_nineslice_6x6',
+    name: '九宫格6×6',
+    category: 'production',
+    footprint: { w: 6, h: 6 },
+    ports: [
+      { type: 'input', position: { dx: 3, dy: 5 } },
+      { type: 'output', position: { dx: 3, dy: 0 } },
+    ],
+    texture: 'test_nineslice_6x6',
+    baseStyle: 'nineslice',
+    selectable: true,
+    buildCost: [{ itemId: 'stone', count: 1 }], // 名义占位（验收 demo 设备，无经济语义）
+    powerConsumption: 0,
     inputSlotCount: 1,
     outputSlotCount: 1,
     bufferCapacity: 50,

@@ -12,6 +12,7 @@
 //   E. T1.8 选中联动: 删除选中设备后选中态清空、选中框隐藏
 
 import { Container, Sprite } from 'pixi.js';
+import { createBufferSlots } from '../src/game/systems/machine/BufferOps';
 import { World } from '../src/game/ECS.ts';
 import { Camera } from '../src/game/render/Camera.ts';
 import type { SceneLayers } from '../src/game/render/SceneRenderer.ts';
@@ -75,6 +76,10 @@ function placeBuilding(
   world.addComponent(h, 'Position', { x: gx * CELL_SIZE, y: gy * CELL_SIZE });
   world.addComponent(h, 'BuildingComp', {
     definitionId: def.id, direction: 0 as Direction, state: 'idle' as const,
+    paused: false, // T2.8 字段（PortStatusOps 渲染需要；测试实体补全与 placeAt 同形）
+    bufferInput: createBufferSlots(def.inputSlotCount), // T2.4
+    bufferOutput: createBufferSlots(def.outputSlotCount), // T2.5
+    currentRecipeId: null, progress: 0, elapsed: 0, // T2.5
   });
   world.addComponent(h, 'SpriteComp', {
     group: 'devices' as const, textureKey: def.texture,
@@ -196,19 +201,22 @@ console.log('\n[D] RenderSystem 集成 (删除 → Sprite 自动移除)');
 
   render.update();
   // T2.0 起 RenderSystem 构造时把 BeltHoverRenderer 的 beltHover Graphics 常驻挂到
-  // layer2Building（悬停高亮层），层的 children 不再只含建筑 Sprite。
-  // 断言只数 Sprite 实例，忽略渲染器自有对象。
-  const sprites = layers.layer2Building.children.filter((c) => c instanceof Sprite);
-  assert(sprites.length === 1, '放置后 Sprite 挂到 building 层');
-  const sprite = sprites[0];
+  // layer2Building（悬停高亮层），层的 children 不再只含建筑渲染根。
+  // T1.11c 起渲染根有两种: whole 设备 = Sprite，nineslice 设备 = Container
+  // （label 前缀 nineslice-device）。断言按两种形态找唯一渲染根。
+  const findRoot = () => layers.layer2Building.children.find(
+    (c) => c instanceof Sprite ||
+      (typeof (c as Container).label === 'string' && (c as Container).label.startsWith('nineslice-device')),
+  );
+  const root = findRoot();
+  assert(root !== undefined, '放置后渲染根挂到 building 层');
 
   assert(del.deleteBuilding(h) === true, '删除设备成功');
   render.update();
-  const spritesAfter = layers.layer2Building.children.filter((c) => c instanceof Sprite);
-  assert(spritesAfter.length === 0, '删除后下一帧 Sprite 自动移除');
+  assert(findRoot() === undefined, '删除后下一帧渲染根自动移除');
   assert(
-    (sprite as unknown as { destroyed: boolean }).destroyed === true,
-    '旧 Sprite 已被销毁（无泄漏）',
+    (root as unknown as { destroyed: boolean }).destroyed === true,
+    '旧渲染根已被销毁（无泄漏）',
   );
 }
 

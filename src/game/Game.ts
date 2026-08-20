@@ -12,6 +12,7 @@ import { WorldData } from './world/World';
 import { OccupancyMap } from './world/OccupancyMap';
 import { Camera, type ViewportSize } from './render/Camera';
 import type { SceneRenderer } from './render/SceneRenderer';
+import type { Renderer } from 'pixi.js';
 import { RenderSystem } from './systems/RenderSystem';
 import { PlacementSystem } from './systems/PlacementSystem';
 import { BeltCreationSystem } from './systems/BeltCreationSystem';
@@ -41,7 +42,7 @@ export class Game {
   /** 生产系统（T2.5）。由 initProduction 注入配方/物品数据后创建并注册。 */
   machineSystem: MachineSystem | null = null;
 
-  constructor(scene: SceneRenderer, viewport: ViewportSize) {
+  constructor(scene: SceneRenderer, viewport: ViewportSize, renderer?: Renderer) {
     this.world = new World();
     this.worldData = new WorldData();
     // 世界边界取自 MapInstance（A11 WV-003 §4.4）
@@ -49,7 +50,8 @@ export class Game {
       widthPx: this.worldData.map.widthPx,
       heightPx: this.worldData.map.heightPx,
     });
-    this.renderSystem = new RenderSystem(this.world, scene.layers, this.camera, getTexture);
+    // renderer 用于 nineslice 底座 RenderTexture 烘焙（T1.11c；缺省回退逐切片容器）
+    this.renderSystem = new RenderSystem(this.world, scene.layers, this.camera, getTexture, renderer);
     // 占用表 + 放置系统（T1.7）。占用表边界读 worldData.map，不读全局常量。
     this.occupancy = new OccupancyMap(this.worldData.map);
     this.placement = new PlacementSystem(

@@ -96,8 +96,8 @@ console.log('\n[4] zoom 边界 [0.25, 4.0]');
   const cam = new Camera(VIEWPORT, WORLD_BOUNDS);
   cam.setZoom(100); // 远超上限
   assert(approxEqual(cam.zoom, CAMERA_ZOOM_MAX), `setZoom(100) clamp 到 ${CAMERA_ZOOM_MAX}`);
-  cam.setZoom(0.01); // 远低于下限
-  assert(approxEqual(cam.zoom, CAMERA_ZOOM_MIN), `setZoom(0.01) clamp 到 ${CAMERA_ZOOM_MIN}`);
+  cam.setZoom(0.01); // 远低于下限（T1.10 起为动态下限: min(0.25, 视口短边/世界短边)）
+  assert(approxEqual(cam.zoom, cam.minZoom()), `setZoom(0.01) clamp 到动态下限 minZoom()=${cam.minZoom().toFixed(3)}`);
 }
 
 // ── 5. zoomAt 锚点不变 ──

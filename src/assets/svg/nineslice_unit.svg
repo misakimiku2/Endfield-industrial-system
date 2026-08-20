@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="192"
+   height="192"
+   viewBox="0 0 50.799999 50.799999"
+   version="1.1"
+   id="svg1"
+   xml:space="preserve"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <!--
+    九宫格设备底座切片（T1.11a，方案 S2 nine-slice-device-base.md）
+    ====================================================================
+    画布 = 3×3 格（与 3x3_unit.svg 同规格 192px / viewBox 50.8），每个 slice-* 组
+    的内容画在自己对应的 64px（16.9333 单位）格子内，允许小幅越界（见下）。
+
+    切片布局（用户 1-9 编号 ↔ 方位缩写）:
+      1 tl  2 t  3 tr
+      4 l   5 c  6 r
+      7 bl  8 b  9 br
+
+    平铺规则（w×h 设备，w,h ≥ 2）:
+      行 0: tl, t×(w-2), tr
+      行 1..h-2: l, c×(w-2), r
+      行 h-1: bl, b×(w-2), br
+
+    与原素材的对齐（像素级还原 3×3 的依据，几何经光栅化逐像素测量）:
+      - 边框环 = 外沿 [1.3229167,49.477083]² 挖空 [1.8520833,48.947917]×[3.0427083,47.757292]，
+        分解为 4 条矩形带（上/下带厚 1.7197916，左/右带宽 0.5291666），按格切分归属各切片。
+      - 切分缝处每边向邻格多画 0.3 单位（不透明同色重叠），避免抗锯齿切割缝出现半透明接缝。
+      - 底板 12.964583×10.794909（#202020）只存在于顶行与底行（原素材即如此——中间行是
+        空心"画框"，设备中间内容由各设备自己的 equipment 层承担）。中间行的 l/c/r 切片
+        只有竖向边框带（c 完全为空）。
+      - 柱子（#828080 1.322917×3.96875）: 原素材钉在内部竖格线端部，左右突出量不对称
+        （线左 0.3307 / 线右 0.9922），两条内部线的柱子互为镜像。归属: t/b 切片左端画
+        "左轻右重"柱（A 形，跨自己左缘），tr/br 切片左端画"左重右轻"柱（B 形）——
+        3×3 平铺后与原素材 4 根柱子逐坐标一致，且任意 w≥2 时每条内部竖格线恰好一根柱。
+        tl/bl/l/c/r 无柱。
+
+    提取方式见 scripts/pack-assets.ts: 每组按其所在格 ±1.058333 单位边距的窗口
+    光栅化为 nineslice/<方位> 帧（越界内容随窗口保留）。
+  -->
+  <g id="nineslice">
+    <g id="slice-tl">
+      <rect id="tl-board" style="fill:#202020;fill-opacity:1;stroke:none"
+         width="12.964583" height="10.794909" x="2.6458350" y="1.3494230" />
+      <rect id="tl-border-top" style="fill:#202020;fill-opacity:1;stroke:none"
+         width="15.9104375" height="1.7197916" x="1.3229167" y="1.3229167" />
+      <rect id="tl-border-left" style="fill:#202020;fill-opacity:1;stroke:none"
+         width="0.5291666" height="15.9104375" x="1.3229167" y="1.3229167" />
+    </g>
+    <g id="slice-t">
+      <rect id="t-board" style="fill:#202020;fill-opacity:1;stroke:none"
+         width="12.964583" height="10.794909" x="18.9177050" y="1.3494230" />
+      <rect id="t-border-top" style="fill:#202020;fill-opacity:1;stroke:none"
+         width="17.5333334" height="1.7197916" x="16.6333333" y="1.3229167" />
+      <rect id="t-pillar" style="fill:#828080;fill-opacity:1;stroke:none"
+         width="1.3229170" height="3.9687501" x="16.6026040" y="5.7040443" />
+    </g>
+    <g id="slice-tr">
+      <rect id="tr-board" style="fill:#202020;fill-opacity:1;stroke:none"
+         width="12.964583" height="10.794909" x="35.1895830" y="1.3494230" />
+      <rect id="tr-border-top" style="fill:#202020;fill-opacity:1;stroke:none"
+         width="15.9104163" height="1.7197916" x="33.5666667" y="1.3229167" />
+      <rect id="tr-border-right" style="fill:#202020;fill-opacity:1;stroke:none"
+         width="0.5291660" height="14.1906259" x="48.9479170" y="3.0427083" />
+      <rect id="tr-pillar" style="fill:#828080;fill-opacity:1;stroke:none"
+         width="1.3229170" height="3.9687501" x="32.8744790" y="5.7040443" />
+    </g>
+    <g id="slice-l">
+      <rect id="l-border-left" style="fill:#202020;fill-opacity:1;stroke:none"
+         width="0.5291666" height="17.5333334" x="1.3229167" y="16.6333333" />
+    </g>
+    <g id="slice-c" />
+    <g id="slice-r">
+      <rect id="r-border-right" style="fill:#202020;fill-opacity:1;stroke:none"
+         width="0.5291660" height="17.5333334" x="48.9479170" y="16.6333333" />
+    </g>
+    <g id="slice-bl">
+      <rect id="bl-board" style="fill:#202020;fill-opacity:1;stroke:none"
+         width="12.964583" height="10.794909" x="2.6458350" y="38.6556730" />
+      <rect id="bl-border-bottom" style="fill:#202020;fill-opacity:1;stroke:none"
+         width="15.9104375" height="1.7197910" x="1.3229167" y="47.7572920" />
+      <rect id="bl-border-left" style="fill:#202020;fill-opacity:1;stroke:none"
+         width="0.5291666" height="14.1906260" x="1.3229167" y="33.5666667" />
+    </g>
+    <g id="slice-b">
+      <rect id="b-board" style="fill:#202020;fill-opacity:1;stroke:none"
+         width="12.964583" height="10.794909" x="18.9177050" y="38.6556730" />
+      <rect id="b-border-bottom" style="fill:#202020;fill-opacity:1;stroke:none"
+         width="17.5333334" height="1.7197910" x="16.6333333" y="47.7572920" />
+      <rect id="b-pillar" style="fill:#828080;fill-opacity:1;stroke:none"
+         width="1.3229170" height="3.9687500" x="16.6026040" y="41.1272050" />
+    </g>
+    <g id="slice-br">
+      <rect id="br-board" style="fill:#202020;fill-opacity:1;stroke:none"
+         width="12.964583" height="10.794909" x="35.1895830" y="38.6556730" />
+      <rect id="br-border-bottom" style="fill:#202020;fill-opacity:1;stroke:none"
+         width="15.9104163" height="1.7197910" x="33.5666667" y="47.7572920" />
+      <rect id="br-border-right" style="fill:#202020;fill-opacity:1;stroke:none"
+         width="0.5291660" height="14.1906260" x="48.9479170" y="33.5666667" />
+      <rect id="br-pillar" style="fill:#828080;fill-opacity:1;stroke:none"
+         width="1.3229170" height="3.9687500" x="32.8744790" y="41.1272050" />
+    </g>
+  </g>
+</svg>

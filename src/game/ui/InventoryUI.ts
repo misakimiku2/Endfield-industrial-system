@@ -19,6 +19,7 @@ import { Container, Graphics, Sprite, Text, Texture, type Renderer } from 'pixi.
 import { TOOLBAR_BUILDINGS, getBuildingDefinition, type BuildingDefinition } from '../data/buildings';
 import type { TextureLookup } from '../systems/RenderSystem';
 import { CELL_SIZE } from '../render/constants';
+import { buildNineSliceBase } from '../render/NineSliceAssembler';
 
 /** 按钮尺寸（屏幕像素）。图标区 + 名字区。 */
 const BTN_SIZE = 64;
@@ -126,6 +127,9 @@ export class InventoryUI {
   private getTexture: TextureLookup;
   private onSelect: (id: string) => void;
   private placeholder: PlaceholderTextureFactory;
+  /** T1.11c: nineslice 设备的组合图标缓存（底座拼装+equipment 一次性烘焙成 RenderTexture）。 */
+  private renderer: Renderer;
+  private ninesliceIcons = new Map<string, Texture>();
 
   private buttons: ButtonState[] = [];
   /** 当前高亮的设备 id（null = 无选中）。 */
@@ -140,6 +144,7 @@ export class InventoryUI {
   ) {
     this.getTexture = getTexture;
     this.onSelect = onSelect;
+    this.renderer = renderer;
     this.placeholder = new PlaceholderTextureFactory(renderer);
 
     this.container = new Container({ label: 'inventoryUI' });
@@ -175,8 +180,11 @@ export class InventoryUI {
     this.drawButtonBg(bg, false, false);
     container.addChild(bg);
 
-    // 图标：优先用真实纹理，缺纹理用占位图
-    const realTex = this.getTexture('devices', def.texture);
+    // 图标：优先用真实纹理，缺纹理用占位图。
+    // nineslice 设备的 texture 帧是透明底 equipment（底座不在帧里）——直接用会显示
+    // 悬浮部件，改为把"底座拼装+equipment"一次性烘焙成组合图标（T1.11c）。
+    const realTex =
+      def.baseStyle === 'nineslice' ? this.getNinesliceIcon(def) : this.getTexture('devices', def.texture);
     const iconTex = realTex ?? this.placeholder.get(def);
     const icon = new Sprite(iconTex);
     icon.anchor.set(0.5);
@@ -275,9 +283,36 @@ export class InventoryUI {
     return this.activeId;
   }
 
+  /**
+   * T1.11c: 生成/缓存 nineslice 设备的组合图标纹理。
+   * 底座切片拼装 + equipment Sprite → generateTexture（resolution 4 对齐
+   * DEVICE_RASTER_SCALE，与 whole 设备图标的纹素密度一致）。
+   */
+  private getNinesliceIcon(def: BuildingDefinition): Texture | null {
+    const cached = this.ninesliceIcons.get(def.id);
+    if (cached) return cached;
+    const { w, h } = def.footprint;
+    const container = buildNineSliceBase(w, h, this.getTexture);
+    const equipTex = this.getTexture('devices', def.texture);
+    if (equipTex && equipTex.width > 0) {
+      const equip = new Sprite(equipTex);
+      equip.anchor.set(0.5);
+      equip.width = w * CELL_SIZE;
+      equip.height = h * CELL_SIZE;
+      container.addChild(equip);
+    }
+    const tex = this.renderer.generateTexture({ target: container, resolution: 4, antialias: true });
+    container.destroy({ children: true });
+    if (tex.width === 0) return null; // 切片帧缺失（图集未重跑）→ 回落占位图
+    this.ninesliceIcons.set(def.id, tex);
+    return tex;
+  }
+
   /** 销毁（teardown 用）。 */
   destroy(): void {
     this.placeholder.destroy();
+    for (const tex of this.ninesliceIcons.values()) tex.destroy(true);
+    this.ninesliceIcons.clear();
     this.container.destroy({ children: true });
   }
 }
