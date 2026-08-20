@@ -300,3 +300,20 @@ src/game/render/NineSliceAssembler.ts
 
 见 S1 §9.7：`baseStyle: 'nineslice'` + 只画 equipment/ports/arrows/logo 层的设备 SVG，
 重跑 pack-assets 即可——底座零美术成本。验收 demo: `__game.placeAt('test_nineslice_6x6', x, y, dir)`。
+
+### 11.4 追加（2026-08-20 用户反馈: 端口三组并入切片）
+
+用户指出原方案只切分了 base 组，`ports`/`ports_top`/`arrows` 三组同为逐格重复结构，
+应一并并入九宫格。已实施:
+
+- `nineslice_unit.svg` 顶/底行 6 类切片（tl/t/tr/bl/b/br）各带 mid 面板 + top 面板 +
+  箭头，列几何沿用原素材非对称规则（外列偏内、中列居中，箭头顶点外列偏移格心 +0.662）。
+- `refining_unit.svg` 删除 layer-ports/layer-arrows（改由切片提供，避免双重绘制）——
+  主帧缩小为纯 equipment（液口，trim 768²→712×256）。**逐端口高亮帧
+  （layer-port-in/out-*、layer-arrow-in/out-*）保留在设备 SVG**，PortHighlightRenderer
+  零改动，黄色/红色高亮与切片面板逐像素对齐（t28 回归 17/17）。
+- `3x3_unit.svg` 的 layer-ports/layer-arrows 由用户改名为 `ports`/`arrows`
+  （去 layer- 前缀，标记为切片素材而非设备功能层）。
+- 验证: 切片拼装 vs 原四组素材 0 差异像素；整机迁移复验 0 差异；zoom2 0.00%（maxΔ23）。
+- 注意: 该模式假设端口"每格一口"（精炼炉模式）；部分格端口的设备（采种机式）待需求
+  出现时再决策（S1 §9.2 ⚠️ 条目）。

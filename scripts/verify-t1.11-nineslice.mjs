@@ -2,7 +2,7 @@
 // 用法: node scripts/verify-t1.11-nineslice.mjs   （需先 npm run pack-assets）
 //
 // 验证内容（S2 §8 验收的离线部分）:
-//   A. 3×3 拼装 vs 3x3_unit.svg layer-base 逐像素对比（像素级还原，差异必须 = 0）
+//   A. 3×3 拼装 vs 3x3_unit.svg base+ports+ports_top+arrows 逐像素对比（差异必须 = 0）
 //   B. 6×3 / 6×6 / 2×2 拼装结构探针: 边框环完整、每条内部竖格线端部有柱、边框带无缝
 //   C. devices 图集: nineslice/* 8 切片帧存在且 288²；图集 ≤ 4096
 //
@@ -67,10 +67,10 @@ console.log('\n[A] 3×3 拼装 vs 3x3_unit.svg layer-base 逐像素（像素级�
 
   const origSvg = fs.readFileSync('src/assets/svg/3x3_unit.svg', 'utf8');
   const origHead = origSvg.match(/<svg\b[^>]*>/)[0];
-  // ports_top 组无 layer- 前缀（3x3_unit 特有），base 提取时需一并隐藏
+  // 对比基准 = base + ports + ports_top + arrows 四组（2026-08-20 端口三组并入切片；
+  // 用户已把 ports/arrows 改名为无 layer- 前缀 → 默认显示，只需隐藏其余 layer-*）
   const origLayer = origSvg.replace(origHead, `${origHead}\n<style>
   g[id^="layer-"] { display: none !important; }
-  g#ports_top { display: none !important; }
   g#layer-base { display: inline !important; }
 </style>`);
   const origPng = await sharp(Buffer.from(origLayer)).resize(192 * SCALE, 192 * SCALE, { fit: 'fill' }).png().toBuffer();

@@ -223,6 +223,17 @@ slice-bl  slice-b   slice-br
 ```
 
 - 打包输出 9 帧：`nineslice/tl` … `nineslice/br`（每帧含 1.0583 单位窗口边距，见 §9.5）。
+- 切片内容 = 原通用底座素材的**四个组**（2026-08-20 用户追加端口三组并入）：
+  1. `layer-base` 边框环 + 底板 + 柱子（全部切片；中间行空心画框，c 全空）
+  2. `ports` mid 面板 `#cbc9c9` 12.153×8.669 —— 顶/底行 6 类切片，每格一个
+  3. `ports_top` 顶面板 `#e0dede` 10.455×5.859（贴外缘窄条）—— 同上
+  4. `arrows` 箭头 `#828080` 描边（0.79375 圆帽）—— 同上，方向=物流方向
+     （默认朝向：顶行输出朝上、底行输入朝上，随容器整体旋转）
+  即：**九宫格设备不再在自己的 SVG 里画 ports/arrows**——设备 SVG 只剩 equipment
+  （如精炼炉液口）与 logo 等专属层；端口外观由切片自动铺满顶/底行。
+  ⚠️ 该模式假设 logical ports "每格一口"（精炼炉模式）。若未来设备定义的端口
+  只占部分格（如采种机 5×5 只 3 口），需设备 SVG 自画端口盖住切片端口，或届时
+  为切片增加"无端口变体"（留待需求出现时决策）。
 
 ### 9.3 平铺规则（w×h 设备）
 
@@ -265,5 +276,7 @@ S2 §1.3 称 base 层有"9 块底板"，**实测 `3x3_unit.svg` 只有 6 块**�
 1. `buildings.ts` 加定义：`baseStyle: 'nineslice'`，footprint 任意 w,h ≥ 2；
 2. 新建设备 SVG：**不画 layer-base**，只画 equipment/ports/arrows/logo 等层
    （画布仍 = footprint × 64 px，透明底）；
-3. 重跑 `npm run pack-assets`——底座零美术成本，由 nineslice 9 件拼装。
+3. 设备 SVG **不画 layer-base / ports / arrows**（底座与端口外观由切片自动拼装），
+   只画 equipment/logo 等专属层；
+4. 重跑 `npm run pack-assets`——底座+端口零美术成本，由 nineslice 9 件拼装。
 

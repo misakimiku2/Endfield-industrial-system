@@ -21,9 +21,9 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
      inkscape:document-units="mm"
-     inkscape:zoom="0.9935936"
-     inkscape:cx="-391.50816"
-     inkscape:cy="134.36077"
+     inkscape:zoom="5.6206142"
+     inkscape:cx="74.013264"
+     inkscape:cy="88.691375"
      inkscape:window-width="3440"
      inkscape:window-height="1369"
      inkscape:window-x="-8"
@@ -145,7 +145,7 @@
          x="0"
          y="0"
          inkscape:label="placeholder" /></g><g
-       id="layer-ports"
+       id="ports"
        inkscape:label="ports"
        style="display:inline"><rect
          style="display:inline;fill:#cbc9c9;fill-opacity:1;stroke:none;stroke-width:0.811242;stroke-linecap:square;stroke-linejoin:miter;stroke-dasharray:none;stroke-opacity:1;paint-order:stroke fill markers"
@@ -239,7 +239,7 @@
          x="20.172321"
          y="41.898422"
          transform="matrix(1,0,0,-1,-16.271875,50.8)" /></g><g
-       id="layer-arrows"
+       id="arrows"
        inkscape:label="arrows"
        style="display:inline"><g
          id="arrows-pos-2-1"><path

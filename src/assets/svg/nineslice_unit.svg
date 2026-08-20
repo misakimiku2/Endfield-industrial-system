@@ -9,7 +9,7 @@
    xmlns="http://www.w3.org/2000/svg"
    xmlns:svg="http://www.w3.org/2000/svg">
   <!--
-    九宫格设备底座切片（T1.11a，方案 S2 nine-slice-device-base.md）
+    九宫格设备底座切片（T1.11a，方案 S2 nine-slice-device-base.md；端口三组并入: 2026-08-20 用户追加）
     ====================================================================
     画布 = 3×3 格（与 3x3_unit.svg 同规格 192px / viewBox 50.8），每个 slice-* 组
     的内容画在自己对应的 64px（16.9333 单位）格子内，允许小幅越界（见下）。
@@ -24,13 +24,23 @@
       行 1..h-2: l, c×(w-2), r
       行 h-1: bl, b×(w-2), br
 
-    与原素材的对齐（像素级还原 3×3 的依据，几何经光栅化逐像素测量）:
+    切片内容（原 3x3_unit.svg 四个素材组逐步并入，几何均经光栅化逐像素测量）:
+      1. base: 边框环 + 底板 + 柱子 —— 全部 9 类切片
+      2. ports（mid 面板 #cbc9c9 12.153×8.669）—— 顶/底行 6 类切片，每格一个
+         （与精炼炉 logical ports "每格一口"一致；中间行无端口）
+      3. ports_top（top 面板 #e0dede 10.455×5.859，贴外缘窄条）—— 同上
+      4. arrows（#828080 箭头描边 0.79375 圆帽）—— 同上，方向 = 物流方向
+         （默认朝向: 顶行输出朝上、底行输入朝上，随容器整体旋转）
+
+    与原素材的对齐（像素级还原 3×3 的依据）:
       - 边框环 = 外沿 [1.3229167,49.477083]² 挖空 [1.8520833,48.947917]×[3.0427083,47.757292]，
         分解为 4 条矩形带（上/下带厚 1.7197916，左/右带宽 0.5291666），按格切分归属各切片。
       - 切分缝处每边向邻格多画 0.3 单位（不透明同色重叠），避免抗锯齿切割缝出现半透明接缝。
       - 底板 12.964583×10.794909（#202020）只存在于顶行与底行（原素材即如此——中间行是
         空心"画框"，设备中间内容由各设备自己的 equipment 层承担）。中间行的 l/c/r 切片
         只有竖向边框带（c 完全为空）。
+      - 面板/箭头的列几何沿用原素材的非对称规则: 外列（0/2 列）偏内侧（mid 面板外缝
+        3.0518 / 内缝 1.7284），中列居中（2.3901 / 2.3901）；箭头顶点在外列偏移格心 +0.662。
       - 柱子（#828080 1.322917×3.96875）: 原素材钉在内部竖格线端部，左右突出量不对称
         （线左 0.3307 / 线右 0.9922），两条内部线的柱子互为镜像。归属: t/b 切片左端画
         "左轻右重"柱（A 形，跨自己左缘），tr/br 切片左端画"左重右轻"柱（B 形）——
@@ -42,22 +52,39 @@
   -->
   <g id="nineslice">
     <g id="slice-tl">
+      <!-- base: 顶行底板 + 顶带 + 左带 -->
       <rect id="tl-board" style="fill:#202020;fill-opacity:1;stroke:none"
          width="12.964583" height="10.794909" x="2.6458350" y="1.3494230" />
       <rect id="tl-border-top" style="fill:#202020;fill-opacity:1;stroke:none"
          width="15.9104375" height="1.7197916" x="1.3229167" y="1.3229167" />
       <rect id="tl-border-left" style="fill:#202020;fill-opacity:1;stroke:none"
          width="0.5291666" height="15.9104375" x="1.3229167" y="1.3229167" />
+      <!-- 端口: mid 面板 + top 面板 + 箭头（外列几何） -->
+      <rect id="tl-port-mid" style="fill:#cbc9c9;fill-opacity:1;stroke:none"
+         width="12.153334" height="8.6695800" x="3.0518210" y="3.0418895" />
+      <rect id="tl-port-top" style="fill:#e0dede;fill-opacity:1;stroke:none"
+         width="10.455360" height="5.8588691" x="3.9008080" y="3.0418915" />
+      <path id="tl-port-arrow" style="fill:none;stroke:#828080;stroke-width:0.79375;stroke-linecap:round;stroke-linejoin:miter"
+         d="M 11.212945,6.257031 9.128489,4.749030 7.044033,6.257031" />
     </g>
     <g id="slice-t">
+      <!-- base: 顶行底板 + 顶带 + 左端A柱 -->
       <rect id="t-board" style="fill:#202020;fill-opacity:1;stroke:none"
          width="12.964583" height="10.794909" x="18.9177050" y="1.3494230" />
       <rect id="t-border-top" style="fill:#202020;fill-opacity:1;stroke:none"
          width="17.5333334" height="1.7197916" x="16.6333333" y="1.3229167" />
       <rect id="t-pillar" style="fill:#828080;fill-opacity:1;stroke:none"
          width="1.3229170" height="3.9687501" x="16.6026040" y="5.7040443" />
+      <!-- 端口: mid 面板 + top 面板 + 箭头（中列几何） -->
+      <rect id="t-port-mid" style="fill:#cbc9c9;fill-opacity:1;stroke:none"
+         width="12.153106" height="8.6694183" x="19.3234460" y="3.0427067" />
+      <rect id="t-port-top" style="fill:#e0dede;fill-opacity:1;stroke:none"
+         width="10.455360" height="5.8588691" x="20.1723210" y="3.0427089" />
+      <path id="t-port-arrow" style="fill:none;stroke:#828080;stroke-width:0.79375;stroke-linecap:round;stroke-linejoin:miter"
+         d="M 27.484458,6.257031 25.400002,4.749030 23.315546,6.257031" />
     </g>
     <g id="slice-tr">
+      <!-- base: 顶行底板 + 顶带 + 右带 + 左端B柱 -->
       <rect id="tr-board" style="fill:#202020;fill-opacity:1;stroke:none"
          width="12.964583" height="10.794909" x="35.1895830" y="1.3494230" />
       <rect id="tr-border-top" style="fill:#202020;fill-opacity:1;stroke:none"
@@ -66,33 +93,59 @@
          width="0.5291660" height="14.1906259" x="48.9479170" y="3.0427083" />
       <rect id="tr-pillar" style="fill:#828080;fill-opacity:1;stroke:none"
          width="1.3229170" height="3.9687501" x="32.8744790" y="5.7040443" />
+      <!-- 端口: mid 面板 + top 面板 + 箭头（外列镜像几何，箭头方向镜像） -->
+      <rect id="tr-port-mid" style="fill:#cbc9c9;fill-opacity:1;stroke:none"
+         width="12.153106" height="8.6694031" x="35.5953180" y="3.0427059" />
+      <rect id="tr-port-top" style="fill:#e0dede;fill-opacity:1;stroke:none"
+         width="10.455360" height="5.8588691" x="36.4441940" y="3.0427079" />
+      <path id="tr-port-arrow" style="fill:none;stroke:#828080;stroke-width:0.79375;stroke-linecap:round;stroke-linejoin:miter"
+         d="M 39.587417,6.257031 41.671873,4.749030 43.756329,6.257031" />
     </g>
     <g id="slice-l">
+      <!-- base: 左带（中间行空心） -->
       <rect id="l-border-left" style="fill:#202020;fill-opacity:1;stroke:none"
          width="0.5291666" height="17.5333334" x="1.3229167" y="16.6333333" />
     </g>
     <g id="slice-c" />
     <g id="slice-r">
+      <!-- base: 右带（中间行空心） -->
       <rect id="r-border-right" style="fill:#202020;fill-opacity:1;stroke:none"
          width="0.5291660" height="17.5333334" x="48.9479170" y="16.6333333" />
     </g>
     <g id="slice-bl">
+      <!-- base: 底行底板 + 底带 + 左带 -->
       <rect id="bl-board" style="fill:#202020;fill-opacity:1;stroke:none"
          width="12.964583" height="10.794909" x="2.6458350" y="38.6556730" />
       <rect id="bl-border-bottom" style="fill:#202020;fill-opacity:1;stroke:none"
          width="15.9104375" height="1.7197910" x="1.3229167" y="47.7572920" />
       <rect id="bl-border-left" style="fill:#202020;fill-opacity:1;stroke:none"
          width="0.5291666" height="14.1906260" x="1.3229167" y="33.5666667" />
+      <!-- 端口: mid 面板 + top 面板 + 箭头（外列几何） -->
+      <rect id="bl-port-mid" style="fill:#cbc9c9;fill-opacity:1;stroke:none"
+         width="12.153334" height="8.6695800" x="3.0518210" y="39.0885310" />
+      <rect id="bl-port-top" style="fill:#e0dede;fill-opacity:1;stroke:none"
+         width="10.455360" height="5.8588691" x="3.9008080" y="41.8991550" />
+      <path id="bl-port-arrow" style="fill:none;stroke:#828080;stroke-width:0.79375;stroke-linecap:round;stroke-linejoin:miter"
+         d="M 11.212945,46.050968 9.128489,44.542969 7.044033,46.050968" />
     </g>
     <g id="slice-b">
+      <!-- base: 底行底板 + 底带 + 左端A柱 -->
       <rect id="b-board" style="fill:#202020;fill-opacity:1;stroke:none"
          width="12.964583" height="10.794909" x="18.9177050" y="38.6556730" />
       <rect id="b-border-bottom" style="fill:#202020;fill-opacity:1;stroke:none"
          width="17.5333334" height="1.7197910" x="16.6333333" y="47.7572920" />
       <rect id="b-pillar" style="fill:#828080;fill-opacity:1;stroke:none"
          width="1.3229170" height="3.9687500" x="16.6026040" y="41.1272050" />
+      <!-- 端口: mid 面板 + top 面板 + 箭头（中列几何） -->
+      <rect id="b-port-mid" style="fill:#cbc9c9;fill-opacity:1;stroke:none"
+         width="12.153106" height="8.6694183" x="19.3234460" y="39.0878750" />
+      <rect id="b-port-top" style="fill:#e0dede;fill-opacity:1;stroke:none"
+         width="10.455360" height="5.8588691" x="20.1723210" y="41.8984220" />
+      <path id="b-port-arrow" style="fill:none;stroke:#828080;stroke-width:0.79375;stroke-linecap:round;stroke-linejoin:miter"
+         d="M 27.484458,46.050968 25.400002,44.542969 23.315546,46.050968" />
     </g>
     <g id="slice-br">
+      <!-- base: 底行底板 + 底带 + 右带 + 左端B柱 -->
       <rect id="br-board" style="fill:#202020;fill-opacity:1;stroke:none"
          width="12.964583" height="10.794909" x="35.1895830" y="38.6556730" />
       <rect id="br-border-bottom" style="fill:#202020;fill-opacity:1;stroke:none"
@@ -101,6 +154,13 @@
          width="0.5291660" height="14.1906260" x="48.9479170" y="33.5666667" />
       <rect id="br-pillar" style="fill:#828080;fill-opacity:1;stroke:none"
          width="1.3229170" height="3.9687500" x="32.8744790" y="41.1272050" />
+      <!-- 端口: mid 面板 + top 面板 + 箭头（外列镜像几何，箭头方向镜像） -->
+      <rect id="br-port-mid" style="fill:#cbc9c9;fill-opacity:1;stroke:none"
+         width="12.153106" height="8.6694031" x="35.5953180" y="39.0878910" />
+      <rect id="br-port-top" style="fill:#e0dede;fill-opacity:1;stroke:none"
+         width="10.455360" height="5.8588691" x="36.4441940" y="41.8984220" />
+      <path id="br-port-arrow" style="fill:none;stroke:#828080;stroke-width:0.79375;stroke-linecap:round;stroke-linejoin:miter"
+         d="M 39.587417,46.050968 41.671873,44.542969 43.756329,46.050968" />
     </g>
   </g>
 </svg>
