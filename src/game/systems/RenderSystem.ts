@@ -33,7 +33,8 @@ import { BeltVectorRenderer } from '../render/BeltVectorRenderer';
 import { BeltItemRenderer } from '../render/BeltItemRenderer';
 import { BeltHoverRenderer } from '../render/BeltHoverRenderer';
 import { PortHighlightRenderer } from '../render/PortHighlightRenderer';
-import { buildNineSliceBase, getBakedNineSliceTexture } from '../render/NineSliceAssembler';
+import { buildNineSliceBase, buildNineSlicePorts, getBakedNineSliceTexture } from '../render/NineSliceAssembler';
+import { emptyPortMask, portMaskFromDef } from '../render/PortMask';
 import { getBuildingDefinition } from '../data/buildings';
 import type { BeltSelection } from './belt/BeltSelection';
 import type { AtlasGroup } from '../render/AssetsLoader';
@@ -363,25 +364,29 @@ export class RenderSystem {
 
   /**
    * T1.11c: 创建九宫格设备的渲染子树。
-   * 根 Container（原点=设备中心）→ [底座, equipment Sprite, logo 子树]。
-   * 底座：有 renderer 时走 RenderTexture 烘焙（每尺寸一张缓存纹理，单 Sprite，
-   * 与原整帧 mip 行为一致——逐切片 ε 重叠在低 zoom mipmap 半透明区会双重绘制
-   * 出暗斑）；无 renderer（单测）回退逐切片容器。
+   * 根 Container（原点=设备中心）→ [底座+端口, equipment Sprite, logo 子树]。
+   * 底座+端口（T1.12: 按 def.ports 派生的四边掩码叠加 port- / lport- / deco- 系
+   * 切片，S3 §5.1）：有 renderer 时走 RenderTexture 烘焙（每尺寸+掩码一张缓存纹理，
+   * 单 Sprite，与原整帧 mip 行为一致——逐切片 ε 重叠在低 zoom mipmap 半透明区
+   * 会双重绘制出暗斑）；无 renderer（单测）回退逐切片容器。
    * baseScale = 1：底座与 equipment 均按世界像素直接定尺寸，不靠根缩放。
    */
   private createNinesliceEntry(handle: EntityHandle, spr: SpriteComp): SpriteEntry {
     const building = this.world.getComponent<BuildingComp>(handle, 'BuildingComp');
     const def = building ? getBuildingDefinition(building.definitionId) : undefined;
     const { w, h } = def?.footprint ?? { w: spr.width / 64, h: spr.height / 64 };
+    // 端口掩码从 def.ports 派生（无 def 时全零 = 纯底座，S3 §2 单一真相源）
+    const mask = def ? portMaskFromDef(def) : emptyPortMask();
 
     const root = new Container({ label: `nineslice-device-${spr.textureKey}` });
     if (this.renderer) {
       // 烘焙纹理含 ±4px 窗口边距（透明），anchor 0.5 + scale 1 内容恰覆盖 footprint
-      const base = new Sprite(getBakedNineSliceTexture(w, h, this.renderer, this.getTexture));
+      const base = new Sprite(getBakedNineSliceTexture(w, h, mask, this.renderer, this.getTexture));
       base.anchor.set(0.5);
       root.addChild(base);
     } else {
       root.addChild(buildNineSliceBase(w, h, this.getTexture));
+      root.addChild(buildNineSlicePorts(w, h, mask, this.getTexture));
     }
 
     // equipment 层帧（texture 字段）：与底座同设备画布 → anchor 0.5 + 按设备

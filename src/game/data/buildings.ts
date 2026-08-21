@@ -316,6 +316,80 @@ export const BUILDING_DEFINITIONS: Record<string, BuildingDefinition> = {
     outputSlotCount: 1,
     bufferCapacity: 50,
   },
+
+  // ── T1.12 端口变体验收 demo 设备（S3 §6，掩码从 ports 派生零美术成本）──
+  // 同样不进 TOOLBAR、无 SVG equipment，仅供 __game.placeAt 程序化验收：
+  //   test_nineslice_noport     → ports 空：纯底座 + 两侧 deco 装饰条（无液体口侧）
+  //   test_nineslice_liquid_5x5 → 左边两行液体口 + 右边一行液体口（多行侧液口，
+  //                              有液口的侧边不显示 deco）+ 中列固体顶出/底入
+  //   test_nineslice_full_5x5   → 顶/底整行固体口（emblazon A/B/A/B 满排）+
+  //                              无液体口 → 两侧 deco 连续饰条与满口行同屏验证
+  test_nineslice_noport: {
+    id: 'test_nineslice_noport',
+    name: '九宫格无端口',
+    category: 'production',
+    footprint: { w: 3, h: 3 },
+    ports: [],
+    texture: 'test_nineslice_noport',
+    baseStyle: 'nineslice',
+    selectable: true,
+    buildCost: [{ itemId: 'stone', count: 1 }], // 名义占位（验收 demo 设备，无经济语义）
+    powerConsumption: 0,
+    inputSlotCount: 1,
+    outputSlotCount: 1,
+    bufferCapacity: 50,
+  },
+  test_nineslice_liquid_5x5: {
+    id: 'test_nineslice_liquid_5x5',
+    name: '九宫格侧液口5×5',
+    category: 'production',
+    footprint: { w: 5, h: 5 },
+    ports: [
+      // 左边 dy=1、dy=3 两行液体出口，右边 dy=2 一行液体进口
+      { type: 'liquid', position: { dx: 0, dy: 1 } },
+      { type: 'liquid', position: { dx: 0, dy: 3 } },
+      { type: 'liquid', position: { dx: 4, dy: 2 } },
+      // 中列固体口做参照（顶出/底入）
+      { type: 'output', position: { dx: 2, dy: 0 } },
+      { type: 'input', position: { dx: 2, dy: 4 } },
+    ],
+    texture: 'test_nineslice_liquid_5x5',
+    baseStyle: 'nineslice',
+    selectable: true,
+    buildCost: [{ itemId: 'stone', count: 1 }], // 名义占位（验收 demo 设备，无经济语义）
+    powerConsumption: 0,
+    inputSlotCount: 1,
+    outputSlotCount: 1,
+    bufferCapacity: 50,
+  },
+  test_nineslice_full_5x5: {
+    id: 'test_nineslice_full_5x5',
+    name: '九宫格满口5×5',
+    category: 'production',
+    footprint: { w: 5, h: 5 },
+    ports: [
+      // 顶行整行输出口 + 底行整行输出口（emblazon 每边界一颗 A/B/A/B 交替）
+      { type: 'output', position: { dx: 0, dy: 0 } },
+      { type: 'output', position: { dx: 1, dy: 0 } },
+      { type: 'output', position: { dx: 2, dy: 0 } },
+      { type: 'output', position: { dx: 3, dy: 0 } },
+      { type: 'output', position: { dx: 4, dy: 0 } },
+      { type: 'input', position: { dx: 0, dy: 4 } },
+      { type: 'input', position: { dx: 1, dy: 4 } },
+      { type: 'input', position: { dx: 2, dy: 4 } },
+      { type: 'input', position: { dx: 3, dy: 4 } },
+      { type: 'input', position: { dx: 4, dy: 4 } },
+      // 无液体口 → 左右侧边中间行逐行 deco 装饰条（与满口行同屏验证）
+    ],
+    texture: 'test_nineslice_full_5x5',
+    baseStyle: 'nineslice',
+    selectable: true,
+    buildCost: [{ itemId: 'stone', count: 1 }], // 名义占位（验收 demo 设备，无经济语义）
+    powerConsumption: 0,
+    inputSlotCount: 1,
+    outputSlotCount: 1,
+    bufferCapacity: 50,
+  },
 };
 
 /**

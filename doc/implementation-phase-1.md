@@ -21,7 +21,7 @@
 | T1.9 设备删除 | ✅ 完成 | `DeleteSystem.ts`（Delete 键删除选中设备、释放 footprint 占用、RenderSystem 自动移除 Sprite、无选中无反应） |
 | T1.10 性能基准测试 | ✅ 完成 | 100 设备 FPS ≥ 55 + 内存监控（JS 堆 / GPU 纹理内存） |
 | T1.11 九宫格设备底座 | ✅ 完成 | `nineslice_unit.svg` 9 切片 + pack-assets 切片提取/层帧白名单/trim + `NineSliceAssembler`（RenderTexture 烘焙）+ refining_unit 迁移。图集 8192→**4096×2048**（帧面积 16.6M→3.8M），3×3 拼装**像素级还原**（离线 0 差异/zoom2 0 差异），100×3×3+50×6×6 FPS avg 144。方案 [S2](nine-slice-device-base.md) |
-| T1.12 九宫格端口变体 | 📋 方案就绪待实施 | 端口从切片拆层为独立 `port-*`（固体）+ `lport-*`（液体，四边含顶/底）组，按 `def.ports` 派生**四边类型掩码**逐位叠加——部分端口/无端口/液体上下面设备零美术成本（方案 [S3](nineslice-port-variant.md)；顶/底液体口需先做 A3 端口模型"方向×介质"拆分） |
+| T1.12 九宫格端口变体 | ✅ 已实施（2026-08-21） | 端口从切片拆层为独立 `port-*`（固体）+ `lport-*`（液体，四边含顶/底）+ `deco-l/r`（无液口侧边装饰，用户追加素材）组，按 `def.ports` 派生**四边类型掩码**逐位叠加——部分端口/无端口/液体侧口任意行设备零美术成本（方案 [S3](nineslice-port-variant.md)；精炼炉液口已迁出 equipment，0 差异验收；顶/底液体口 def 置位待 A3 端口模型"方向×介质"拆分） |
 
 > **文档修订**: DD-008 已修订（设备 SVG / 物品 PNG 双格式，见 core-decisions.md）。  
 > **PixiJS 踩坑**: 见文末 [附录 A：PixiJS v8 踩坑记录](#附录-a-pixijs-v8-踩坑记录)，T1.5/T1.6 开发前务必阅读。
@@ -849,10 +849,24 @@ app.ticker.add(() => {
 
 ---
 
-## T1.12 — 九宫格端口变体（📋 方案就绪待实施）
+## T1.12 — 九宫格端口变体（✅ 2026-08-21 已实施）
 
 > **性质**: T1.11 的自然延伸（渲染/素材管线基建），不依赖 Phase 2 生产逻辑。
 > **完整方案**: [nineslice-port-variant.md](nineslice-port-variant.md)（S3）——本节只做任务卡。
+> **实施记录（2026-08-21）**: a~e 五步全部完成 + 用户追加的侧边装饰条（deco-l/r，
+> 见 S3 §3.4）。验收: verify-t1.12-portvariant 离线 20/20（掩码单测 + 精炼炉/无端口
+> 逐像素 0 差异 + deco 连续性 + 顶/底液口造型 + 图集）、verify-t1.12-runtime 浏览器
+> 探针 21/21、回归 verify-t1.11 12/12 + t28 17/17。精炼炉液口 equipment→lport-l/r
+> 迁移完成（零坐标搬运，0 差异）。demo 设备: `test_nineslice_noport` /
+> `test_nineslice_liquid_5x5`（`__game.placeAt` 程序化验收）。
+> **同日二轮修订（用户反馈）**: ① 端口底板（用户移入 3x3_unit.svg 新 ports_base 组）
+> 并入 port-* 四元素——底板跟端口走，无口格镂空；② emblazon 小方块从底座切片
+> 拆为 emblazon-ta/tb/ba/bb 4 帧，按端口掩码叠加（S3 §3.1/§3.5）。复验全绿，
+> 精炼炉外观对二轮前仍逐像素 0 差异。
+> **同日三轮修订（用户反馈）**: emblazon 规则修正为"任一侧有口即显示（OR）"——
+> 端口两侧各一颗、角格口只内侧一颗、两侧无口不显示；A/B 改按边界序号奇偶交替。
+> 新增满口 demo `test_nineslice_full_5x5`（顶/底整行固体口 + 两侧 deco 同屏）。
+> 复验: verify-t1.12-runtime 30/30，其余同上仍全绿。
 
 ### 目标
 

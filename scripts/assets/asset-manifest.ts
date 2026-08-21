@@ -101,10 +101,12 @@ export const DEVICE_FILES: readonly string[] = [
 ];
 
 /**
- * 九宫格底座切片源文件白名单（T1.11b，方案 S2）。
- * 这些文件**不输出整机主帧**——pack-assets 对每个 slice-* 组按其所在格
- * ±NINESLICE_MARGIN_SRC_PX 的窗口光栅化，输出 `nineslice/<方位>` 8~9 帧
- * （全透明的切片如中心 c 块跳过）。运行时由 NineSliceAssembler 按 footprint 平铺。
+ * 九宫格底座切片源文件白名单（T1.11b，方案 S2；T1.12 端口拆层，方案 S3）。
+ * 这些文件**不输出整机主帧**——pack-assets 对源内每个组（slice-* 9 组 +
+ * port-* 6 组 + lport-* 8 组 + deco-l/deco-r，S3 §3/§4）按其所在格
+ * ±NINESLICE_MARGIN_SRC_PX（deco 组 ±NINESLICE_DECO_MARGIN_SRC_PX）的窗口
+ * 光栅化，输出 `nineslice/<组名>` 帧（全透明的组如中心 c 块跳过）。
+ * 运行时由 NineSliceAssembler 按 footprint + 端口掩码平铺/叠加。
  */
 export const NINESLICE_FILES: readonly string[] = ['nineslice_unit.svg'];
 
@@ -112,9 +114,18 @@ export const NINESLICE_FILES: readonly string[] = ['nineslice_unit.svg'];
  * 切片提取的窗口边距（源像素）。切片内容允许越出自己格子（柱子突出、
  * 边框带切分重叠 0.3 单位≈1.13px、B 形柱左探 0.99 单位≈3.75px），
  * 窗口 = 64px 格 + 每边 4px 边距 = 72px 源（4× 光栅化后 288²）。
- * 运行时每个切片 Sprite 覆盖 72×72 世界像素、中心对齐格中心。
+ * 运行时每个切片/端口 Sprite 覆盖 72×72 世界像素、中心对齐格中心。
  */
 export const NINESLICE_MARGIN_SRC_PX = 4;
+
+/**
+ * deco-*（侧边装饰条）组的提取窗口边距（源像素，T1.12，S3 §3.4）。
+ * 装饰条帽端斜切越出格界 1.8765 单位（≈7.1px）> 标准边距 1.0583 单位（4px），
+ * 窗口放大到 64px 格 + 每边 8px = 80px 源（4× 光栅化后 320²），帽端随窗口
+ * 保留——相邻行平铺时不透明同色重叠（各越界 1.88，重叠带 4.24 单位）合并为
+ * 连续饰条。运行时 deco Sprite 覆盖 80×80 世界像素（NINESLICE_DECO_SPAN）。
+ */
+export const NINESLICE_DECO_MARGIN_SRC_PX = 8;
 
 /**
  * 设备 SVG 功能层帧白名单（T1.11b 瘦身，S2 §4.2）。

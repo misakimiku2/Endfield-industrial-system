@@ -28,6 +28,7 @@ import {
   isDeviceFile,
   isExcluded,
   isLayerWhitelisted,
+  NINESLICE_DECO_MARGIN_SRC_PX,
   NINESLICE_FILES,
   NINESLICE_MARGIN_SRC_PX,
   OUTPUT_DIR,
@@ -231,26 +232,45 @@ function extractLayerSvg(svgContent: string, layerName: string): string | null {
   return svgContent.replace(headMatch[0], `${headMatch[0]}\n${styleBlock}`);
 }
 
-// ───────────────────────── 九宫格切片提取（T1.11b，S2 §4.1） ─────────────────────────
+// ───────────────────────── 九宫格切片提取（T1.11b，S2 §4.1；T1.12 端口拆层，S3 §4） ─────────────────────────
 
 /**
- * 9 个切片的方位名与其在 3×3 源画布中的所在格（行, 列）。
- * 切片内容画在源画布自己对应的格内（S1 §9.2），提取窗口 = 所在格 ± 边距。
+ * 源 SVG 内可提取的组：组 id ↔ 纹理 key ↔ 在 3×3 源画布中的所在格（行, 列）+
+ * 提取窗口边距。slice-* 组的纹理 key 去掉前缀（T1.11 起的 nineslice/tl… 契约），
+ * 其余组 key = 组 id。
+ * - slice-* 9 组: 底座（去端口化——2026-08-21 二轮起也不含底板/emblazon）
+ * - port-* 6 组: 固体口（底板 + mid/top 面板 + 箭头，底板随端口）
+ * - emblazon-* 4 组: 端口间小方块（相邻两格都有固体口的边界显示，A/B 镜像）
+ * - lport-* 8 组: 液体口（顶/底行 6 组 + 左右列 2 组）
+ * - deco-l/deco-r: 侧边装饰条（帽端越界 1.8765 单位 > 标准边距 → 边距放大到 8px）
+ * 组内容画在源画布自己对应的格内（S1 §9.2 / S3 §3），提取窗口 = 所在格 ± 边距。
  */
-const NINESLICE_SLICES: ReadonlyArray<{ name: string; row: number; col: number }> = [
-  { name: 'tl', row: 0, col: 0 }, { name: 't', row: 0, col: 1 }, { name: 'tr', row: 0, col: 2 },
-  { name: 'l', row: 1, col: 0 }, { name: 'c', row: 1, col: 1 }, { name: 'r', row: 1, col: 2 },
-  { name: 'bl', row: 2, col: 0 }, { name: 'b', row: 2, col: 1 }, { name: 'br', row: 2, col: 2 },
+const NINESLICE_GROUPS: ReadonlyArray<{
+  group: string; key: string; row: number; col: number; marginPx?: number;
+}> = [
+  { group: 'slice-tl', key: 'tl', row: 0, col: 0 }, { group: 'slice-t', key: 't', row: 0, col: 1 }, { group: 'slice-tr', key: 'tr', row: 0, col: 2 },
+  { group: 'slice-l', key: 'l', row: 1, col: 0 }, { group: 'slice-c', key: 'c', row: 1, col: 1 }, { group: 'slice-r', key: 'r', row: 1, col: 2 },
+  { group: 'slice-bl', key: 'bl', row: 2, col: 0 }, { group: 'slice-b', key: 'b', row: 2, col: 1 }, { group: 'slice-br', key: 'br', row: 2, col: 2 },
+  { group: 'port-tl', key: 'port-tl', row: 0, col: 0 }, { group: 'port-t', key: 'port-t', row: 0, col: 1 }, { group: 'port-tr', key: 'port-tr', row: 0, col: 2 },
+  { group: 'port-bl', key: 'port-bl', row: 2, col: 0 }, { group: 'port-b', key: 'port-b', row: 2, col: 1 }, { group: 'port-br', key: 'port-br', row: 2, col: 2 },
+  { group: 'emblazon-ta', key: 'emblazon-ta', row: 0, col: 1 }, { group: 'emblazon-tb', key: 'emblazon-tb', row: 0, col: 2 },
+  { group: 'emblazon-ba', key: 'emblazon-ba', row: 2, col: 1 }, { group: 'emblazon-bb', key: 'emblazon-bb', row: 2, col: 2 },
+  { group: 'lport-tl', key: 'lport-tl', row: 0, col: 0 }, { group: 'lport-t', key: 'lport-t', row: 0, col: 1 }, { group: 'lport-tr', key: 'lport-tr', row: 0, col: 2 },
+  { group: 'lport-bl', key: 'lport-bl', row: 2, col: 0 }, { group: 'lport-b', key: 'lport-b', row: 2, col: 1 }, { group: 'lport-br', key: 'lport-br', row: 2, col: 2 },
+  { group: 'lport-l', key: 'lport-l', row: 1, col: 0 }, { group: 'lport-r', key: 'lport-r', row: 1, col: 2 },
+  { group: 'deco-l', key: 'deco-l', row: 1, col: 0, marginPx: NINESLICE_DECO_MARGIN_SRC_PX },
+  { group: 'deco-r', key: 'deco-r', row: 1, col: 2, marginPx: NINESLICE_DECO_MARGIN_SRC_PX },
 ];
 
 /**
- * 从九宫格源 SVG 提取全部切片帧。
+ * 从九宫格源 SVG 提取全部切片/端口/装饰帧。
  *
- * 每个切片：CSS 隐藏其它 slice-* 组 + 重写 viewBox 到"所在格 ± NINESLICE_MARGIN_SRC_PX"
- * 的窗口（切片越界内容——柱子突出、边框带切分重叠——随窗口保留），按分组倍率光栅化。
- * 全透明切片（如中心 c 块，中间行空心设计见 S1 §9.6）跳过，运行时查不到纹理自然不拼。
+ * 每组：CSS 隐藏 #nineslice 下其余兄弟组 + 重写 viewBox 到"所在格 ± 边距"的窗口
+ * （越界内容——柱子突出、边框带切分重叠、deco 帽端——随窗口保留），按分组倍率
+ * 光栅化。全透明组（如中心 c 块，中间行空心设计见 S1 §9.6）跳过，运行时查不到
+ * 纹理自然不拼。
  *
- * @returns 切片图块数组（key = `nineslice/<方位>`）
+ * @returns 图块数组（key = `nineslice/<组名>`）
  */
 async function extractNinesliceSlices(
   svgContent: string,
@@ -267,35 +287,36 @@ async function extractNinesliceSlices(
   const pxPerUnit = baseWidth / vbWidth;             // 3.7795
   const cellPx = baseWidth / 3;                      // 每格源像素宽（64）
   const cellUnit = vbWidth / 3;                      // 每格 SVG 单位（16.9333）
-  const marginUnit = NINESLICE_MARGIN_SRC_PX / pxPerUnit;
 
   const blocks: PackInput[] = [];
-  for (const slice of NINESLICE_SLICES) {
-    if (!svgContent.includes(`id="slice-${slice.name}"`)) {
-      console.warn(`  ⚠ nineslice 源缺少 slice-${slice.name} 组，跳过`);
+  for (const slice of NINESLICE_GROUPS) {
+    if (!svgContent.includes(`id="${slice.group}"`)) {
+      console.warn(`  ⚠ nineslice 源缺少 ${slice.group} 组，跳过`);
       continue;
     }
+    const marginPx = slice.marginPx ?? NINESLICE_MARGIN_SRC_PX;
+    const marginUnit = marginPx / pxPerUnit;
     const x0 = slice.col * cellUnit - marginUnit;
     const y0 = slice.row * cellUnit - marginUnit;
     const winUnit = cellUnit + marginUnit * 2;
-    const winPx = Math.round(cellPx + NINESLICE_MARGIN_SRC_PX * 2);
+    const winPx = Math.round(cellPx + marginPx * 2);
     const winSvg = svgContent
-      .replace(headMatch[0], `${headMatch[0]}\n<style>g[id^="slice-"] { display: none !important; } g#slice-${slice.name} { display: inline !important; }</style>`)
+      .replace(headMatch[0], `${headMatch[0]}\n<style>#nineslice > g { display: none !important; } #nineslice > g#${slice.group} { display: inline !important; }</style>`)
       .replace(/viewBox=["'][^"']*["']/, `viewBox="${x0} ${y0} ${winUnit} ${winUnit}"`)
       .replace(/width=["']\d+["']/, `width="${winPx}"`)
       .replace(/height=["']\d+["']/, `height="${winPx}"`);
     try {
       const px = Math.round(winPx * rasterScale);
       const { png } = await rasterizeMaskSvg(winSvg, winPx, winPx, rasterScale);
-      // 全透明切片跳过（中心块空心设计）
+      // 全透明组跳过（中心块空心设计）
       const { hasAlpha } = await scanAlpha(png);
       if (!hasAlpha) {
-        console.log(`  · nineslice/${slice.name} 全透明，跳过打包`);
+        console.log(`  · nineslice/${slice.key} 全透明，跳过打包`);
         continue;
       }
-      blocks.push({ key: `nineslice/${slice.name}`, width: px, height: px, png });
+      blocks.push({ key: `nineslice/${slice.key}`, width: px, height: px, png });
     } catch (e) {
-      console.warn(`  ⚠ 跳过 nineslice/${slice.name}: ${(e as Error).message}`);
+      console.warn(`  ⚠ 跳过 nineslice/${slice.key}: ${(e as Error).message}`);
     }
   }
   return blocks;

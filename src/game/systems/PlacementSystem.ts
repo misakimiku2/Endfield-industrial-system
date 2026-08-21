@@ -42,7 +42,8 @@ import type { Direction } from '../components/BuildingComp';
 import type { OccupancyMap } from '../world/OccupancyMap';
 import { CELL_SIZE } from '../render/constants';
 import { PreviewTintFilter } from '../render/PreviewTintFilter';
-import { buildNineSliceBase, tintContainer } from '../render/NineSliceAssembler';
+import { buildNineSliceBase, buildNineSlicePorts, tintContainer } from '../render/NineSliceAssembler';
+import { portMaskFromDef } from '../render/PortMask';
 import { createBufferSlots } from './machine/BufferOps';
 
 /** 放置模式状态。 */
@@ -351,8 +352,10 @@ export class PlacementSystem {
   }
 
   /**
-   * 重建 nineslice 预览内容：清空根容器，放入底座拼装 + equipment Sprite。
-   * logo 子 Sprite 由 refreshPreview 统一管理（会重新 addChild）。
+   * 重建 nineslice 预览内容：清空根容器，放入底座拼装 + 端口叠加 + equipment Sprite。
+   * 端口按 def.ports 派生掩码叠加（T1.12，S3 §5.1）——预览与已放置设备同构，
+   * tintContainer 逐 Sprite 染色自动覆盖端口/装饰条。logo 子 Sprite 由
+   * refreshPreview 统一管理（会重新 addChild）。
    */
   private rebuildNineslicePreview(def: BuildingDefinition, wp: number, hp: number): void {
     const preview = this.preview!;
@@ -362,6 +365,7 @@ export class PlacementSystem {
       child.destroy();
     }
     preview.addChild(buildNineSliceBase(def.footprint.w, def.footprint.h, this.getTexture));
+    preview.addChild(buildNineSlicePorts(def.footprint.w, def.footprint.h, portMaskFromDef(def), this.getTexture));
     const equipTex = this.getTexture('devices', def.texture);
     if (equipTex && equipTex.width > 0) {
       const equip = new Sprite(equipTex);

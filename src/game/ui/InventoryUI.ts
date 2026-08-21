@@ -19,7 +19,8 @@ import { Container, Graphics, Sprite, Text, Texture, type Renderer } from 'pixi.
 import { TOOLBAR_BUILDINGS, getBuildingDefinition, type BuildingDefinition } from '../data/buildings';
 import type { TextureLookup } from '../systems/RenderSystem';
 import { CELL_SIZE } from '../render/constants';
-import { buildNineSliceBase } from '../render/NineSliceAssembler';
+import { buildNineSliceBase, buildNineSlicePorts } from '../render/NineSliceAssembler';
+import { portMaskFromDef } from '../render/PortMask';
 
 /** 按钮尺寸（屏幕像素）。图标区 + 名字区。 */
 const BTN_SIZE = 64;
@@ -285,14 +286,16 @@ export class InventoryUI {
 
   /**
    * T1.11c: 生成/缓存 nineslice 设备的组合图标纹理。
-   * 底座切片拼装 + equipment Sprite → generateTexture（resolution 4 对齐
-   * DEVICE_RASTER_SCALE，与 whole 设备图标的纹素密度一致）。
+   * 底座切片拼装 + 端口叠加（T1.12: def.ports 掩码，S3 §5.1）+ equipment Sprite
+   * → generateTexture（resolution 4 对齐 DEVICE_RASTER_SCALE，与 whole 设备图标
+   * 的纹素密度一致）。
    */
   private getNinesliceIcon(def: BuildingDefinition): Texture | null {
     const cached = this.ninesliceIcons.get(def.id);
     if (cached) return cached;
     const { w, h } = def.footprint;
     const container = buildNineSliceBase(w, h, this.getTexture);
+    container.addChild(buildNineSlicePorts(w, h, portMaskFromDef(def), this.getTexture));
     const equipTex = this.getTexture('devices', def.texture);
     if (equipTex && equipTex.width > 0) {
       const equip = new Sprite(equipTex);
