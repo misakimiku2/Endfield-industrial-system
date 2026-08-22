@@ -6,11 +6,10 @@
 //   - 位置: 直段沿方向轴线性插值 (A9 §5.3.2 getItemWorldPos)；
 //            转角沿四分之一圆弧插值 (A9 §5.4.2，数学与 BeltPointerRenderer 同源)。
 //   - 物品 Sprite 居中于传送带表面中心线，不随流向旋转（俯视图小图标，始终屏幕朝上）。
-//   - 双层渲染（T2.8 用户反馈修订，层级从下到上: 物品(进设备)→设备→端口高亮→箭头）:
-//     正常流动物品（progress ≤ 1.0）挂 layer3Item（带身之上，现状不变）；
-//     走进设备的物品（progress > 1.0，预约制端口格中心吸入的视觉行程，T2.6）挂
-//     belowLayer（layer2Building 内 zIndex=-1 的容器，设备 Sprite 之下）——物品越过
-//     段尾边缘即被设备纹理遮挡，"走进设备内部"而非飘在设备表面。
+//   - 单层渲染（T2.8 用户反馈修订，层级从下到上: 带身→物品→设备→端口高亮→箭头）:
+//     所有传送带物品统一挂 belowLayer（layer2Building 内 zIndex=0.5，带身之上、设备之下）——
+//     物品在带身上传输，进入设备 footprint 即被设备纹理遮挡（"钻到设备下方"），
+//     而非飘在设备 base 层上。
 //
 // 渲染读快照 (A5 §1.1): 物品 progress 由 BeltSystem 在 Simulation Tick(20TPS) 推进，
 //   本渲染器每帧(60FPS)读取最新 progress 画位置，不做帧间插值。0.5 格/秒慢速下
@@ -30,12 +29,6 @@ import { CELL_SIZE } from './constants';
 
 /** 物品视觉边长（世界像素），约占半格。各物品纹理按长边缩放到此尺寸（保持长宽比）。 */
 const ITEM_VISUAL_SIZE = CELL_SIZE * 0.5;
-
-/**
- * 物品"走进设备"的分界（T2.8 修订）: progress > 1.0 = 已越过段尾边缘进入端口格
- * （预约制 entering 物品 1.0→1.5 的视觉行程），挂设备下层被设备纹理遮挡。
- */
-const ENTER_BUILDING_PROGRESS = 1.0;
 
 /** 方向 → 序号（up=0,right=1,down=2,left=3），直段物品旋转角用（与 pointer computeStraightTransform 一致）。 */
 function directionToIndex(dir: Direction): number {
@@ -59,8 +52,7 @@ interface SegmentEntry {
  */
 export class BeltItemRenderer {
   private world: World;
-  private layer: Container;
-  /** 设备下层容器（T2.8: 走进设备的物品挂此层，被设备纹理遮挡）。 */
+  /** 物品统一容器（T2.8: 带身之上、设备之下，所有传送带物品挂此层）。 */
   private belowLayer: Container;
   private getTexture: TextureLookup;
   /** handle → 该段物品 Sprite 列表，用于 diff。 */
@@ -68,9 +60,8 @@ export class BeltItemRenderer {
   /** itemId → Texture 缓存，避免每帧每物品重复 Assets 查找。 */
   private texCache = new Map<string, Texture>();
 
-  constructor(world: World, layer: Container, belowLayer: Container, getTexture: TextureLookup) {
+  constructor(world: World, _layer: Container, belowLayer: Container, getTexture: TextureLookup) {
     this.world = world;
-    this.layer = layer;
     this.belowLayer = belowLayer;
     this.getTexture = getTexture;
   }
@@ -122,7 +113,7 @@ export class BeltItemRenderer {
         const s = new Sprite(Texture.EMPTY);
         s.anchor.set(0.5);
         s.rotation = 0; // 初始旋转，每帧由 itemTransform 更新（直段朝流向/转角沿切线）
-        this.layer.addChild(s);
+        this.belowLayer.addChild(s);
         sprites.push(s);
       }
 
@@ -136,10 +127,7 @@ export class BeltItemRenderer {
         sprite.position.set(x, y);
         sprite.rotation = rotation; // 物品像 pointer 一样旋转（直段朝流向/转角沿切线）
         sprite.visible = true;
-        // T2.8 分层: 走进设备的物品（progress > 1.0）挂设备下层（被设备遮挡），
-        // 其余挂 layer3Item（带身之上）。只在跨越分界时移动父节点（addChild=移动）。
-        const target = renderProgress > ENTER_BUILDING_PROGRESS ? this.belowLayer : this.layer;
-        if (sprite.parent !== target) target.addChild(sprite);
+        // 物品统一挂 belowLayer（带身之上、设备之下），创建时已挂，无需按 progress 切换
       }
     }
   }

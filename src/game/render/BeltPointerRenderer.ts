@@ -32,11 +32,16 @@ import type { BeltSelection } from '../systems/belt/BeltSelection';
 import { CELL_SIZE } from './constants';
 import { turnInfoFromDirections } from '../systems/belt/BeltPathGeometry';
 import { BeltSystem } from '../systems/BeltSystem';
+import { lerpColor, BLOCKED_BLEND_MS } from './BeltVectorGeometry';
 
 /** pointer 在格内的视觉尺寸（相对 CELL_SIZE）。与旧项目 cellSize*0.25 一致（按 pointer 高度）。 */
 const POINTER_SIZE_RATIO = 0.25;
 /** pointer 接近物品时 alpha 渐变淡出的相位范围（格单位，0.15 ≈ 10px）。避免硬切突兀消失。 */
 const POINTER_FADE = 0.15;
+/** 常态箭头 tint（黄 #DFB615）。 */
+const POINTER_TINT_NORMAL = 0xdfb615;
+/** 堵塞时箭头 tint（用户指定 #E6956F）。 */
+const POINTER_TINT_BLOCKED = 0xe6956f;
 
 /** 方向 → 序号：up=0, right=1, down=2, left=3（与旧项目 _directionToIndex 一致）。 */
 function directionToIndex(dir: Direction): number {
@@ -71,6 +76,8 @@ interface PointerEntry {
   /** 当前已画进 cellMask 的形状 key（kind+direction，避免每帧重画相同形状）。 */
   lastMaskKey: string;
   handle: EntityHandle;
+  /** 堵塞渐变进度 0~1（箭头黄 → 橙 #E6956F）。每帧向目标趋近。 */
+  blockedBlend: number;
 }
 
 /**
@@ -136,7 +143,7 @@ export class BeltPointerRenderer {
    * @param alpha 仿真周期插值系数（accumulator/SIM_STEP，0~1）。pointer 用 BeltSystem.beltPhase
    *   作时间源（与物品同源），消除漂移/闪烁。
    */
-  update(alpha: number): void {
+  update(alpha: number, deltaMS = 0): void {
     const visible = this.world.query('Position', 'BeltSegmentComp');
     const seen = new Set<EntityHandle>(visible);
 
@@ -157,6 +164,8 @@ export class BeltPointerRenderer {
 
     // 2. 全局相位（与物品同源 BeltSystem.beltPhase + 帧间 alpha 插值，消除漂移/闪烁）
     const globalPhase = BeltSystem.beltPhase + alpha * BeltSystem.beltPhaseDelta;
+    // 堵塞渐变步长（线性插值，固定时长；deltaMS=0 时瞬间到位，兼容旧调用）
+    const blendStep = deltaMS > 0 ? deltaMS / BLOCKED_BLEND_MS : 1;
 
     // 3. 新增 + 同步
     for (const handle of visible) {
@@ -176,7 +185,7 @@ export class BeltPointerRenderer {
         const sprite = new Sprite(this.pointerTex!);
         sprite.anchor.set(0.5);
         sprite.scale.set(this.pointerScale);
-        sprite.tint = 0xdfb615; // 黄色 pointer（常态底层，始终显示保证跨格衔接）
+        sprite.tint = POINTER_TINT_NORMAL; // 黄色 pointer（常态底层，始终显示保证跨格衔接）
         // whiteSprite：选中段叠加的白色 pointer，tint 白，alpha 随相位渐入渐出（见 update）
         const whiteSprite = new Sprite(this.pointerTex!);
         whiteSprite.anchor.set(0.5);
@@ -187,12 +196,19 @@ export class BeltPointerRenderer {
         cellWrap.addChild(sprite);
         cellWrap.addChild(whiteSprite);
         this.layer.addChild(cellWrap);
-        entry = { sprite, whiteSprite, cellWrap, cellMask, lastMaskKey: '', handle };
+        entry = { sprite, whiteSprite, cellWrap, cellMask, lastMaskKey: '', handle, blockedBlend: 0 };
         this.entries.set(handle, entry);
       }
 
       const seg = this.world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp')!;
       const pos = this.world.getComponent<Position>(handle, 'Position')!;
+
+      // 堵塞渐变: 箭头黄 → 橙 #E6956F（blockedBlend 向目标 0/1 线性趋近）
+      const blockedTarget = seg.blocked === true ? 1 : 0;
+      const bb = entry.blockedBlend;
+      entry.blockedBlend = bb < blockedTarget ? Math.min(blockedTarget, bb + blendStep)
+        : bb > blockedTarget ? Math.max(blockedTarget, bb - blendStep) : bb;
+      entry.sprite.tint = lerpColor(POINTER_TINT_NORMAL, POINTER_TINT_BLOCKED, entry.blockedBlend);
 
       // 蒙版容器对齐到格左上角世界坐标（蒙版正方形覆盖整个传送带单元）
       entry.cellWrap.position.set(pos.x, pos.y);

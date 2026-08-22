@@ -12,7 +12,8 @@
 // 染色：colors 指定 shellColor/beltColor（选中态 #B1B1B1/#FFF56A、预览整体单色）；
 //       缺省时用素材原色 #CECCCC/#FFEF00。
 
-import type { Graphics } from 'pixi.js';
+import { FillGradient, type Graphics } from 'pixi.js';
+import type { Direction } from '../components/BuildingComp';
 
 // ───────────────────────── 素材几何常量（viewBox 0 0 16.933334）─────────────────────────
 
@@ -46,11 +47,33 @@ export const BELT_COLOR_BELT = 0xffef00;
 export const BELT_COLOR_SHELL_SELECTED = 0xb1b1b1;
 /** 选中态黄带色（Transport_1.svg rect4 = #FFF56A）。 */
 export const BELT_COLOR_BELT_SELECTED = 0xfff56a;
+/** 堵塞态 Status 黄带色（红 #B10000，与设备堵塞色 PORT_BLOCKED_TINT 一致）。 */
+export const BELT_COLOR_STATUS_BLOCKED = 0xb10000;
+/** 创建模式终点 Status 渐变目标色（蓝 #80BEE9，与输出端口 PORT_CREATE_TINT 一致）。 */
+export const BELT_COLOR_CREATE = 0x80bee9;
+
+/** 堵塞渐变时长（ms）：黄→红（带身 Status）/ 黄→橙（箭头）的过渡时间。 */
+export const BLOCKED_BLEND_MS = 250;
+
+/**
+ * 两个 RGB 颜色（0xRRGGBB）线性插值。t∈[0,1]：0=a、1=b。
+ * 传送带堵塞渐变用（黄 → 红 / 箭头黄 → 橙）。
+ */
+export function lerpColor(a: number, b: number, t: number): number {
+  const ar = (a >> 16) & 0xff, ag = (a >> 8) & 0xff, ab = a & 0xff;
+  const br = (b >> 16) & 0xff, bg = (b >> 8) & 0xff, bb = b & 0xff;
+  const r = Math.round(ar + (br - ar) * t);
+  const g = Math.round(ag + (bg - ag) * t);
+  const bl = Math.round(ab + (bb - ab) * t);
+  return (r << 16) | (g << 8) | bl;
+}
 
 /** 带身染色选项。shellColor/beltColor 缺省时用素材原色；选中态/预览染色均通过此传入。 */
 export interface BeltColors {
   shellColor?: number;
   beltColor?: number;
+  /** 黄带(Status)渐变（直段沿带身方向，转角沿对角线 0,0→1,1）；存在时优先于 beltColor。 */
+  beltGradient?: { from: number; to: number };
 }
 
 // ───────────────────────── 绘制函数 ─────────────────────────
@@ -63,7 +86,7 @@ export interface BeltColors {
  * @param cellSize 一个格子的世界像素边长。
  * @param colors 染色；缺省 shell=#CECCCC、belt=#FFEF00。选中态传 #B1B1B1/#FFF56A。
  */
-export function drawStraightBelt(g: Graphics, cellSize: number, colors?: BeltColors): void {
+export function drawStraightBelt(g: Graphics, cellSize: number, colors?: BeltColors, dir?: Direction): void {
   const s = cellSize / BELT_SVG_SIZE; // viewBox → world 缩放
   const shell = colors?.shellColor ?? BELT_COLOR_SHELL;
   const belt = colors?.beltColor ?? BELT_COLOR_BELT;
@@ -76,13 +99,39 @@ export function drawStraightBelt(g: Graphics, cellSize: number, colors?: BeltCol
     cellSize,
   ).fill({ color: shell });
   // 黄带：全高矩形，宽度更窄，居中
-  g.beginPath();
-  g.rect(
-    (-STRAIGHT_BELT_W / 2) * s,
-    -cellSize / 2,
-    STRAIGHT_BELT_W * s,
-    cellSize,
-  ).fill({ color: belt });
+  const beltW = STRAIGHT_BELT_W * s;
+  const beltX = (-STRAIGHT_BELT_W / 2) * s;
+  if (colors?.beltGradient) {
+    // 创建模式终点：沿带身长度方向"段首(黄) → 段尾(蓝)"渐变。
+    // 用 FillGradient textureSpace='global'（start/end 是 Graphics 本地像素绝对坐标），
+    // 纹理从 start 沿 start→end 方向延伸 dist 像素，正好覆盖整条黄带（cellSize），
+    // 完全平滑、无阶梯。注意必须显式指定 'global'，默认 'local' 会把坐标当归一化 0~1。
+    // 段尾方向 = direction（beltTextureRotation 把本地 +y 旋转到 direction 方向）：
+    //   - dir=90(下)/270(上): 段尾在本地 +y（下），start=-half 段首上、end=+half 段尾下。
+    //   - dir=0(右)/180(左):  段尾在本地 -y（上），start=+half 段首下、end=-half 段尾上。
+    const { from, to } = colors.beltGradient;
+    const _d = dir ?? 90;
+    const half = cellSize / 2;
+    const tailAtBottom = _d === 90 || _d === 270;
+    const startY = tailAtBottom ? -half : +half;
+    const endY = tailAtBottom ? +half : -half;
+    const grad = new FillGradient({
+      type: 'linear',
+      start: { x: 0, y: startY },
+      end: { x: 0, y: endY },
+      colorStops: [
+        { offset: 0, color: from },
+        { offset: 1, color: to },
+      ],
+      // textureSpace='global'：start/end 是 Graphics 本地像素绝对坐标（未旋转）
+      textureSpace: 'global',
+    });
+    g.beginPath();
+    g.rect(beltX, -cellSize / 2, beltW, cellSize).fill(grad);
+  } else {
+    g.beginPath();
+    g.rect(beltX, -cellSize / 2, beltW, cellSize).fill({ color: belt });
+  }
 }
 
 /**
@@ -123,12 +172,47 @@ export function drawCornerBelt(g: Graphics, cellSize: number, colors?: BeltColor
 
   // ── 黄带环（circle5）：外弧 12.9646 → H 14.2875 → 内弧 2.6458 ──
   g.beginPath();
-  g.moveTo(c, c - beltOuter)
+  const beltPath = g.moveTo(c, c - beltOuter)
     .arcToSvg(beltOuter, beltOuter, 0, 0, 0, c - beltOuter, c)
     .lineTo(shellOuter - c, c)
     .arcToSvg(inner, inner, 0, 0, 1, c, c - inner)
-    .closePath()
-    .fill({ color: belt });
+    .closePath();
+  if (colors?.beltGradient) {
+    // 创建模式终点：沿黄带环外弧（物品路径）从入口（下，90°）→ 出口（右，0°）"段首(黄)→段尾(蓝)"渐变。
+    // 黄带环外凸右下：外弧圆心 = (c - beltOuter, c - beltOuter)（本地"左上"），
+    // 半径 beltOuter，从 90°（下）到 0°（右）经过右下 45°。
+    // 用 N 段扇形近似（外弧精确覆盖、内弧附近用底色 from 兜底），每段 fill lerp 颜色，
+    // 完全沿外弧渐变、无阶梯。
+    const { from, to } = colors.beltGradient;
+    // 1) 底色：黄带环整圈用 from（黄）填充，扇形只覆盖外弧附近、不覆盖处显示 from
+    beltPath.fill({ color: from });
+    // 2) 分段扇形：覆盖外弧附近（圆心=外弧圆心，外弧=精确 beltOuter，内弧=适中 innerR）
+    const N = 32;
+    const ocx = c - beltOuter; // 外弧圆心 x
+    const ocy = c - beltOuter; // 外弧圆心 y
+    const innerR = beltOuter * 0.55; // 扇形内半径（覆盖到黄带环中部，剩余靠底色 from）
+    for (let i = 0; i < N; i++) {
+      const t0 = i / N;
+      const t1 = (i + 1) / N;
+      // 角度：t=0 → 下(90°)，t=1 → 右(0°)
+      const a0 = (Math.PI / 2) * (1 - t0);
+      const a1 = (Math.PI / 2) * (1 - t1);
+      const color = lerpColor(from, to, (t0 + t1) / 2);
+      const ox0 = ocx + beltOuter * Math.cos(a0), oy0 = ocy + beltOuter * Math.sin(a0);
+      const ox1 = ocx + beltOuter * Math.cos(a1), oy1 = ocy + beltOuter * Math.sin(a1);
+      const ix0 = ocx + innerR * Math.cos(a0), iy0 = ocy + innerR * Math.sin(a0);
+      const ix1 = ocx + innerR * Math.cos(a1), iy1 = ocy + innerR * Math.sin(a1);
+      g.beginPath();
+      g.moveTo(ox0, oy0);
+      g.arc(ocx, ocy, beltOuter, a0, a1, true); // 外弧（角度减小，逆时针）
+      g.lineTo(ix1, iy1);
+      g.arc(ocx, ocy, innerR, a1, a0, false); // 扇形内边界（反向）
+      g.closePath();
+      g.fill({ color });
+    }
+  } else {
+    beltPath.fill({ color: belt });
+  }
 
   // ── 内角灰三角（circle6）：填满黄带内弧拐角的灰壳 ──
   g.beginPath();

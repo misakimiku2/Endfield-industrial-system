@@ -71,4 +71,10 @@ export interface BeltSegmentComp {
    * 渲染: items 非空时隐藏该段 pointer (A9 §5.2.2)，由 BeltItemRenderer 渲染物品。
    */
   items: BeltItem[];
+  /**
+   * 堵塞状态 (传送带堵塞视觉): 本段队首非 entering 物品被堵停（delta=0）时为 true。
+   * 由 BeltSystem 每 Tick 重算写入（空段恒 false），渲染层据此把带身 Status 黄带染红、
+   * 流动箭头染 #E6956F。断头/满槽/下游占用均触发；正在吸入(entering)不算堵塞。
+   */
+  blocked?: boolean;
 }

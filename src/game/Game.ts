@@ -51,7 +51,11 @@ export class Game {
       heightPx: this.worldData.map.heightPx,
     });
     // renderer 用于 nineslice 底座 RenderTexture 烘焙（T1.11c；缺省回退逐切片容器）
-    this.renderSystem = new RenderSystem(this.world, scene.layers, this.camera, getTexture, renderer);
+    this.renderSystem = new RenderSystem(
+      this.world, scene.layers, this.camera, getTexture, renderer,
+      () => this.beltCreation.isActive(), // 创建模式 → 输出端口染蓝 #80BEE9
+      () => this.beltCreation.getHoveredPortCell(), // 悬停端口淡蓝高亮
+    );
     // 占用表 + 放置系统（T1.7）。占用表边界读 worldData.map，不读全局常量。
     this.occupancy = new OccupancyMap(this.worldData.map);
     this.placement = new PlacementSystem(

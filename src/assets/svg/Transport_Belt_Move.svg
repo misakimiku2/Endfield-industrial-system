@@ -63,8 +63,8 @@
      inkscape:export-ydpi="96"
      transform="translate(0,-16.933333)"><rect
        style="display:inline;fill:none;fill-opacity:1;stroke-width:0.79375;stroke-linecap:square;stroke-linejoin:round"
-       id="rect1"
-       width="16.933332"
+       id="placeholder"
+       width="16.933001"
        height="16.933332"
        x="0"
        y="16.933332" /><rect
@@ -73,10 +73,12 @@
        width="11.641667"
        height="16.933332"
        x="2.6458333"
-       y="16.933332" /><rect
+       y="16.933332"
+       inkscape:label="base" /><rect
        style="fill:#ffef00;fill-opacity:1;stroke-width:1.92428;stroke-linecap:square;stroke-linejoin:bevel;paint-order:stroke fill markers"
        id="rect4"
        width="8.9958334"
        height="16.933332"
        x="3.9687505"
-       y="16.933332" /></g></svg>
+       y="16.933332"
+       inkscape:label="Status" /></g></svg>

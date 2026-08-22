@@ -67,8 +67,6 @@ interface PathCell extends GridCell {
   direction: Direction;
 }
 
-/** 起点高亮颜色。 */
-const COLOR_START = 0x76bbea;
 /** 预览半透明度。 */
 const PREVIEW_ALPHA = 0.7;
 /** 预览可放置颜色（蓝，与 BeltPreviewTintFilter VALID 一致）。 */
@@ -322,6 +320,14 @@ export class BeltCreationSystem {
         return s;
       }
     }
+    return null;
+  }
+
+  /** 返回当前悬停的输出端口格（创建模式下，供 PortHighlightRenderer 做悬停淡蓝高亮）。 */
+  getHoveredPortCell(): { x: number; y: number } | null {
+    if (this.mode === 'idle' || !this.mouseInside) return null;
+    const hovered = this.findHoveredStart();
+    if (hovered && hovered.kind === 'port') return hovered.cell;
     return null;
   }
 
@@ -592,6 +598,7 @@ export class BeltCreationSystem {
       segmentIndex,
       phaseOffset: Math.random(),
       items: [], // T2.1: 物品队列初始为空，由 BeltSystem 推进 progress
+      blocked: false,
     });
     this.occupancy.occupy(gx, gy, 'transport_belt');
     return handle;
@@ -599,35 +606,10 @@ export class BeltCreationSystem {
 
   // ───────────────────────── 内部：高亮与预览绘制 ─────────────────────────
 
-  /** 绘制起点高亮。 */
-  private drawHighlights(hovered: StartPoint | null): void {
-    const g = this.highlightGraphics;
-    g.clear();
-
-    // 预览路径上的起点高亮会盖住蓝色预览，产生灰白叠层，故跳过
-    const skipCells = new Set<string>();
-    for (const c of this.previewPath) {
-      skipCells.add(`${c.x},${c.y}`);
-    }
-    // preview 态也跳过已确认 fullPath 上的格
-    for (const c of this.fullPath) {
-      skipCells.add(`${c.x},${c.y}`);
-    }
-
-    // 仅 hover 态显示所有起点高亮；preview 态只显示当前起点
-    const showAll = this.mode === 'hover';
-    const starts = showAll ? this.findStarts() : (this.startPoint ? [this.startPoint] : []);
-
-    for (const s of starts) {
-      if (skipCells.has(`${s.cell.x},${s.cell.y}`)) continue;
-      const isHovered = hovered !== null && s.cell.x === hovered.cell.x && s.cell.y === hovered.cell.y;
-      const alpha = isHovered ? 0.45 : 0.22;
-      const x = s.cell.x * CELL_SIZE;
-      const y = s.cell.y * CELL_SIZE;
-      g.rect(x, y, CELL_SIZE, CELL_SIZE)
-        .fill({ color: COLOR_START, alpha })
-        .stroke({ width: 2, color: COLOR_START, alpha: alpha + 0.15 });
-    }
+  /** 绘制起点高亮（已重构：port 起点 → PortHighlightRenderer 蓝面板；tail 起点 → BeltVectorRenderer 黄→蓝渐变）。 */
+  private drawHighlights(_hovered: StartPoint | null): void {
+    // 整格半透明占位已移除，这里仅清空旧 Graphics（保留容器供未来使用）。
+    this.highlightGraphics.clear();
   }
 
   /**

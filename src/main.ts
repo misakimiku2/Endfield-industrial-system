@@ -692,6 +692,7 @@ async function main() {
         segmentIndex: i,
         phaseOffset: Math.random(),
         items: [], // T2.1: 物品队列初始为空
+        blocked: false,
       });
       occupancy.occupy(dirCells[i].x, dirCells[i].y, 'transport_belt');
       created++;
@@ -785,7 +786,7 @@ async function main() {
         const items = (seg.items ?? [])
           .map((it) => `${itemName(it.itemId)}${it.entering ? '(进设备中)' : ''}@${it.progress.toFixed(2)}`)
           .join(', ');
-        return `段${seg.segmentIndex} (${gx},${gy}) ${seg.direction}°${seg.isTail ? ' [尾]' : ''}: ${items || '无物品'}`;
+        return `段${seg.segmentIndex} (${gx},${gy}) ${seg.direction}°${seg.isTail ? ' [尾]' : ''}${seg.blocked === true ? ' [堵]' : ''}: ${items || '无物品'}`;
       })
       .join('\n');
   };

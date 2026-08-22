@@ -10,18 +10,14 @@
 // 语义 (T2.8 需求3，视觉母本 3x3_unit.svg 的 ports_top 组):
 //   connected = A9 §6.7 连接判定成立——输入端口有指向它的供给带（findFeederBelt），
 //               输出端口有入口朝向它的接收带（findReceiverBelt）。未连接不显示高亮。
-//   blocked   = 已连接且该端口物流堵塞:
-//     输入堵 = 供给带队首物品停在供给格中心 0.5 未被预约（T2.6 满槽/类型不符堵停，
-//               entering 物品已属设备不算堵）。
-//     输出堵 = 输出槽有货 && 接收带被占（一格一物品 → 满带，物品留在输出槽，T2.7）。
-//               beltPhase 相位窗口(>STOP_MAX)的瞬时等待不算堵——每 2 秒一个注入窗口，
-//               只有"带上有物品"的持续满带才算。
+//   blocked   = 已连接且连接该端口的传送带段堵塞（seg.blocked，BeltSystem 整链逆流传播，
+//               与传送带带身/箭头同源）: 输入=供给带堵、输出=接收带堵。
 //   paused   = 玩家手动暂停时物流视同离线（T2.8 需求2），门口停着的物品是暂停所致
 //               而非真堵 → 不显示红（连接黄保留，物理连接关系不变；全局暂停由 LOGO 指示）。
 
 import type { World, EntityHandle } from '../../ECS.ts';
 import type { Position } from '../../components/Position.ts';
-import type { BeltSegmentComp, BeltItem } from '../../components/BeltSegmentComp.ts';
+import type { BeltSegmentComp } from '../../components/BeltSegmentComp.ts';
 import type { BuildingComp } from '../../components/BuildingComp.ts';
 import type { BuildingDefinition } from '../../data/buildings.ts';
 import { CELL_SIZE } from '../../render/constants.ts';
@@ -29,7 +25,6 @@ import {
   buildBeltCellIndex,
   inputPortCells,
   findFeederBelt,
-  PORT_ENTER_PROGRESS,
 } from './IntakeOps.ts';
 import { outputPortCells, findReceiverBelt } from './OutputOps.ts';
 
@@ -54,21 +49,6 @@ function topLeftGrid(world: World, handle: EntityHandle): { gx: number; gy: numb
 }
 
 /**
- * 供给带队首未预约物品是否已停在供给格中心（= 门口堵停，T2.6）。
- * entering 物品已属设备（正在走进端口格），不算堵；队首还在路上（<0.5）也不算。
- */
-function headParkedAtDoor(seg: BeltSegmentComp): boolean {
-  const items = seg.items;
-  if (items.length === 0) return false;
-  let head: BeltItem | null = null;
-  for (const it of items) {
-    if (it.entering) continue;
-    if (head === null || it.progress > head.progress) head = it;
-  }
-  return head !== null && head.progress >= PORT_ENTER_PROGRESS;
-}
-
-/**
  * 计算设备全部**输入**端口的连接/堵塞状态（按端口定义序）。
  * @param beltAt 传送带格索引（调用方构建或复用 buildBeltCellIndex）。
  * @param comp 设备组件（读 paused / direction）。
@@ -90,8 +70,9 @@ export function inputPortStatuses(
       continue;
     }
     const seg = world.getComponent<BeltSegmentComp>(feeder, 'BeltSegmentComp');
-    // paused: 物流视同离线，门口停车不算堵（暂停由 LOGO 指示，连接黄保留）
-    const blocked = !comp.paused && seg !== undefined && headParkedAtDoor(seg);
+    // paused: 物流视同离线，门口停车不算堵（暂停由 LOGO 指示，连接黄保留）。
+    // 堵塞与传送带整链堵塞(seg.blocked)同源同步：队首停稳 → 整链红 → 端口红。
+    const blocked = !comp.paused && seg !== undefined && seg.blocked === true;
     out.push({ port: cell.port, x: cell.x, y: cell.y, connected: true, blocked });
   }
   return out;
@@ -99,7 +80,7 @@ export function inputPortStatuses(
 
 /**
  * 计算设备全部**输出**端口的连接/堵塞状态（按端口定义序）。
- * 输出堵 = 输出槽有货 && 接收带被占（满带留槽，T2.7）；paused 时不显示红（视同离线）。
+ * 输出堵 = 接收带堵塞（seg.blocked，整链逆流传播，与输出槽是否有货无关）；paused 时不红。
  */
 export function outputPortStatuses(
   world: World,
@@ -110,7 +91,6 @@ export function outputPortStatuses(
 ): PortStatus[] {
   const tl = topLeftGrid(world, handle);
   if (!tl) return [];
-  const hasGoods = comp.bufferOutput.some((s) => s.count > 0);
   const out: PortStatus[] = [];
   for (const cell of outputPortCells(tl.gx, tl.gy, def, comp.direction)) {
     const receiver = findReceiverBelt(world, beltAt, cell);
@@ -119,7 +99,8 @@ export function outputPortStatuses(
       continue;
     }
     const seg = world.getComponent<BeltSegmentComp>(receiver, 'BeltSegmentComp');
-    const blocked = !comp.paused && hasGoods && seg !== undefined && seg.items.length > 0;
+    // 堵塞与接收带整链堵塞(seg.blocked)同源同步：接收带堵 → 端口红（与输出槽是否有货无关）。
+    const blocked = !comp.paused && seg !== undefined && seg.blocked === true;
     out.push({ port: cell.port, x: cell.x, y: cell.y, connected: true, blocked });
   }
   return out;

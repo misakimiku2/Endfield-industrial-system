@@ -158,6 +158,8 @@ export class RenderSystem {
     camera: Camera,
     getTexture: TextureLookup,
     renderer?: Renderer,
+    isBeltCreationActive?: () => boolean,
+    getHoveredPortCell?: () => { x: number; y: number } | null,
   ) {
     this.world = world;
     this.layers = layers;
@@ -165,16 +167,18 @@ export class RenderSystem {
     this.getTexture = getTexture;
     this.renderer = renderer;
     this.pointerRenderer = new BeltPointerRenderer(world, layers.layer3Item, getTexture);
-    // T2.8 层级修订（从下到上: 物品(进设备)→设备→端口高亮→箭头）:
-    // belowItems 挂 layer2Building 且 zIndex=-1（设备 Sprite 默认 0）→ 走进设备的
-    // 物品（progress>1.0）画在设备纹理之下，被设备遮挡 = "走进设备内部"。
+    // T2.8 层级修订（从下到上: 带身→物品→设备→端口高亮→箭头）:
+    // belowItems 挂 layer2Building 且 zIndex=0.5（带身 0 之上、设备 1 之下）→
+    // 所有传送带物品在带身上传输，进入设备 footprint 即被设备纹理遮挡（"钻到设备下方"）。
     const belowItems = new Container({ label: 'belowItems' });
-    belowItems.zIndex = -1;
+    belowItems.zIndex = 0.5;
     layers.layer2Building.addChild(belowItems);
     this.beltItemRenderer = new BeltItemRenderer(world, layers.layer3Item, belowItems, getTexture);
-    this.beltVectorRenderer = new BeltVectorRenderer(world, layers.layer2Building);
+    this.beltVectorRenderer = new BeltVectorRenderer(world, layers.layer2Building, isBeltCreationActive);
     this.beltHoverRenderer = new BeltHoverRenderer(world, camera, layers.layer2Building);
-    this.portHighlightRenderer = new PortHighlightRenderer(world, layers.layer3Item, getTexture);
+    this.portHighlightRenderer = new PortHighlightRenderer(
+      world, layers.layer3Item, getTexture, isBeltCreationActive, getHoveredPortCell,
+    );
   }
 
   /**
@@ -295,16 +299,17 @@ export class RenderSystem {
       sprite.visible = this.intersectsView(pos, spr, view);
     }
 
-    // 传送带带身矢量渲染（T2.0 方案A）：在 Sprite 同步之后，刷新带身 Graphics 位置/朝向/选中变色
-    this.beltVectorRenderer.update();
-    // 传送带 pointer 流动：用 beltPhase + alpha（与物品同源，消除漂移/闪烁）
-    this.pointerRenderer.update(alpha);
+    // 传送带带身矢量渲染（T2.0 方案A）：在 Sprite 同步之后，刷新带身 Graphics 位置/朝向/选中变色。
+    // 传入 deltaMS 驱动堵塞渐变（黄→红 平滑过渡，帧率无关）。
+    this.beltVectorRenderer.update(deltaMS);
+    // 传送带 pointer 流动：用 beltPhase + alpha（与物品同源，消除漂移/闪烁）；deltaMS 驱动箭头渐变
+    this.pointerRenderer.update(alpha, deltaMS);
     // 传送带物品渲染（T2.1）：按 items 的 progress 画物品位置/纹理（alpha 帧间插值消除卡顿）
     this.beltItemRenderer.update(alpha);
     // 传送带悬停高亮（橙色四角 L 形 + 呼吸）
     this.beltHoverRenderer.update(this.elapsedMS);
-    // 端口连接高亮（T2.8: 连接黄 / 堵塞红，逐端口半透明覆盖）
-    this.portHighlightRenderer.update();
+    // 端口连接高亮（T2.8: 连接黄 / 堵塞红，逐端口半透明覆盖）；deltaMS 驱动黄→红渐变
+    this.portHighlightRenderer.update(deltaMS);
   }
 
   /** 销毁所有 Sprite（场景切换/ teardown 用）。实体本身不动（由 ECS 管理）。 */
@@ -379,6 +384,7 @@ export class RenderSystem {
     const mask = def ? portMaskFromDef(def) : emptyPortMask();
 
     const root = new Container({ label: `nineslice-device-${spr.textureKey}` });
+    root.zIndex = 1; // 设备整体在传送带物品(belowItems 0.5)之上
     if (this.renderer) {
       // 烘焙纹理含 ±4px 窗口边距（透明），anchor 0.5 + scale 1 内容恰覆盖 footprint
       const base = new Sprite(getBakedNineSliceTexture(w, h, mask, this.renderer, this.getTexture));

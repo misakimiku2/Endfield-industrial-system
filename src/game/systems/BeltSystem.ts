@@ -93,9 +93,21 @@ export class BeltSystem implements SimulationSystem {
       const pos = world.getComponent<Position>(handle, 'Position');
       if (!seg || !pos) continue;
       const items = seg.items;
-      // 防御: 旧实体可能未初始化 items
-      if (!items || items.length === 0) continue;
-      this.processSegment(world, handle, seg, pos, items);
+      // 堵塞态每 Tick 重算：先复位 false（自身队首堵停 + 下游逆流传播共同决定）
+      seg.blocked = false;
+      // 有物品的段推进物品并判定自身队首是否堵停；空段仅参与下游传播
+      let downstream: EntityHandle | null;
+      if (items && items.length > 0) {
+        downstream = this.processSegment(world, handle, seg, pos, items);
+      } else {
+        downstream = this.findDownstream(world, handle, pos, seg);
+      }
+      // 堵塞逆流传播（整链变红）: 下游段已堵 → 本段也堵（即使本段空或物品还在流动）。
+      // 反向遍历保证下游先处理、本段读到下游本 Tick 最新状态 → 一次遍历完成整链传播。
+      if (downstream !== null) {
+        const downSeg = world.getComponent<BeltSegmentComp>(downstream, 'BeltSegmentComp');
+        if (downSeg?.blocked === true) seg.blocked = true;
+      }
     }
     // 推进全局流动相位（pointer/物品同源同步用）。放物品移动之后，使 pointer 与物品同 tick 推进。
     // delta 始终=流动量（含重置 tick）。旧版重置时 delta=0 会导致 globalPhase 整 tick 固定 → pointer/物品顿一下。
@@ -124,7 +136,7 @@ export class BeltSystem implements SimulationSystem {
     seg: BeltSegmentComp,
     pos: Position,
     items: BeltItem[],
-  ): void {
+  ): EntityHandle | null {
     // 按 progress 降序（队首在前），不改原数组顺序
     const ordered = items.slice().sort((a, b) => b.progress - a.progress);
 
@@ -200,6 +212,16 @@ export class BeltSystem implements SimulationSystem {
       item.delta = next - old; // 被夹住不动时 delta=0（渲染静止，不插值）
       leaderProgress = next;
     }
+
+    // 堵塞判定 (自身队首堵停；整链逆流传播在 update 里做): 队首非 entering 物品本 Tick
+    // 未前进（delta=0）→ 堵停（断头/满槽/下游占用；entering 物品正被吸入不算堵）。
+    let headItem: BeltItem | null = null;
+    for (const it of items) {
+      if (it.entering) continue;
+      if (headItem === null || it.progress > headItem.progress) headItem = it;
+    }
+    seg.blocked = headItem !== null && headItem.delta === 0;
+    return downstream;
   }
 
   /**

@@ -14,8 +14,10 @@
 //     未连接端口 Sprite visible=false。
 //
 // 堵塞判定（PortStatusOps，渲染与 __game.portStatus 同源）:
-//   输入堵 = 供给带队首物品停门口（T2.6 满槽堵停）；输出堵 = 输出槽有货+接收带被占
-//   （T2.7 满带留槽）；paused 时不算堵（暂停由 LOGO 指示）。
+//   端口堵 = 连接该端口的传送带段 seg.blocked（BeltSystem 整链逆流传播）——与传送带
+//   带身/箭头同源，整链堵塞时端口同步变红（不必等物品堆到门口/段首）。
+//   渐变: 面板黄 #FFEF00 → 红 #B10000、箭头灰 → 白，时长 BLOCKED_BLEND_MS。
+//   paused 时不算堵（暂停由 LOGO 指示）。
 
 import { Sprite, Container } from 'pixi.js';
 import type { World, EntityHandle } from '../ECS';
@@ -27,8 +29,10 @@ import { buildBeltCellIndex } from '../systems/machine/IntakeOps';
 import {
   inputPortStatuses,
   outputPortStatuses,
+  type PortStatus,
 } from '../systems/machine/PortStatusOps';
 import type { TextureLookup } from '../systems/RenderSystem';
+import { lerpColor, BLOCKED_BLEND_MS } from './BeltVectorGeometry';
 
 /** 连接高亮颜色（用户指定 #FFEF00）。 */
 const PORT_CONNECTED_TINT = 0xffef00;
@@ -38,6 +42,10 @@ const PORT_BLOCKED_TINT = 0xb10000;
 const ARROW_TINT_NORMAL = 0x828080;
 /** 堵塞时箭头变白（用户要求，方向由容器旋转保持）。 */
 const ARROW_TINT_BLOCKED = 0xffffff;
+/** 传送带创建模式下输出端口高亮色（用户指定 #80BEE9）。 */
+const PORT_CREATE_TINT = 0x80bee9;
+/** 传送带创建模式下输出端口悬停色（更淡的蓝）。 */
+const PORT_CREATE_HOVER_TINT = 0xa8d4f5;
 
 /** 单台设备的端口高亮渲染态。 */
 interface PortEntry {
@@ -49,10 +57,15 @@ interface PortEntry {
   /** 输入端口箭头 Sprite（白色源帧 × tint；面板之上，堵塞变白）。 */
   inArrows: Array<Sprite | null>;
   outArrows: Array<Sprite | null>;
+  /** 输出端口主体面板 Sprite（ports 组，比 ports_top 大；创建模式悬停时显示）。 */
+  outMidSprites: Array<Sprite | null>;
+  /** 每端口堵塞渐变进度 0~1（面板黄→红 / 箭头灰→白），随 deltaMS 向目标趋近。 */
+  inBlends: number[];
+  outBlends: number[];
 }
 
 /**
- * 端口连接高亮渲染器。端口面板染色（连接黄 / 堵塞红，不透明）。
+ * 端口连接高亮渲染器。端口面板染色（连接黄 / 堵塞红，不透明）+ 堵塞渐变。
  * 每帧 diff 设备集合（新增建容器、消失销毁），状态变化仅写 visible/tint（无重绘）。
  */
 export class PortHighlightRenderer {
@@ -60,15 +73,32 @@ export class PortHighlightRenderer {
   private getTexture: TextureLookup;
   private layer: Container;
   private entries = new Map<EntityHandle, PortEntry>();
+  /** 查询是否处于传送带创建模式（按 E）。创建模式下输出端口染蓝 #80BEE9。 */
+  private isCreateMode: () => boolean;
+  /** 查询当前悬停的输出端口格（创建模式下用于悬停淡蓝高亮）。 */
+  private getHoveredPortCell: () => { x: number; y: number } | null;
 
-  constructor(world: World, layer: Container, getTexture: TextureLookup) {
+  constructor(
+    world: World,
+    layer: Container,
+    getTexture: TextureLookup,
+    isCreateMode?: () => boolean,
+    getHoveredPortCell?: () => { x: number; y: number } | null,
+  ) {
     this.world = world;
     this.getTexture = getTexture;
     this.layer = layer;
+    this.isCreateMode = isCreateMode ?? (() => false);
+    this.getHoveredPortCell = getHoveredPortCell ?? (() => null);
   }
 
-  /** 每帧刷新（RenderSystem.update 调用）。 */
-  update(): void {
+  /**
+   * 每帧刷新（RenderSystem.update 调用）。
+   * @param deltaMS 自上一帧毫秒数（驱动堵塞渐变，帧率无关）。
+   */
+  update(deltaMS = 0): void {
+    // 堵塞渐变步长（线性插值，固定时长；deltaMS=0 时瞬间到位，兼容旧调用）
+    const blendStep = deltaMS > 0 ? deltaMS / BLOCKED_BLEND_MS : 1;
     const buildings = this.world.query('BuildingComp', 'Position');
     const seen = new Set<EntityHandle>(buildings);
 
@@ -99,13 +129,15 @@ export class PortHighlightRenderer {
       entry.container.position.set(pos.x + spr.width / 2, pos.y + spr.height / 2);
       entry.container.rotation = (comp.direction * Math.PI) / 180;
 
-      // 端口状态 → visible/tint（未连接隐藏；堵塞红 / 连接黄；堵塞箭头白）
+      // 端口状态 → visible/tint（未连接隐藏；堵塞红 / 连接黄；堵塞箭头白；黄→红渐变）。
+      // 创建模式下输出端口覆盖为蓝色 #80BEE9（作为可连接起点提示，未连接也显示），
+      // 悬停的端口用更淡的蓝 #A8D4F5 提示可点击。
+      const createMode = this.isCreateMode();
+      const hoveredCell = createMode ? this.getHoveredPortCell() : null;
       const inSt = inputPortStatuses(this.world, beltAt, handle, comp, def);
       const outSt = outputPortStatuses(this.world, beltAt, handle, comp, def);
-      this.applyStates(entry.inSprites, inSt);
-      this.applyStates(entry.outSprites, outSt);
-      this.applyArrows(entry.inArrows, inSt);
-      this.applyArrows(entry.outArrows, outSt);
+      this.applyPorts(entry.inSprites, entry.inArrows, entry.inBlends, inSt, blendStep, false, createMode, hoveredCell, null);
+      this.applyPorts(entry.outSprites, entry.outArrows, entry.outBlends, outSt, blendStep, true, createMode, hoveredCell, entry.outMidSprites);
     }
   }
 
@@ -133,41 +165,75 @@ export class PortHighlightRenderer {
     const outSprites: Array<Sprite | null> = [];
     const inArrows: Array<Sprite | null> = [];
     const outArrows: Array<Sprite | null> = [];
+    const outMidSprites: Array<Sprite | null> = [];
+    const inBlends: number[] = [];
+    const outBlends: number[] = [];
     for (let i = 0; i < nIn; i++) {
       inSprites.push(mk(`${def.texture}/port-in-${i}`, 0)); // 面板（下层）
       inArrows.push(mk(`${def.texture}/arrow-in-${i}`, 10)); // 箭头（面板之上）
+      inBlends.push(0);
     }
     for (let i = 0; i < nOut; i++) {
       outSprites.push(mk(`${def.texture}/port-out-${i}`, 0));
       outArrows.push(mk(`${def.texture}/arrow-out-${i}`, 10));
+      outMidSprites.push(mk(`${def.texture}/port-mid-out-${i}`, -1)); // 主体面板（悬停，在 top 下方，同素材 ports 在 ports_top 下方）
+      outBlends.push(0);
     }
-    return { container, inSprites, outSprites, inArrows, outArrows };
+    return { container, inSprites, outSprites, inArrows, outArrows, outMidSprites, inBlends, outBlends };
   }
 
-  private applyStates(
+  /**
+   * 逐端口同步显隐 + 颜色（面板/箭头）。
+   * 创建模式下输出端口（isOutput && createMode）覆盖为蓝色 #80BEE9 且始终显示，
+   * 悬停端口用更淡的蓝 #A8D4F5、箭头白色（面板之上清晰可见）；
+   * 否则按连接黄/堵塞红渐变（面板黄→红、箭头灰→白），未连接隐藏。
+   */
+  private applyPorts(
     sprites: Array<Sprite | null>,
-    states: { connected: boolean; blocked: boolean }[],
+    arrows: Array<Sprite | null>,
+    blends: number[],
+    states: PortStatus[],
+    blendStep: number,
+    isOutput: boolean,
+    createMode: boolean,
+    hoveredCell: { x: number; y: number } | null,
+    midSprites: Array<Sprite | null> | null,
   ): void {
     for (let i = 0; i < sprites.length && i < states.length; i++) {
+      const st = states[i];
+      const showCreate = createMode && isOutput;
+      const isHovered = showCreate && hoveredCell !== null && st.x === hoveredCell.x && st.y === hoveredCell.y;
+      // 堵塞渐变进度向目标（connected 且 blocked → 1，否则 0）线性趋近（创建态不渐变）
+      const target = !showCreate && st.connected && st.blocked ? 1 : 0;
+      const b = blends[i];
+      blends[i] = b < target ? Math.min(target, b + blendStep)
+        : b > target ? Math.max(target, b - blendStep) : b;
+      const blend = blends[i];
+      // top 面板（ports_top 小矩形）：始终显示（创建态蓝 / 连接黄 / 堵塞红）
       const s = sprites[i];
-      if (!s) continue;
-      const st = states[i];
-      s.visible = st.connected;
-      if (st.connected) s.tint = st.blocked ? PORT_BLOCKED_TINT : PORT_CONNECTED_TINT;
-    }
-  }
-
-  /** 箭头与面板同显隐（面板盖住设备主帧箭头 → 补画）；堵塞变白、常态原灰（方向随容器旋转）。 */
-  private applyArrows(
-    arrows: Array<Sprite | null>,
-    states: { connected: boolean; blocked: boolean }[],
-  ): void {
-    for (let i = 0; i < arrows.length && i < states.length; i++) {
+      if (s) {
+        s.visible = showCreate || st.connected;
+        if (showCreate) {
+          s.tint = PORT_CREATE_TINT;
+        } else if (st.connected) {
+          s.tint = lerpColor(PORT_CONNECTED_TINT, PORT_BLOCKED_TINT, blend);
+        }
+      }
+      // mid 面板（ports 主体面板，更大）：仅悬停时显示，在 top 下方（zIndex -1），淡蓝
+      const m = midSprites ? midSprites[i] : null;
+      if (m) {
+        m.visible = isHovered;
+        if (isHovered) m.tint = PORT_CREATE_HOVER_TINT;
+      }
       const a = arrows[i];
-      if (!a) continue;
-      const st = states[i];
-      a.visible = st.connected;
-      if (st.connected) a.tint = st.blocked ? ARROW_TINT_BLOCKED : ARROW_TINT_NORMAL;
+      if (a) {
+        a.visible = showCreate || st.connected;
+        if (showCreate) {
+          a.tint = ARROW_TINT_BLOCKED; // 白色箭头（蓝色面板之上可见）
+        } else if (st.connected) {
+          a.tint = lerpColor(ARROW_TINT_NORMAL, ARROW_TINT_BLOCKED, blend);
+        }
+      }
     }
   }
 

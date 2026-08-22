@@ -23,8 +23,14 @@ import { CELL_SIZE } from './constants';
 import {
   drawStraightBelt,
   drawCornerBelt,
+  BELT_COLOR_BELT,
   BELT_COLOR_SHELL_SELECTED,
   BELT_COLOR_BELT_SELECTED,
+  BELT_COLOR_STATUS_BLOCKED,
+  BELT_COLOR_CREATE,
+  lerpColor,
+  BLOCKED_BLEND_MS,
+  type BeltColors,
 } from './BeltVectorGeometry';
 
 /** 单个传送带段的渲染态。 */
@@ -33,6 +39,8 @@ interface VectorEntry {
   /** 方向/转角签名；变化时重绘形状。 */
   lastKey: string;
   handle: EntityHandle;
+  /** 堵塞渐变进度 0~1（0=正常黄，1=堵塞红）。每帧向目标趋近。 */
+  blockedBlend: number;
 }
 
 /** 由 seg 生成形状签名（直段/转角/方向/镜像任一变化都要重绘）。 */
@@ -50,13 +58,16 @@ export class BeltVectorRenderer {
   private layer: Container;
   /** 选中态（SelectionSystem 写）；选中段带身染选中色（#B1B1B1/#FFF56A）。由 RenderSystem 注入。 */
   private beltSelection: BeltSelection | null = null;
+  /** 查询是否处于传送带创建模式。创建模式下断头末端(tail)带身黄→蓝渐变。 */
+  private isCreateMode: () => boolean;
 
   /** handle → entry，用于 diff。 */
   private entries = new Map<EntityHandle, VectorEntry>();
 
-  constructor(world: World, layer: Container) {
+  constructor(world: World, layer: Container, isCreateMode?: () => boolean) {
     this.world = world;
     this.layer = layer;
+    this.isCreateMode = isCreateMode ?? (() => false);
   }
 
   /** 注入选中态（由 RenderSystem.setBeltSelection 转发）。 */
@@ -64,10 +75,16 @@ export class BeltVectorRenderer {
     this.beltSelection = bs;
   }
 
-  /** 每帧同步所有传送带段的矢量带身。 */
-  update(): void {
+  /**
+   * 每帧同步所有传送带段的矢量带身。
+   * @param deltaMS 自上一帧毫秒数（驱动堵塞渐变，帧率无关）。
+   */
+  update(deltaMS = 0): void {
     const visible = this.world.query('Position', 'BeltSegmentComp');
     const seen = new Set<EntityHandle>(visible);
+    // 堵塞渐变步长（线性插值，固定时长；deltaMS=0 时瞬间到位，兼容旧调用）
+    const blendStep = deltaMS > 0 ? deltaMS / BLOCKED_BLEND_MS : 1;
+    const createMode = this.isCreateMode();
 
     // 1. 销毁消失实体的 Graphics
     for (const [handle, entry] of this.entries) {
@@ -89,7 +106,7 @@ export class BeltVectorRenderer {
       if (!entry) {
         const g = new Graphics();
         this.layer.addChild(g);
-        entry = { g, lastKey: '', handle };
+        entry = { g, lastKey: '', handle, blockedBlend: 0 };
         this.entries.set(handle, entry);
       }
 
@@ -106,19 +123,38 @@ export class BeltVectorRenderer {
         entry.g.scale.set(1, 1);
       }
 
-      // 形状重绘（方向/转角/选中态变化时）
+      // 形状重绘（方向/转角/选中态/堵塞态/创建终点态变化时，或堵塞渐变进行中）
       const selected = this.beltSelection?.has(handle) ?? false;
-      const key = segShapeKey(seg) + (selected ? '|sel' : '');
-      if (entry.lastKey !== key) {
+      const blocked = seg.blocked === true;
+      // 创建模式下断头末端(tail)带身 Status 黄→蓝渐变（替代整格蓝占位）
+      const createTail = createMode && seg.isTail === true;
+      // 堵塞渐变进度向目标（0↔1）线性趋近
+      const target = blocked ? 1 : 0;
+      const b = entry.blockedBlend;
+      entry.blockedBlend = b < target ? Math.min(target, b + blendStep)
+        : b > target ? Math.max(target, b - blendStep) : b;
+      const blend = entry.blockedBlend;
+      const key = segShapeKey(seg) + (selected ? '|sel' : '') + (blocked ? '|blocked' : '') + (createTail ? '|create' : '');
+      // 渐变进行中（0<blend<1）颜色连续变化 → 也需重绘；到 0/1 后仅 key 变化才重绘
+      if (entry.lastKey !== key || (blend > 0 && blend < 1)) {
         entry.g.clear();
-        // 选中态：带身整体染选中色（灰壳#B1B1B1/黄带#FFF56A）；否则用素材原色
-        const colors = selected
-          ? { shellColor: BELT_COLOR_SHELL_SELECTED, beltColor: BELT_COLOR_BELT_SELECTED }
-          : undefined;
+        // 染色优先级: 选中态 > 堵塞态 > 创建终点态(黄→蓝渐变) > 素材原色。
+        // 选中态：带身整体染选中色（灰壳#B1B1B1/黄带#FFF56A）；
+        // 堵塞态：仅 Status 黄带从黄 lerp 到红 #B10000（灰壳 base 保持原色）；
+        // 创建终点态：仅 Status 黄带沿带身方向黄 → 蓝 #80BEE9 渐变。
+        let colors: BeltColors | undefined;
+        if (selected) {
+          colors = { shellColor: BELT_COLOR_SHELL_SELECTED, beltColor: BELT_COLOR_BELT_SELECTED };
+        } else if (blocked || blend > 0) {
+          colors = { beltColor: lerpColor(BELT_COLOR_BELT, BELT_COLOR_STATUS_BLOCKED, blend) };
+        } else if (createTail) {
+          // 创建模式终点：沿"段首 → 段尾"方向 黄 → 蓝 渐变（段首黄、段尾蓝，末端始终蓝）
+          colors = { beltGradient: { from: BELT_COLOR_BELT, to: BELT_COLOR_CREATE } };
+        }
         if (seg.isCorner) {
           drawCornerBelt(entry.g, CELL_SIZE, colors);
         } else {
-          drawStraightBelt(entry.g, CELL_SIZE, colors);
+          drawStraightBelt(entry.g, CELL_SIZE, colors, seg.direction);
         }
         entry.lastKey = key;
       }

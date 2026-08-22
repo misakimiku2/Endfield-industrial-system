@@ -94,12 +94,13 @@ console.log('[PortStatusOps 端口连接/堵塞判定]');
   const addBelt = (
     gx: number, gy: number, d: 0 | 90 | 180 | 270,
     items: Array<[string, number, boolean?]> = [],
+    blocked = false,
   ): BeltSegmentComp => {
     const h = w.createEntity();
     w.addComponent(h, 'Position', { x: gx * CELL_SIZE, y: gy * CELL_SIZE });
     const s: BeltSegmentComp = {
       chainId: `c-${gx}-${gy}`, direction: d, isCorner: false, isTail: true,
-      segmentIndex: 0, phaseOffset: 0,
+      segmentIndex: 0, phaseOffset: 0, blocked,
       items: items.map(([itemId, progress, entering]) => ({ itemId, progress, delta: 0, entering })),
     };
     w.addComponent(h, 'BeltSegmentComp', s);
@@ -125,7 +126,7 @@ console.log('[PortStatusOps 端口连接/堵塞判定]');
   // 2b: 物品停门口 → blocked 红
   const fB = mkComp();
   const { h: hB } = mkBuilding(10, 5, fB); // 端口 (11,7)
-  addBelt(11, 8, 270, [['originium_ore', 0.5]]);
+  addBelt(11, 8, 270, [['originium_ore', 0.5]], true); // 队首停稳 → BeltSystem 整链 blocked
   const idxB = buildBeltCellIndex(w);
   const inB = inputPortStatuses(w, idxB, hB, fB, FURNACE);
   assert(inB.every((p) => !p.blocked || p.connected), '2b0. (前置) blocked 蕴含 connected');
@@ -169,15 +170,16 @@ console.log('[PortStatusOps 端口连接/堵塞判定]');
     [30, 5, false], [31, 5, true], [32, 5, false],
   ], '3a. 输出端口: 仅中口 (31,5) 有接收带 connected');
   assertEq(outF.find((p) => p.x === 31)?.blocked, false,
-    '3b. 输出槽空 → 不算堵（无货可出）');
-  // 3c: 输出槽有货 + 带空 → 不算堵（还有注入窗口）
+    '3b. 接收带空（未堵）→ 不算堵');
+  // 3c: 输出槽有货但接收带空（seg.blocked=false）→ 不算堵（与输出槽是否有货无关）
   fF.bufferOutput[0] = { itemId: 'origocrust', count: 5 };
   assertEq(outputPortStatuses(w, idxF, hF, fF, FURNACE).find((p) => p.x === 31)?.blocked, false,
-    '3c. 输出槽有货但接收带空 → 不算堵（带未满）');
-  // 3d: 输出槽有货 + 带被占 → blocked 红
+    '3c. 输出槽有货但接收带空 → 不算堵（带未堵）');
+  // 3d: 接收带整链堵（seg.blocked）→ blocked 红（即使输出槽空也红，与传送带堵塞同步）
   outBelt.items.push({ itemId: 'origocrust', progress: 0.5, delta: 0 });
+  outBelt.blocked = true; // 模拟 BeltSystem 整链堵塞（段首被占/下游堵）
   assertEq(outputPortStatuses(w, idxF, hF, fF, FURNACE).find((p) => p.x === 31)?.blocked, true,
-    '3d. 输出槽有货 + 接收带被占（一格一物品满带）→ blocked（红，满带留槽语义）');
+    '3d. 接收带堵塞(seg.blocked) → blocked（红，与传送带整链堵塞同步，不看输出槽）');
   // 3e: paused 时输出不红（视同离线）
   fF.paused = true;
   assertEq(outputPortStatuses(w, idxF, hF, fF, FURNACE).find((p) => p.x === 31)?.blocked, false,
