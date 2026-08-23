@@ -170,43 +170,48 @@ export function drawCornerBelt(g: Graphics, cellSize: number, colors?: BeltColor
     .closePath()
     .fill({ color: shell });
 
-  // ── 黄带环（circle5）：外弧 12.9646 → H 14.2875 → 内弧 2.6458 ──
+  // ── 黄带环（circle5）：外弧 beltOuter → H → 内弧 cornerR ──
+  // 注意：黄带环与灰壳环不是同一组内外弧。
+  //   外弧圆心 = (c - beltOuter, c - beltOuter)，半径 beltOuter；
+  //   内弧圆心 = (c, c)，半径 cornerR（不是灰壳的 CORNER_R_INNER）。
   g.beginPath();
   const beltPath = g.moveTo(c, c - beltOuter)
     .arcToSvg(beltOuter, beltOuter, 0, 0, 0, c - beltOuter, c)
-    .lineTo(shellOuter - c, c)
-    .arcToSvg(inner, inner, 0, 0, 1, c, c - inner)
+    .lineTo(beltOuter - c, c)
+    .arcToSvg(cornerR, cornerR, 0, 0, 1, c, beltOuter - c)
     .closePath();
   if (colors?.beltGradient) {
-    // 创建模式终点：沿黄带环外弧（物品路径）从入口（下，90°）→ 出口（右，0°）"段首(黄)→段尾(蓝)"渐变。
-    // 黄带环外凸右下：外弧圆心 = (c - beltOuter, c - beltOuter)（本地"左上"），
-    // 半径 beltOuter，从 90°（下）到 0°（右）经过右下 45°。
-    // 用 N 段扇形近似（外弧精确覆盖、内弧附近用底色 from 兜底），每段 fill lerp 颜色，
-    // 完全沿外弧渐变、无阶梯。
+    // 创建模式终点：沿黄带环外弧（物品路径）从入口（下）→ 出口（右）"段首(黄)→段尾(蓝)"渐变。
+    // 由 Transport_Belt_rotate.svg 可知黄带环外弧与内弧同心，圆心均为格子右下角 (c,c)：
+    //   外弧半径 = beltOuter(12.9646)，内弧半径 = cornerR(3.96875)。
+    // 用 N 个扇环小片拼合，外侧落在外弧上，内侧落在内弧上，每段 fill lerp 颜色。
     const { from, to } = colors.beltGradient;
-    // 1) 底色：黄带环整圈用 from（黄）填充，扇形只覆盖外弧附近、不覆盖处显示 from
+    // 1) 先铺一层底色 from（黄），防止分段间出现针尖缝隙。
     beltPath.fill({ color: from });
-    // 2) 分段扇形：覆盖外弧附近（圆心=外弧圆心，外弧=精确 beltOuter，内弧=适中 innerR）
-    const N = 32;
-    const ocx = c - beltOuter; // 外弧圆心 x
-    const ocy = c - beltOuter; // 外弧圆心 y
-    const innerR = beltOuter * 0.55; // 扇形内半径（覆盖到黄带环中部，剩余靠底色 from）
+    // 2) 同心分段渐变。
+    const N = 40;
+    const cx = c;
+    const cy = c;
+    const outerR = beltOuter;
+    const innerR = cornerR;
     for (let i = 0; i < N; i++) {
       const t0 = i / N;
       const t1 = (i + 1) / N;
-      // 角度：t=0 → 下(90°)，t=1 → 右(0°)
-      const a0 = (Math.PI / 2) * (1 - t0);
-      const a1 = (Math.PI / 2) * (1 - t1);
+      // 物品从入口（下）到出口（右），在外弧上对应从标准角 π（左）→ 3π/2（上）。
+      const a0 = Math.PI + (Math.PI / 2) * t0;
+      const a1 = Math.PI + (Math.PI / 2) * t1;
       const color = lerpColor(from, to, (t0 + t1) / 2);
-      const ox0 = ocx + beltOuter * Math.cos(a0), oy0 = ocy + beltOuter * Math.sin(a0);
-      const ox1 = ocx + beltOuter * Math.cos(a1), oy1 = ocy + beltOuter * Math.sin(a1);
-      const ix0 = ocx + innerR * Math.cos(a0), iy0 = ocy + innerR * Math.sin(a0);
-      const ix1 = ocx + innerR * Math.cos(a1), iy1 = ocy + innerR * Math.sin(a1);
+      const ox0 = cx + outerR * Math.cos(a0), oy0 = cy + outerR * Math.sin(a0);
+      const ox1 = cx + outerR * Math.cos(a1), oy1 = cy + outerR * Math.sin(a1);
+      const ix1 = cx + innerR * Math.cos(a1), iy1 = cy + innerR * Math.sin(a1);
+      const ix0 = cx + innerR * Math.cos(a0), iy0 = cy + innerR * Math.sin(a0);
       g.beginPath();
       g.moveTo(ox0, oy0);
-      g.arc(ocx, ocy, beltOuter, a0, a1, true); // 外弧（角度减小，逆时针）
+      // 外弧：sweep=0，从 a0(π) → a1(3π/2)
+      g.arcToSvg(outerR, outerR, 0, 0, 0, ox1, oy1);
       g.lineTo(ix1, iy1);
-      g.arc(ocx, ocy, innerR, a1, a0, false); // 扇形内边界（反向）
+      // 内弧：sweep=1，从 ix1,iy1(3π/2) → ix0,iy0(π)
+      g.arcToSvg(innerR, innerR, 0, 0, 1, ix0, iy0);
       g.closePath();
       g.fill({ color });
     }
