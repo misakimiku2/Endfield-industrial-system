@@ -1,6 +1,6 @@
 ---
 name: endfield-device
-description: 明日方舟终末地集成工业系统——新增设备/建筑的标准流程（T1.11 九宫格底座 + T1.12 端口变体体系之后）。在"加设备/新建筑/画设备 SVG/加端口/改外观"等任务时使用。核心：底座、固体口、端口底板、emblazon、液体口、侧边装饰条全部由 BuildingDefinition.ports 自动派生，设备 SVG 只画真正专属的内容。
+description: 明日方舟终末地集成工业系统——新增设备/建筑的标准流程（T1.11 九宫格底座 + T1.12 端口变体体系之后）。在"加设备/新建筑/画设备 SVG/加端口/改外观"等任务时使用。核心：底座、固体口、端口底板、emblazon、液体口、侧边装饰条全部由 BuildingDefinition.ports 自动派生，设备 SVG 只画真正专属的内容。1×n/特殊外观/非生产设备走 whole 整图路径（§3 Depot 先例）。
 ---
 
 # 新增设备流程（T1.12 端口变体体系之后）
@@ -28,7 +28,7 @@ my_device: {
   id: 'my_device',
   name: '我的设备',
   category: 'production',            // extraction/production/logistics/defense/agriculture
-  footprint: { w: 3, h: 3 },         // 任意 w,h ≥ 2（1×n/n×1 走 whole 整图路径，不适用本流程）
+  footprint: { w: 3, h: 3 },         // 任意 w,h ≥ 2（1×n/n×1 走 whole 整图路径，见 §3）
   ports: [
     // 端口位置即外观：下面 6 条 = 顶行整排输出口 + 底行整排输入口
     { type: 'output', position: { dx: 0, dy: 0 } },
@@ -69,7 +69,7 @@ my_device: {
 2. **只画专属层**:
    - `layer-equipment`——设备中间的专属内容（炉体、储罐、机械臂…）；
    - `layer-logo` / `layer-logo-glow`——billboard 徽标（可选，def 加 `logoTextureKey`）；
-   - T2.8 端口高亮隐藏层（可选，但连接/堵塞黄红高亮依赖它，见 §4 已知边界）:
+   - T2.8 端口高亮隐藏层（可选，但连接/堵塞黄红高亮依赖它，见 §5 已知边界）:
      `layer-port-in-{dx}` / `layer-port-out-{dx}`（白色面板 rect）、
      `layer-arrow-in-{dx}` / `layer-arrow-out-{dx}`（白色箭头 path），
      几何照抄 refining_unit.svg 的同名层（坐标 = 端口在设备画布的位置）。
@@ -78,7 +78,61 @@ my_device: {
 4. **打包**: `npm run pack-assets`。
 5. 验收同情形 1。
 
-## 3. 改 kit 本身（端口皮肤/装饰条/底座样式）——低频
+## 3. 整图设备（whole 路径）——1×n / 特殊外观 / 非生产设备（Depot 先例，T2.12）
+
+**何时走这条路**: 1×n/n×1 占地（九宫格不适用）、外观不适合 kit 拼装、非生产设备
+（无限源/汇等特殊逻辑）。先例: `depot_unloader`/`depot_loader`（仓库取/存货口）。
+
+### SVG 结构（硬规矩）
+
+1. **画布**: footprint × 64 px（3×1=192×64），透明底，坐标原点=设备左上角。
+2. **主内容必须住在 `<g id="layer-base">` 里**——不能沿用 Inkscape 默认的
+   `layer1` 这类无连字符 id。原因: 层帧提取靠 CSS `g[id^="layer-"]` 隐藏其余层，
+   不合规 id 的内容会**漏进每一个层帧**（T2.12 实际踩过）。
+3. **tint 源层**（可选，悬停/状态高亮用）: `<g id="layer-status" style="display:none">`，
+   内容**纯白填充**（白色源 × tint 才得到纯色高亮）。`display:none` 使它不进主帧，
+   提取层帧时管线 CSS 会强制显示。**新层名必须加进** `asset-manifest.ts` 的
+   `DEVICE_LAYER_WHITELIST.exact`（现有: logo / logo-glow / status）。
+4. 帧产物: 主帧 `${texture}` + 各层帧 `${texture}/${层名}`（如 `depot`、`depot/status`）。
+
+### 清单与定义
+
+- `DEVICE_FILES` 加文件名——**按 basename 匹配**（LOGO/ 子目录的文件不用带目录前缀）。
+- 定义: `baseStyle` **缺省**（whole 路径）；`texture` = 主帧 key；`logoTextureKey`
+  可指向**独立 LOGO 文件**的帧——单层 LOGO 即可，glow 帧缺失自动无害跳过。
+- **高亮白 LOGO**: 深色源无法用 tint 提亮（乘法染色只会变暗），做 `_white` 后缀的
+  白色变体文件（如 `Depot_Loader_logo_white.svg`，fill 改 #ffffff）——Status 高亮时
+  RenderSystem 自动换白、退出自动换回；无变体帧则高亮时保持原 LOGO（降级无害）。
+  ⚠️ logoMain 继承 glow 父 tint（常态 #494848）——仓库口模式里 RenderSystem 已把
+  无 glow 层设备的父 tint 固定提白（LOGO 按素材原色渲染），新整图设备自动受益。
+
+### 免费获得的运行时行为（零代码，帧存在即生效）
+
+- **创建模式悬停高亮**: `${texture}/status` 帧存在 → RenderSystem 自动在设备子树内
+  渲染 Status 面板（设备纹理之上、LOGO 之下）——有输出口的设备创建模式**常显蓝
+  #80BEE9**、悬停淡蓝 #A8D4F5；只有输入口的设备悬停其输入格时淡蓝。
+- **常态外观**: status 层 display:none 不进主帧——常态的静态面板直接画进
+  layer-base（如 Depot 中格的 #d3d3d3 灰面板，同时填掉 base 造型的中格镂空）。
+
+### 特殊约束与模式
+
+- **非正方形占地只能 0°/180°**: rotatePort 旋转数学仅对方形自洽（A3 §6 旋转不换
+  占地），90° 会把端口旋出占地。`RotationPolicy` 已自动把非正方形设备的 R 键限制为
+  两档——无需任何代码，但**不要**画依赖 90° 朝向的外观。
+- **非生产设备**（无限源/汇）: def 加 `depot: 'unload' | 'load'` + MachineSystem
+  `updateDepot` 分支 + 纯逻辑 ops（先例 `DepotOps.ts`: emitSourceToBelt /
+  tryAbsorbHeadItemSink）；**四类槽位全 0**（T2.9 读数自动隐藏、createBufferSlots(0)=[]）；
+  专属事件只进 recentEvents 不转发控制台（持续吞吐会刷屏）。产出物品配置留待
+  T2.15 设备弹窗。
+
+### 验收
+
+`scripts/verify-t212-browser.mjs` 是整图设备玩家流验收模板（Playwright 真实键鼠:
+工具栏放置 → E 模式画带 → 物流观察 → 选中读数 → R 两档 → 悬停高亮）；
+单帧内容用 sharp 按 `devices.json` 的 `frame.x/y` 抠图逐像素检查（注意
+`spriteSourceSize.x/y` 是原画布内偏移、不是图集坐标）。
+
+## 4. 改 kit 本身（端口皮肤/装饰条/底座样式）——低频
 
 - 端口/装饰元件都住在 `src/assets/svg/nineslice_unit.svg` 的对应组
   （slice-* 9 / port-* 6 / emblazon-* 4 / lport-* 8 / deco-l/r，S1 §9.2）。
@@ -105,21 +159,29 @@ marginPx、平铺 ε 重叠防缝、端口方向约定不变）；中间行可�
 4. 验收: 复制 verify-t1.11 模式对新 kit vs 其参考图跑 0 差异。
 掩码派生/emblazon/deco 规则/烘焙机制与皮肤正交，无需改动。
 
-## 4. 已知边界（别踩）
+## 5. 已知边界（别踩）
 
 - **1×n / n×1 设备**（如 Depot）不进 nineslice 体系，走 `baseStyle` 缺省的
-  whole 整图路径（SVG 画完整外观含 layer-base）。
-- **端口高亮**（T2.8 连接黄/堵塞红）目前消费设备 SVG 的隐藏层——纯 kit 设备
-  （无自有 SVG）没有高亮，kit 白帧泛化是预留后置任务（S3 §7.2）。
+  whole 整图路径——完整配方见 **§3**（图层命名硬规矩 / Status 帧悬停高亮 /
+  白 LOGO 变体 / 非正方形两档旋转 / 非生产设备模式）。
+- **端口高亮**分两档: T2.8 连接黄/堵塞红消费设备 SVG 的 `port-*`/`arrow-*` 隐藏层
+  （nineslice 设备）；整图设备走 §3 的 `${texture}/status` 帧创建模式悬停（连接/
+  堵塞语义对永不堵塞的仓库口不适用）。纯 kit 设备（无自有 SVG）两者皆无，
+  kit 白帧泛化是预留后置任务（S3 §7.2）。
 - **顶/底液体口**同 §1 末尾，等 A3 数据模型。
 - 设备 SVG 若画了 `#828080` 描边 `fill:none` 的 path 会被打进 arrow_mask 帧
   （PreviewTintFilter 契约），nineslice 设备不消费它，无碍但别误配。
+- **工具栏图标是整图等比缩略**: 3:1 等长条设备受按钮 80% 长边约束会很小
+  （T2.12 已知外观项，待反馈后可改用 logo 帧作图标）。
 
-## 5. 相关文档
+## 6. 相关文档
 
 - `doc/asset-drawing-standard.md` §9——nineslice 素材规范（组结构/窗口边距）
 - `doc/nineslice-port-variant.md`（S3）——端口掩码派生规则与验收记录
 - `doc/nine-slice-device-base.md`（S2)——底座体系
 - `doc/architecture/building-spec.md`（A3）——BuildingDefinition/Port 数据模型
+- `doc/implementation-phase-2.md` T2.12 实现笔记——整图设备先例全记录
+  （DepotOps / Status 帧 / 白 LOGO / RotationPolicy）
 - 验收脚本模式: `scripts/verify-t1.12-runtime.mjs`（CDP 像素探针）、
-  `verify-t1.12-visual.mjs`（截图）
+  `verify-t1.12-visual.mjs`（截图）、`verify-t212-browser.mjs`（整图设备玩家流）、
+  `verify-t212-depot.ts`（单测）
