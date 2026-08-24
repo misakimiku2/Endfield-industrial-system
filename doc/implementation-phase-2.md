@@ -613,6 +613,7 @@ interface BeltLinkComp {
 - **朝向策略**: `src/game/systems/RotationPolicy.ts` `nextScreenAngle`——正方形 90° 四档 / 非正方形 **180° 两档**（A3 §6 旋转不换占地，90° 会把端口旋出占地）；PlacementSystem R 键接入。
 - **验证**: `scripts/verify-t212-depot.ts` 49/49（定义/端口几何/纯逻辑/三段集成/全链路/朝向策略）+ `scripts/verify-t212-browser.mjs`（Playwright 驱动系统 Chrome，**全程真实键鼠**: 工具栏点击放置→E 模式画带→物流观察→选中读数→R 两档→存货口悬停，8 断言全过 + 9 张截图人工核验）+ `__game.test('t212')` 一键测试（含暂停停供/恢复续供演示）。回归: t1.7 230（更新 3 处 T1.11/12 时期遗留的过时计数断言 + 仓库口无槽位豁免）/t1.9 40/t23 40/t24 21/t25 45/t26 48/t27 42/t28 41/堵塞 8 全绿，tsc 干净。
 - **已知外观项**: 工具栏图标为整图等比缩略（3:1 设备受 80% 长边约束偏小），后续可改用 logo 帧作图标（待用户反馈）。
+- **LOGO 三修（2026-08-24 用户反馈）**: ① Status 面板从 PortHighlightRenderer（layer3Item，盖住 LOGO）**移入 RenderSystem 设备子树**——渲染顺序变为 设备纹理(常态灰面板) < Status 高亮 < LOGO；② 高亮时 LOGO **换白色变体**（新增 `Depot_*_logo_white.svg` 白色源帧；深色源无法 tint 提亮，走纹理切换同 T2.8 换图机制；⚠️ logoMain 继承 glow 父 tint #494848 会把白帧乘暗——仓库口无 glow 层，父 tint 固定提白，常态 LOGO 也由此恢复素材原色 #494848，修复前被双重压暗近黑）；③ LOGO 缩小 20%（`LOGO_WHOLE_SCALE=0.8`，whole 路径 logoMain 与 PlacementSystem 预览同步）。像素级验证: 高亮态白色 255px/#494848 归零、常态 #494848 312px。
 
 ---
 

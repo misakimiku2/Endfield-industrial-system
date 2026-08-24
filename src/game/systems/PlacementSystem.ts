@@ -46,6 +46,7 @@ import { buildNineSliceBase, buildNineSlicePorts, tintContainer } from '../rende
 import { portMaskFromDef } from '../render/PortMask';
 import { createBufferSlots } from './machine/BufferOps';
 import { nextScreenAngle, type ScreenAngle } from './RotationPolicy';
+import { LOGO_WHOLE_SCALE } from './RenderSystem';
 
 /** 放置模式状态。 */
 export type PlacementMode = 'idle' | 'placing';
@@ -317,9 +318,10 @@ export class PlacementSystem {
       const logoTex = this.getTexture('devices', def.logoTextureKey) ?? Texture.EMPTY;
       if (this.previewLogo.texture !== logoTex) {
         this.previewLogo.texture = logoTex;
-        // whole: 根 Sprite 已按 设备px/纹理px 缩放，scale 1 继承；nineslice: 根 scale=1，
+        // whole: 根 Sprite 已按 设备px/纹理px 缩放，scale 继承后乘 LOGO_WHOLE_SCALE
+        // 稍作缩小（与 RenderSystem 已放置设备一致）；nineslice: 根 scale=1，
         // logo 帧是全画布尺寸（orig=设备画布）→ 显式缩放到设备世界尺寸（T1.11c 修复）
-        this.previewLogo.scale.set(nineslice && logoTex.width > 0 ? wp / logoTex.width : 1);
+        this.previewLogo.scale.set(nineslice && logoTex.width > 0 ? wp / logoTex.width : LOGO_WHOLE_SCALE);
       }
       this.previewLogo.visible = true;
     } else if (this.previewLogo) {

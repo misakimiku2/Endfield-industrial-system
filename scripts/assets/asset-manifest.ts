@@ -97,9 +97,12 @@ export const DEVICE_FILES: readonly string[] = [
   'Pause_Logo.svg',
   'Blocked_Logo.svg',
   // T2.12 仓库取/存货口单层 billboard LOGO（src/assets/svg/LOGO/ 子目录；
-  // 打包按 basename 分类，无需带目录前缀）
+  // 打包按 basename 分类，无需带目录前缀）。_white 为高亮态变体（2026-08-24
+  // 用户反馈: Status 面板高亮时 LOGO 换白色——深色源无法用 tint 提亮，走纹理切换）
   'Depot_Loader_logo.svg',
   'Depot_Unloader_logo.svg',
+  'Depot_Loader_logo_white.svg',
+  'Depot_Unloader_logo_white.svg',
   // T1.11 九宫格底座切片源（不输出主帧，只输出 nineslice/* 9 切片帧，见 NINESLICE_FILES）
   'nineslice_unit.svg',
 ];

@@ -32,10 +32,13 @@ import { BeltPointerRenderer } from '../render/BeltPointerRenderer';
 import { BeltVectorRenderer } from '../render/BeltVectorRenderer';
 import { BeltItemRenderer } from '../render/BeltItemRenderer';
 import { BeltHoverRenderer } from '../render/BeltHoverRenderer';
-import { PortHighlightRenderer } from '../render/PortHighlightRenderer';
+import { PortHighlightRenderer, PORT_CREATE_TINT, PORT_CREATE_HOVER_TINT } from '../render/PortHighlightRenderer';
 import { buildNineSliceBase, buildNineSlicePorts, getBakedNineSliceTexture } from '../render/NineSliceAssembler';
 import { emptyPortMask, portMaskFromDef } from '../render/PortMask';
-import { getBuildingDefinition } from '../data/buildings';
+import { getBuildingDefinition, type BuildingDefinition } from '../data/buildings';
+import { outputPortCells } from './machine/OutputOps';
+import { inputPortCells } from './machine/IntakeOps';
+import { CELL_SIZE } from '../render/constants';
 import type { BeltSelection } from './belt/BeltSelection';
 import type { AtlasGroup } from '../render/AssetsLoader';
 import type { SceneLayers } from '../render/SceneRenderer';
@@ -74,6 +77,14 @@ interface SpriteEntry {
   pauseFallback?: Graphics;
   /** T2.8: 堵塞徽标程序化兜底。 */
   blockedFallback?: Graphics;
+  /**
+   * T2.12 仓库口 Status 面板（`${texture}/status` 白色层帧 × tint），挂在设备
+   * 子树内、LOGO 之下（2026-08-24 用户反馈修订：高亮时 LOGO 仍可见且换白色）。
+   * 普通设备无此帧 → undefined。创建模式外隐藏（常态灰面板烘在主帧里）。
+   */
+  statusSprite?: Sprite;
+  /** T2.12: Status 面板可见时 LOGO 已切白色变体（避免每帧换纹理）。 */
+  depotLogoWhite?: boolean;
   /** 上次绑定时的纹理标识；SpriteComp 的 group/textureKey 变了要换纹理。 */
   group: AtlasGroup;
   textureKey: string;
@@ -117,6 +128,14 @@ const FALLBACK_SPAN = 34;
 const BELT_ROUND_PIXELS = true;
 
 /**
+ * whole 整图路径的 LOGO 主体缩放（2026-08-24 用户反馈: 仓库口 LOGO 稍微缩小）。
+ * logoMain 挂在已按 设备px/纹理px 缩放的父 Sprite 下，scale 1 = 原始相对大小；
+ * 0.8 = 缩小 20%，让 3×1 设备的 LOGO 不顶满格。nineslice 路径（logoScale 显式
+ * 传参）不受影响。PlacementSystem 放置预览同用此值保持所见即所得。
+ */
+export const LOGO_WHOLE_SCALE = 0.8;
+
+/**
  * 把场景层（layer0~5）按层号取出来，供 Sprite 挂载。
  * SceneLayers 里 layer0~5 是固定数组顺序，此处显式列出保持可读性。
  */
@@ -149,6 +168,10 @@ export class RenderSystem {
   private readonly beltHoverRenderer: BeltHoverRenderer;
   /** 端口连接高亮渲染器（T2.8: 连接黄 #FFEF00 / 堵塞红）。挂在 layer3Item（盖过设备纹理）。 */
   private readonly portHighlightRenderer: PortHighlightRenderer;
+  /** T2.12: 创建模式查询（仓库口 Status 面板显隐用）。 */
+  private isBeltCreationActive?: () => boolean;
+  /** T2.12: 任意端口格悬停查询（含输入口——存货口高亮用）。 */
+  private getHoveredAnyPortCell?: () => { x: number; y: number } | null;
   /** 从游戏开始累积的总毫秒数，驱动 pointer 相位与 hover 呼吸。由 update(deltaMS) 累积。 */
   private elapsedMS = 0;
 
@@ -167,6 +190,10 @@ export class RenderSystem {
     this.camera = camera;
     this.getTexture = getTexture;
     this.renderer = renderer;
+    // T2.12: 创建模式/悬停查询自留（仓库口 Status 面板 + LOGO 白色切换用），
+    // 前两个同时转发给 PortHighlightRenderer（普通设备端口染色）。
+    this.isBeltCreationActive = isBeltCreationActive;
+    this.getHoveredAnyPortCell = getHoveredAnyPortCell;
     this.pointerRenderer = new BeltPointerRenderer(world, layers.layer3Item, getTexture);
     // T2.8 层级修订（从下到上: 带身→物品→设备→端口高亮→箭头）:
     // belowItems 挂 layer2Building 且 zIndex=0.5（带身 0 之上、设备 1 之下）→
@@ -179,7 +206,6 @@ export class RenderSystem {
     this.beltHoverRenderer = new BeltHoverRenderer(world, camera, layers.layer2Building);
     this.portHighlightRenderer = new PortHighlightRenderer(
       world, layers.layer3Item, getTexture, isBeltCreationActive, getHoveredPortCell,
-      getHoveredAnyPortCell,
     );
   }
 
@@ -297,6 +323,12 @@ export class RenderSystem {
         }
       }
 
+      // T2.12 仓库口 Status 面板显隐/染色 + LOGO 白色切换（仅 statusSprite 存在的
+      // 设备产生开销——普通设备 undefined 短路）。悬停匹配按端口世界格计算。
+      if (entry.statusSprite && building && def) {
+        this.applyDepotStatus(entry, building, def, pos, spr);
+      }
+
       // 视口剔除: 实体世界 AABB 与可见范围无交集 → 隐藏
       sprite.visible = this.intersectsView(pos, spr, view);
     }
@@ -361,10 +393,24 @@ export class RenderSystem {
     sprite.scale.set(baseScaleX, baseScaleY);
     this.layerContainer(spr.layer).addChild(sprite);
 
+    // T2.12 仓库口 Status 面板（白色层帧 × tint），挂设备子树内、LOGO 之前 →
+    // 渲染顺序: 设备纹理(含常态灰面板) < Status 高亮 < LOGO（2026-08-24 用户反馈:
+    // 此前挂 layer3Item 会盖住 LOGO）。帧不存在（普通设备）→ undefined 零开销。
+    // 子 scale 1: 父 Sprite 已按 设备px/纹理px 缩放，status 帧与主帧同画布。
+    let statusSprite: Sprite | undefined;
+    const statusTex = this.getTexture(spr.group, `${spr.textureKey}/status`);
+    if (statusTex && statusTex.width > 0) {
+      statusSprite = new Sprite(statusTex);
+      statusSprite.anchor.set(0.5);
+      statusSprite.visible = false;
+      sprite.addChild(statusSprite);
+    }
+
     const logoTree = this.buildLogoSubtree(spr, sprite);
     return {
       sprite, nineslice: false,
       ...logoTree,
+      statusSprite,
       group: spr.group, textureKey: spr.textureKey, layer: spr.layer, baseScaleX, baseScaleY,
     };
   }
@@ -446,7 +492,10 @@ export class RenderSystem {
     const mainTex = this.getTexture(spr.group, spr.logoTextureKey) ?? Texture.EMPTY;
     const logoMain = new Sprite(mainTex);
     logoMain.anchor.set(0.5);
-    logoMain.scale.set(1);
+    // whole 整图路径: 父 Sprite 已按设备尺寸缩放，logoMain 再乘 LOGO_WHOLE_SCALE(0.8)
+    // 稍作缩小（2026-08-24 用户反馈: 仓库口 LOGO 顶满格）；nineslice 路径 logoScale
+    // 已按 glow 帧显式换算，保持 1。
+    logoMain.scale.set(logoScale ? 1 : LOGO_WHOLE_SCALE);
     logo.addChild(logoMain);
 
     // T2.8 状态徽标程序化兜底（InventoryUI 占位图先例）: 素材缺失时 Graphics 直画。
@@ -495,6 +544,62 @@ export class RenderSystem {
     }
     if (entry.blockedFallback) {
       entry.blockedFallback.visible = st === 'blocked' && !tex;
+    }
+  }
+
+  /**
+   * T2.12 仓库口 Status 面板（2026-08-24 用户反馈修订）:
+   *   - 取货口（有输出口）: 创建模式常显蓝 #80BEE9（"可连接起点"提示），悬停任一
+   *     输出端口格 → 淡蓝 #A8D4F5；
+   *   - 存货口（无输出口）: 仅悬停其输入端口格时淡蓝（提示"传送带可接入此处"）。
+   *   - **高亮时 LOGO 换白色变体**（`${logoTextureKey}_white` 帧；深色源无法用 tint
+   *     提亮，走纹理切换，同 T2.8 暂停/堵塞换图机制），白色帧缺失 → 保持原 LOGO。
+   * 非创建模式隐藏（常态灰面板烘在主帧里，由本面板覆盖）。
+   */
+  private applyDepotStatus(
+    entry: SpriteEntry,
+    building: BuildingComp,
+    def: BuildingDefinition,
+    pos: Position,
+    spr: SpriteComp,
+  ): void {
+    const s = entry.statusSprite!;
+    const create = this.isBeltCreationActive?.() ?? false;
+    const hovered = create ? (this.getHoveredAnyPortCell?.() ?? null) : null;
+    let hoverOut = false;
+    let hoverIn = false;
+    let hasOut = false;
+    if (hovered) {
+      const gx = Math.round(pos.x / CELL_SIZE);
+      const gy = Math.round(pos.y / CELL_SIZE);
+      for (const c of outputPortCells(gx, gy, def, building.direction)) {
+        hasOut = true;
+        if (c.x === hovered.x && c.y === hovered.y) hoverOut = true;
+      }
+      for (const c of inputPortCells(gx, gy, def, building.direction)) {
+        if (c.x === hovered.x && c.y === hovered.y) hoverIn = true;
+      }
+    } else {
+      hasOut = def.ports.some((p) => p.type === 'output');
+    }
+    s.visible = create && (hasOut || hoverIn);
+    s.tint = hoverOut || hoverIn ? PORT_CREATE_HOVER_TINT : PORT_CREATE_TINT;
+
+    // LOGO 纹理切换（首次必进: depotLogoWhite 未初始化）。⚠️ logoMain 是 logo(glow
+    // 层)的子节点，继承父 tint——applyLogoVisual 常态会把父 tint 设为 #494848。
+    // 仓库口**没有 glow 层**（EMPTY 帧），父 tint 只会错误压暗 logoMain——固定提到
+    // 白，让 LOGO 按素材原色渲染: 常态 #494848、高亮白色变体。
+    if (entry.logoMain && spr.logoTextureKey) {
+      const wantWhite = s.visible;
+      if (entry.depotLogoWhite === undefined || wantWhite !== entry.depotLogoWhite) {
+        entry.depotLogoWhite = wantWhite;
+        const key = wantWhite ? `${spr.logoTextureKey}_white` : spr.logoTextureKey;
+        const tex = this.getTexture(spr.group, key);
+        if (tex) {
+          entry.logoMain.texture = tex; // 白色帧缺失 → 保持当前纹理（降级）
+          if (entry.logo) entry.logo.tint = 0xffffff;
+        }
+      }
     }
   }
 
