@@ -70,6 +70,12 @@ export interface BuildingDefinition {
    * 设备尺寸解耦（w,h ≥ 2 的设备适用；1×n/n×1 仍走 whole）。
    */
   baseStyle?: 'whole' | 'nineslice';
+  /**
+   * 仓库口标记（T2.12）。非生产设备——无配方/无缓冲区/无生产计时：
+   * 'unload' = 取货口（无限源，凭空放出 DEPOT_SOURCE_ITEM）；
+   * 'load' = 存货口（无限汇，无条件吸入）。MachineSystem 据此走 DepotOps 分支。
+   */
+  depot?: 'unload' | 'load';
   /** 可选： billboard 徽标层 key，会叠加在主体上方并保持屏幕朝上 (devices 图集内的 texture key) */
   logoTextureKey?: string;
   /** 是否可被玩家选中 (T1.8 用) */
@@ -239,6 +245,52 @@ export const BUILDING_DEFINITIONS: Record<string, BuildingDefinition> = {
     bufferCapacity: 50,
   },
 
+  // ── T2.12 简化版仓库取货口/存货口（2026-08-24 用户澄清：非生产设备，无限源/汇）──
+  // 3×1 整图背景（Depot.svg 共用，whole 路径不进九宫格）；单层 billboard LOGO 居中。
+  // 朝向只允许 0°/180°（非正方形占地，A3 §6 旋转不换占地 → RotationPolicy 两档）。
+  // h=1 时 dy=0 行 portOutwardBase 判为顶边朝上：取货口输出口=带从上方接出（同精炼炉
+  // 输出口语义）；存货口输入口=供给带从下方指入（findFeederBelt 四方向扫描）。
+  depot_unloader: {
+    id: 'depot_unloader',
+    name: '仓库取货口',
+    category: 'logistics',
+    footprint: { w: 3, h: 1 },
+    ports: [
+      { type: 'output', position: { dx: 0, dy: 0 } },
+      { type: 'output', position: { dx: 1, dy: 0 } },
+      { type: 'output', position: { dx: 2, dy: 0 } },
+    ],
+    texture: 'depot',
+    logoTextureKey: 'depot_unloader_logo',
+    selectable: true,
+    buildCost: [{ itemId: 'iron_plate', count: 4 }],
+    powerConsumption: 0,
+    inputSlotCount: 0, // 无缓冲区（无限源，凭空放出 DEPOT_SOURCE_ITEM）
+    outputSlotCount: 0,
+    bufferCapacity: 50, // 名义值（无槽位即无意义，保持字段必填）
+    depot: 'unload',
+  },
+  depot_loader: {
+    id: 'depot_loader',
+    name: '仓库存货口',
+    category: 'logistics',
+    footprint: { w: 3, h: 1 },
+    ports: [
+      { type: 'input', position: { dx: 0, dy: 0 } },
+      { type: 'input', position: { dx: 1, dy: 0 } },
+      { type: 'input', position: { dx: 2, dy: 0 } },
+    ],
+    texture: 'depot',
+    logoTextureKey: 'depot_loader_logo',
+    selectable: true,
+    buildCost: [{ itemId: 'iron_plate', count: 4 }],
+    powerConsumption: 0,
+    inputSlotCount: 0, // 无缓冲区（无限汇，无条件接受）
+    outputSlotCount: 0,
+    bufferCapacity: 50,
+    depot: 'load',
+  },
+
   // ── T1.11 九宫格验收 demo 设备（S2 §8-2 任意尺寸正确性）──
   // 不进 TOOLBAR、无 SVG equipment（texture 帧不存在 → 仅渲染底座拼装，
   // RenderSystem/PlacementSystem 对缺失 equip 帧天然跳过）。仅供
@@ -403,6 +455,8 @@ export const TOOLBAR_BUILDINGS: readonly string[] = [
   'shredding_unit',    // 3×3, 占位图
   'fitting_unit',      // 3×3, 占位图
   'seed_picking_unit', // 5×5, 占位图（大占地测试）
+  'depot_unloader',    // 3×1, 仓库取货口（T2.12 无限源）
+  'depot_loader',      // 3×1, 仓库存货口（T2.12 无限汇）
 ];
 
 /**

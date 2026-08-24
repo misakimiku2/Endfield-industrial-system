@@ -331,6 +331,31 @@ export class BeltCreationSystem {
     return null;
   }
 
+  /**
+   * 返回当前悬停的**任意**端口格（含输入口——仓库口 Status 面板高亮用，T2.12）。
+   * 与 getHoveredPortCell 的差别: 后者只认合法起点（输出端口/断头末端），本方法
+   * 扫全部设备的全部端口格——存货口这类"非起点但有对接意义"的设备也能获得悬停反馈。
+   */
+  getHoveredAnyPortCell(): { x: number; y: number } | null {
+    if (this.mode === 'idle' || !this.mouseInside) return null;
+    for (const handle of this.world.query('Position', 'BuildingComp')) {
+      const building = this.world.getComponent<BuildingComp>(handle, 'BuildingComp');
+      const pos = this.world.getComponent<Position>(handle, 'Position');
+      if (!building || !pos) continue;
+      const def = getBuildingDefinition(building.definitionId);
+      if (!def) continue;
+      const gx = Math.round(pos.x / CELL_SIZE);
+      const gy = Math.round(pos.y / CELL_SIZE);
+      for (const port of def.ports) {
+        const abs = rotatePort(port, def.footprint, building.direction);
+        if (gx + abs.dx === this.mouseGrid.x && gy + abs.dy === this.mouseGrid.y) {
+          return { x: gx + abs.dx, y: gy + abs.dy };
+        }
+      }
+    }
+    return null;
+  }
+
   /** hover 态：尝试选中一个起点。 */
   private trySelectStart(): void {
     const hovered = this.findHoveredStart();

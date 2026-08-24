@@ -60,12 +60,18 @@ import {
   findReceiverBelt,
   tryEmitToBelt,
 } from './machine/OutputOps.ts';
+import {
+  emitSourceToBelt,
+  tryAbsorbHeadItemSink,
+} from './machine/DepotOps.ts';
 
 /** 生产/物流事件（控制台输出/调试钩子用，仅状态转换或物品吞吐时产生，非每 Tick）。 */
 export interface ProductionEvent {
   /** T2.5: start/settle/blocked/cancel；T2.6: input（传送带物品吸入输入槽）；
-   *  T2.7: output（输出槽物品放出到传送带）。 */
-  type: 'start' | 'settle' | 'blocked' | 'cancel' | 'input' | 'output';
+   *  T2.7: output（输出槽物品放出到传送带）；T2.12: depot-output/depot-input
+   *  （仓库口吞吐——无限源/汇持续产生，只进 recentEvents 不转发控制台，防刷屏）。 */
+  type: 'start' | 'settle' | 'blocked' | 'cancel' | 'input' | 'output'
+    | 'depot-output' | 'depot-input';
   handle: EntityHandle;
   /** 关联配方 id；input 事件无配方（不适用）。 */
   recipeId?: string;
@@ -124,7 +130,16 @@ export class MachineSystem implements SimulationSystem {
         // 不预约吸入（门口物品被 BeltSystem 钳制停在 0.5）、不输出产物（槽内保留）。
         // 已预约(entering)物品仍放行——槽位早在预约时刻 +1，只剩视觉行程，
         // 不放行会让物品永远卡在设备半格深处（BeltSystem 持续把它推进到 1.5）。
+        // 仓库口同理: 存货口 paused 只放行已预约物品、不预约新物品；取货口无输入口
+        // 此处天然 no-op（T2.12）。
         this.releaseEnteringItems(world, handle, comp, def, beltAt);
+        continue;
+      }
+
+      // ── T2.12 仓库口分支: 非生产设备，无内部状态/缓冲区，直接走 DepotOps ──
+      // 取货口=每输出口放 1 件源物品（无限源）；存货口=预约制无条件吸入（无限汇）。
+      if (def.depot !== undefined) {
+        this.updateDepot(world, handle, comp, def, beltAt);
         continue;
       }
 
@@ -227,6 +242,58 @@ export class MachineSystem implements SimulationSystem {
         }
       }
       if (!started && comp.state !== 'idle') comp.state = 'idle';
+    }
+  }
+
+  /**
+   * T2.12 仓库口物流（def.depot 分支）。非生产设备——无配方/缓冲区/状态机迁移
+   * （state 恒 idle、currentRecipeId 恒 null，读数不显示任何数据）:
+   *   - unload 取货口: 每输出口找接收带（A9 §6.7 背离设备），放 1 件源物品
+   *     （emitSourceToBelt，与 T2.7 同律: 空段 + 相位窗口 + 每口每 Tick 1 件）。
+   *   - load 存货口: 每输入口先放行走到端口格中心(1.5)的预约物品（复用
+   *     releaseArrivedItems），再无条件预约队首（tryAbsorbHeadItemSink，无限汇
+   *     永不堵塞——无槽位/类型/容量判定）。
+   */
+  private updateDepot(
+    world: World,
+    handle: EntityHandle,
+    comp: BuildingComp,
+    def: BuildingDefinition,
+    beltAt: Map<string, EntityHandle>,
+  ): void {
+    const pos = world.getComponent<Position>(handle, 'Position');
+    if (!pos) return;
+    const gx = Math.round(pos.x / CELL_SIZE);
+    const gy = Math.round(pos.y / CELL_SIZE);
+    if (def.depot === 'unload') {
+      for (const cell of outputPortCells(gx, gy, def, comp.direction)) {
+        const receiver = findReceiverBelt(world, beltAt, cell);
+        if (receiver === null) continue;
+        const seg = world.getComponent<BeltSegmentComp>(receiver, 'BeltSegmentComp');
+        if (!seg) continue;
+        const emitted = emitSourceToBelt(seg);
+        if (emitted !== null) {
+          this.emit({
+            type: 'depot-output', handle,
+            message: `${def.name}: 输出 ${this.nameOf(emitted)} ×1（无限源 → 传送带）`,
+          });
+        }
+      }
+      return;
+    }
+    for (const cell of inputPortCells(gx, gy, def, comp.direction)) {
+      const feeder = findFeederBelt(world, beltAt, cell);
+      if (feeder === null) continue;
+      const seg = world.getComponent<BeltSegmentComp>(feeder, 'BeltSegmentComp');
+      if (!seg) continue;
+      releaseArrivedItems(seg); // 阶段2: 走到端口格中心的预约物品移除（视觉消失）
+      const absorbed = tryAbsorbHeadItemSink(seg); // 阶段1: 门口物品无条件预约
+      if (absorbed !== null) {
+        this.emit({
+          type: 'depot-input', handle,
+          message: `${def.name}: 接收 ${this.nameOf(absorbed)} ×1（传送带 → 无限汇）`,
+        });
+      }
     }
   }
 

@@ -20,6 +20,7 @@ import { SceneRenderer } from './game/render/SceneRenderer';
 import { GridRenderer } from './game/render/GridRenderer';
 import { loadAllAssets, getTexture } from './game/render/AssetsLoader';
 import { InventoryUI } from './game/ui/InventoryUI';
+import { deviceReadoutText } from './game/ui/DeviceReadout';
 import { BUILDING_DEFINITIONS, getBuildingDefinition, type BuildingDefinition } from './game/data/buildings';
 import type { BuildingComp, BufferSlot, Direction } from './game/components/BuildingComp';
 import { loadItemRegistry } from './game/data/items';
@@ -110,6 +111,19 @@ async function main() {
   help.x = 10;
   help.y = 30;
   app.stage.addChild(help);
+
+  // ── T2.9b: 选中设备最小读数（**临时件**，T2.15 弹窗落地时吸收移除）──
+  // 屏幕空间层单个 Pixi Text（不随 Ctrl+R 视图旋转），4Hz 节流（T1.10 先例）。
+  // 非生产设备（仓库口无任何槽位）deviceReadoutText 返回 null → 隐藏。
+  // 明确不做: 弹窗容器/多行排版/图标/进度条/样式——全部留给 T2.15。
+  const readout = new Text({
+    text: '',
+    style: { fontFamily: 'monospace', fontSize: 14, fill: 0x1a5fb4 },
+  });
+  readout.x = 10;
+  readout.y = 52;
+  readout.visible = false;
+  app.stage.addChild(readout);
 
   // ── T1.7 设备放置: 工具栏 + 放置系统输入转发 ──
   const placement = game.placement;
@@ -341,6 +355,19 @@ async function main() {
       if (text !== lastHudText) {
         lastHudText = text;
         hud.text = text;
+      }
+      // T2.9b 读数（临时件）: 选中设备的缓冲区单行读数；仓库口等无槽位设备 → null 隐藏
+      let readoutTxt: string | null = null;
+      if (devHandle !== null && game.world.isAlive(devHandle)) {
+        const comp = game.world.getComponent<BuildingComp>(devHandle, 'BuildingComp');
+        const def = comp ? getBuildingDefinition(comp.definitionId) : undefined;
+        if (comp && def) readoutTxt = deviceReadoutText(comp, def);
+      }
+      if (readoutTxt !== null) {
+        if (readout.text !== readoutTxt) readout.text = readoutTxt;
+        readout.visible = true;
+      } else {
+        readout.visible = false;
       }
     }
   });
@@ -816,7 +843,12 @@ async function main() {
   const machineSystem = game.initProduction(recipeIndex, itemTable);
   const eventTag = (e: { type: string }): string =>
     e.type === 'input' ? 'T2.6 物流' : e.type === 'output' ? 'T2.7 物流' : 'T2.5 生产';
-  machineSystem.onEvent = (e) => console.log(`[${ts()}] [${eventTag(e)}] ${e.message}`);
+  machineSystem.onEvent = (e) => {
+    // T2.12 仓库口吞吐事件不转发控制台——无限源/汇随物品节奏持续产生（1件/2秒/口），
+    // 转发必然刷屏；recentEvents 环形缓冲仍可经 __game.productionLog() 覆盘验证。
+    if (e.type === 'depot-output' || e.type === 'depot-input') return;
+    console.log(`[${ts()}] [${eventTag(e)}] ${e.message}`);
+  };
 
   // ── T2.4 验收钩子: 输入缓冲区（模拟物品传入，检查 count 与锁定）──
   // injectInput('originium_ore', 3) → "输入槽0: 源矿 × 3/50 (已锁定)"
@@ -1316,8 +1348,49 @@ async function main() {
     }
     return `已忽略（${hint}）`;
   };
+  /** T2.12 一键测试主体（并发/重复保护见 runTest 的 phase 状态机）。
+   * 场景: 仓库取货口(5,5) + 上行带×4 (6,4)→(6,1) + 仓库存货口(5,0)——第一条
+   * 完整物流链（无限源 → 传送带 → 无限汇，无生产环节，玩家肉眼全程可读）。
+   * 演示: 源矿源源不断上带 → 流动 4 格 → 走进存货口消失 → 暂停取货口停供 → 恢复续供。 */
+  const demoT212 = async (): Promise<string> => {
+    console.log(`[${ts()}] ════ T2.12 一键测试: 仓库取货口 → 传送带 → 仓库存货口 ════`);
+    clearAllPlaced();
+    if (!placeAt('depot_unloader', 5, 5)) return 'T2.12 测试失败: 取货口放置失败';
+    if (!placeAt('depot_loader', 5, 0)) return 'T2.12 测试失败: 存货口放置失败';
+    if (spawnBelt([[6, 4], [6, 3], [6, 2], [6, 1]], 270) !== 4) return 'T2.12 测试失败: 传送带创建失败';
+    const depotCount = (type: string): number =>
+      machineSystem.recentEvents.filter((e) => e.type === type).length;
+    const outBase = depotCount('depot-output');
+    const inBase = depotCount('depot-input');
+    console.log(
+      `[${ts()}] [步骤1] 场景就绪: 取货口(5,5) + 上行带×4 + 存货口(5,0)。` +
+      `观察画面: 源矿从取货口上方源源出现（1件/2秒）、沿带上升、走进存货口消失`,
+    );
+    const outOk = await waitFor(() => depotCount('depot-output') - outBase >= 3, 15000);
+    if (!outOk) {
+      console.log(`[${ts()}] T2.12 测试失败: 取货口未输出——仿真时钟未推进（页面在后台被深度节流？切到前台再试）`);
+      return 'T2.12 测试失败: 取货口未输出';
+    }
+    console.log(`[${ts()}] [步骤2] 无限源工作: 取货口已输出 ${depotCount('depot-output') - outBase} 件源矿（beltStatus() 可查带上位置）`);
+    const inOk = await waitFor(() => depotCount('depot-input') - inBase >= 3, 15000);
+    if (!inOk) return 'T2.12 测试失败: 存货口未接收';
+    console.log(`[${ts()}] [步骤3] 无限汇工作: 存货口已接收 ${depotCount('depot-input') - inBase} 件（物品走到端口格中心消失，永不堵塞）`);
+    // 暂停演示: setPaused 缺省操作第一台设备 = 取货口（先放置）
+    setPaused(true);
+    const before = depotCount('depot-output');
+    await sleep(4000);
+    const stopped = depotCount('depot-output') === before;
+    setPaused(false);
+    if (!stopped) return 'T2.12 测试失败: 暂停期间取货口仍在输出';
+    console.log(`[${ts()}] [步骤4] 暂停语义: 取货口 paused 4 秒零输出（对齐 T2.8 生产设备暂停: 视同离线），已恢复`);
+    const resumed = await waitFor(() => depotCount('depot-output') >= before + 2, 10000);
+    if (!resumed) return 'T2.12 测试失败: 恢复后取货口未续供';
+    console.log(`[${ts()}] [步骤5] 恢复续供: 新输出 ${depotCount('depot-output') - before} 件。提示: 点击两个仓库口 → T2.9 读数不显示任何数据（非生产设备，无缓冲区）`);
+    return 'T2.12 一键测试完成（关键观察: 源矿持续上带 → 流动 → 进存货口消失；暂停停供/恢复续供）';
+  };
+
   const TESTS: Record<string, () => Promise<string>> = {
-    t25: demoT25, t26: demoT26, t27: demoT27, t28: demoT28,
+    t25: demoT25, t26: demoT26, t27: demoT27, t28: demoT28, t212: demoT212,
   };
   const runTest = async (name: string): Promise<string> => {
     const demo = TESTS[name];
@@ -1425,6 +1498,9 @@ async function main() {
   console.log('  T2.7 手动: placeAt("refining_unit",5,5) → spawnBelt([[6,4],[6,3]],270) 首段入口朝向顶中输出端口(6,5) → injectOutput("origocrust",5) → 物品逐件出现在带首、一格一件前进(productionStatus() 查输出槽递减); 1格断头带+5件 → 带上1件即满、输出槽留4件 → consumeBeltTailItem() 疏通继续出货');
   console.log('  T2.8 一键测试: __game.test("t28")  ← 复制这一条到控制台回车即可（LOGO 状态图标: 暂停深灰/堵塞红X + 端口黄/红高亮全流程演示）');
   console.log('  T2.8 手动: setPaused(true/false) 手动暂停/恢复（LOGO 换图标、计时冻结） → portStatus() 查端口连接黄/堵塞红（与画面高亮同源） → productionStatus() 对照 "(已暂停)" 标记');
+  console.log('  T2.9 观察: 点击设备 → 屏幕左上显示"输入: x/50 输出: y/50"单行读数（临时件，T2.15 弹窗吸收）；点击仓库口不显示（非生产设备）');
+  console.log('  T2.12 一键测试: __game.test("t212")  ← 复制这一条到控制台回车即可（取货口+4段带+存货口: 源矿持续上带→流动→进存货口消失+暂停/恢复演示）');
+  console.log('  T2.12 手动: 工具栏选"仓库取货口"放置（R 只在水平两档旋转） → E 进创建模式悬停其上方（Status 面板蓝） → 从输出口起带上行 → 末端接"仓库存货口"底边 → 物品流进去消失');
 }
 
 main().catch((err) => {

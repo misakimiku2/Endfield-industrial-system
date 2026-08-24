@@ -55,11 +55,18 @@ console.log('\n[A] BuildingDefinition 数据表 (A3 §1.1)');
     'moulding_unit',
     'seed_picking_unit',
     'planting_unit',
+    // T2.12 仓库取/存货口（非生产设备: 无槽位、无限源/汇）
+    'depot_unloader',
+    'depot_loader',
     // T1.11 九宫格验收 demo 设备（S2 §8-2 任意尺寸正确性，不进 TOOLBAR）
     'test_nineslice_4x3',
     'test_nineslice_6x3',
     'test_nineslice_5x5',
     'test_nineslice_6x6',
+    // T1.12 端口变体验收 demo 设备（S3 §6，不进 TOOLBAR）
+    'test_nineslice_noport',
+    'test_nineslice_liquid_5x5',
+    'test_nineslice_full_5x5',
   ];
   for (const id of expectedIds) {
     const def = getBuildingDefinition(id);
@@ -70,9 +77,15 @@ console.log('\n[A] BuildingDefinition 数据表 (A3 §1.1)');
     assert(def.footprint.w > 0 && def.footprint.h > 0, `  ${id}.footprint 正数 (${def.footprint.w}×${def.footprint.h})`);
     assert(def.texture.length > 0, `  ${id}.texture 非空 ('${def.texture}')`);
     assert(def.selectable === true, `  ${id}.selectable === true`);
-    assert(def.ports.length > 0, `  ${id}.ports 非空 (${def.ports.length} 个)`);
+    // T1.12 test_nineslice_noport 无端口是设计目的（纯底座演示）——端口非空断言跳过它
+    if (id !== 'test_nineslice_noport') {
+      assert(def.ports.length > 0, `  ${id}.ports 非空 (${def.ports.length} 个)`);
+    }
     assert(def.buildCost.length > 0, `  ${id}.buildCost 非空 (Phase 2 备用)`);
-    assert(def.inputSlotCount > 0 && def.outputSlotCount > 0, `  ${id} 槽位数正数 (Phase 2 备用)`);
+    // T2.12 仓库口无槽位（无限源/汇不建模库存）——槽位正数断言只对非 depot 设备成立
+    if (!def.depot) {
+      assert(def.inputSlotCount > 0 && def.outputSlotCount > 0, `  ${id} 槽位数正数 (Phase 2 备用)`);
+    }
   }
   assert(Object.keys(BUILDING_DEFINITIONS).length === expectedIds.length,
     `BUILDING_DEFINITIONS 总数 = ${expectedIds.length} (实际 ${Object.keys(BUILDING_DEFINITIONS).length})`);
@@ -89,9 +102,9 @@ console.log('\n[A] BuildingDefinition 数据表 (A3 §1.1)');
 }
 
 // ───────────────────────── B. TOOLBAR_BUILDINGS ─────────────────────────
-console.log('\n[B] TOOLBAR_BUILDINGS (T1.7 工具栏 4 设备)');
+console.log('\n[B] TOOLBAR_BUILDINGS (T1.7 工具栏，T2.12 起为 6 设备)');
 {
-  assert(TOOLBAR_BUILDINGS.length === 4, `工具栏 4 个设备 (实际 ${TOOLBAR_BUILDINGS.length})`);
+  assert(TOOLBAR_BUILDINGS.length === 6, `工具栏 6 个设备 (实际 ${TOOLBAR_BUILDINGS.length})`);
   const footprints = new Set<number>();
   for (const id of TOOLBAR_BUILDINGS) {
     const def = getBuildingDefinition(id);

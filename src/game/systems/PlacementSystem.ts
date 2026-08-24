@@ -45,12 +45,10 @@ import { PreviewTintFilter } from '../render/PreviewTintFilter';
 import { buildNineSliceBase, buildNineSlicePorts, tintContainer } from '../render/NineSliceAssembler';
 import { portMaskFromDef } from '../render/PortMask';
 import { createBufferSlots } from './machine/BufferOps';
+import { nextScreenAngle, type ScreenAngle } from './RotationPolicy';
 
 /** 放置模式状态。 */
 export type PlacementMode = 'idle' | 'placing';
-
-/** 屏幕呈现角（按 R 递增的量，0/90/180/270）。 */
-type ScreenAngle = 0 | 90 | 180 | 270;
 
 /**
  * sprite.rotation 的符号修正。+1 = sprite.rotation = +worldAngle_rad（标准约定）。
@@ -212,8 +210,12 @@ export class PlacementSystem {
   onKeyDown(code: string): void {
     if (this.mode !== 'placing') return; // R 监听只在放置模式激活（用户强调）
     if (code === 'KeyR') {
-      // R: 屏幕顺时针旋转 90°。绝不直接碰 direction（防错根本）。
-      this.screenAngle = ((this.screenAngle + 90) % 360) as ScreenAngle;
+      // R: 屏幕顺时针旋转。绝不直接碰 direction（防错根本）。步进由 RotationPolicy
+      // 决定: 正方形占地 90° 四档循环；非正方形（3×1 仓库口等）180° 两档——
+      // 90° 会把端口旋出占地（A3 §6 旋转不换占地，rotatePort 数学仅对正方形自洽）。
+      if (this.currentDef) {
+        this.screenAngle = nextScreenAngle(this.screenAngle, this.currentDef.footprint);
+      }
       this.refreshPreview();
     } else if (code === 'Escape') {
       this.exitMode();

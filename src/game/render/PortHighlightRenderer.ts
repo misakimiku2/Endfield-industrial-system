@@ -62,6 +62,11 @@ interface PortEntry {
   /** 每端口堵塞渐变进度 0~1（面板黄→红 / 箭头灰→白），随 deltaMS 向目标趋近。 */
   inBlends: number[];
   outBlends: number[];
+  /**
+   * T2.12 仓库口 Status 面板 Sprite（`${texture}/status` 层帧，白色源 × tint）。
+   * 整图设备（无端口帧）在创建模式下的悬停/起点高亮面；普通设备该帧不存在 → null。
+   */
+  statusSprite: Sprite | null;
 }
 
 /**
@@ -77,6 +82,8 @@ export class PortHighlightRenderer {
   private isCreateMode: () => boolean;
   /** 查询当前悬停的输出端口格（创建模式下用于悬停淡蓝高亮）。 */
   private getHoveredPortCell: () => { x: number; y: number } | null;
+  /** 查询当前悬停的任意端口格（含输入口；T2.12 仓库口 Status 高亮用）。 */
+  private getHoveredAnyPortCell: () => { x: number; y: number } | null;
 
   constructor(
     world: World,
@@ -84,12 +91,14 @@ export class PortHighlightRenderer {
     getTexture: TextureLookup,
     isCreateMode?: () => boolean,
     getHoveredPortCell?: () => { x: number; y: number } | null,
+    getHoveredAnyPortCell?: () => { x: number; y: number } | null,
   ) {
     this.world = world;
     this.getTexture = getTexture;
     this.layer = layer;
     this.isCreateMode = isCreateMode ?? (() => false);
     this.getHoveredPortCell = getHoveredPortCell ?? (() => null);
+    this.getHoveredAnyPortCell = getHoveredAnyPortCell ?? (() => null);
   }
 
   /**
@@ -134,10 +143,13 @@ export class PortHighlightRenderer {
       // 悬停的端口用更淡的蓝 #A8D4F5 提示可点击。
       const createMode = this.isCreateMode();
       const hoveredCell = createMode ? this.getHoveredPortCell() : null;
+      // T2.12: 任意端口格悬停（含输入口），每帧查一次供全部仓库口的 Status 高亮共用
+      const hoveredAny = createMode ? this.getHoveredAnyPortCell() : null;
       const inSt = inputPortStatuses(this.world, beltAt, handle, comp, def);
       const outSt = outputPortStatuses(this.world, beltAt, handle, comp, def);
       this.applyPorts(entry.inSprites, entry.inArrows, entry.inBlends, inSt, blendStep, false, createMode, hoveredCell, null);
       this.applyPorts(entry.outSprites, entry.outArrows, entry.outBlends, outSt, blendStep, true, createMode, hoveredCell, entry.outMidSprites);
+      this.applyDepotStatus(entry, inSt, outSt, createMode, hoveredAny);
     }
   }
 
@@ -179,7 +191,41 @@ export class PortHighlightRenderer {
       outMidSprites.push(mk(`${def.texture}/port-mid-out-${i}`, -1)); // 主体面板（悬停，在 top 下方，同素材 ports 在 ports_top 下方）
       outBlends.push(0);
     }
-    return { container, inSprites, outSprites, inArrows, outArrows, outMidSprites, inBlends, outBlends };
+    const statusSprite = mk(`${def.texture}/status`, 5); // T2.12 仓库口 Status 面板（帧不存在 → null）
+    return { container, inSprites, outSprites, inArrows, outArrows, outMidSprites, inBlends, outBlends, statusSprite };
+  }
+
+  /**
+   * T2.12 仓库口 Status 面板高亮（整图设备无端口帧，Status 层帧为高亮面）：
+   *   - 取货口（有输出口）: 创建模式常显蓝 #80BEE9（"可连接起点"提示，对称普通设备
+   *     输出口蓝），悬停任一输出端口格 → 淡蓝 #A8D4F5；
+   *   - 存货口（无输出口）: 仅悬停其输入端口格时淡蓝（提示"传送带可接入此处"；
+   *     输入口不是合法起点，"非起点"提示属 T2.16）。
+   * 非创建模式隐藏——连接黄/堵塞红的 T2.8 语义不适用无限源/汇（永不堵塞）。
+   */
+  private applyDepotStatus(
+    entry: PortEntry,
+    inSt: PortStatus[],
+    outSt: PortStatus[],
+    createMode: boolean,
+    hoveredAny: { x: number; y: number } | null,
+  ): void {
+    const s = entry.statusSprite;
+    if (!s || !createMode) {
+      if (s) s.visible = false;
+      return;
+    }
+    const hoverOut = hoveredAny !== null && outSt.some((p) => p.x === hoveredAny.x && p.y === hoveredAny.y);
+    const hoverIn = hoveredAny !== null && inSt.some((p) => p.x === hoveredAny.x && p.y === hoveredAny.y);
+    if (outSt.length > 0) {
+      s.visible = true;
+      s.tint = hoverOut ? PORT_CREATE_HOVER_TINT : PORT_CREATE_TINT;
+    } else if (hoverIn) {
+      s.visible = true;
+      s.tint = PORT_CREATE_HOVER_TINT;
+    } else {
+      s.visible = false;
+    }
   }
 
   /**

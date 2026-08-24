@@ -160,6 +160,7 @@ export class RenderSystem {
     renderer?: Renderer,
     isBeltCreationActive?: () => boolean,
     getHoveredPortCell?: () => { x: number; y: number } | null,
+    getHoveredAnyPortCell?: () => { x: number; y: number } | null,
   ) {
     this.world = world;
     this.layers = layers;
@@ -178,6 +179,7 @@ export class RenderSystem {
     this.beltHoverRenderer = new BeltHoverRenderer(world, camera, layers.layer2Building);
     this.portHighlightRenderer = new PortHighlightRenderer(
       world, layers.layer3Item, getTexture, isBeltCreationActive, getHoveredPortCell,
+      getHoveredAnyPortCell,
     );
   }
 

@@ -96,6 +96,10 @@ export const DEVICE_FILES: readonly string[] = [
   // T2.8 状态徽标（billboard LOGO 状态切换用，随设备层 4× 栅格化）
   'Pause_Logo.svg',
   'Blocked_Logo.svg',
+  // T2.12 仓库取/存货口单层 billboard LOGO（src/assets/svg/LOGO/ 子目录；
+  // 打包按 basename 分类，无需带目录前缀）
+  'Depot_Loader_logo.svg',
+  'Depot_Unloader_logo.svg',
   // T1.11 九宫格底座切片源（不输出主帧，只输出 nineslice/* 9 切片帧，见 NINESLICE_FILES）
   'nineslice_unit.svg',
 ];
@@ -136,7 +140,7 @@ export const NINESLICE_DECO_MARGIN_SRC_PX = 8;
  *   - state-*: 预留未来状态层
  */
 export const DEVICE_LAYER_WHITELIST: { exact: readonly string[]; prefixes: readonly string[] } = {
-  exact: ['logo', 'logo-glow'],
+  exact: ['logo', 'logo-glow', 'status'],
   prefixes: ['port-', 'arrow-', 'state-'],
 };
 
