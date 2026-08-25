@@ -1426,9 +1426,10 @@ async function main() {
     return true;
   };
   /** T2.10 一键测试主体（并发/重复保护见 runTest 的 phase 状态机）。
-   * 场景A（输入轮询）: 精炼炉三侧各一条供给带，晶体外壳作原料（无配方匹配 → 设备
-   *   恒 idle 零结算干扰）。满槽每次 consumeInput 腾 1 位 → 观察补货顺序
-   *   左→中→右 轮转（事件 portIndex 序 [0,1,2]×2）。
+   * 场景A（输入轮询·3 格供给带）: 精炼炉三侧各一条 3 格供给带，晶体外壳作原料
+   *   （无配方匹配 → 设备恒 idle 零结算干扰）。两波"车队": 每波三件同时从链头
+   *   上带、行进 3 格（约 5 秒）同时抵达门口，随后按指针顺序依次吸入（左→中→右），
+   *   未轮到的两件可见地停在门口等待；两波验证轮转与回绕（[0,1,2]×2）。
    * 场景B（输出轮转·可见版）: 预注源矿连续生产（1件/2秒），三个输出口各接 3 格
    *   传送带汇入顶部存货口 → 产物每 2 秒出现在下一条带首（输出口1→2→3 循环），
    *   沿带流动 3 格消失——轮询次序肉眼可辨。
@@ -1441,53 +1442,55 @@ async function main() {
     const outputPortsOf = (): number[] =>
       machineSystem.recentEvents.filter((e) => e.type === 'output').map((e) => e.portIndex ?? -1);
 
-    // ── 场景A: 输入轮询（左→中→右）──
+    // ── 场景A: 输入轮询（左→中→右·3 格供给带动画版）──
     clearAllPlaced();
     if (!placeAt('refining_unit', 5, 5)) return 'T2.10 测试失败: 精炼炉放置失败';
-    const SUPPLY: Array<[number, number]> = [[5, 8], [6, 8], [7, 8]]; // 左/中/右输入口的供给格
-    for (const [x, y] of SUPPLY) {
-      if (spawnBelt([[x, y]], 270) !== 1) return 'T2.10 测试失败: 供给带创建失败';
+    // 三条 3 格供给带: 链头 (x,10) 注入 → 经 (x,9) → 门口格 (x,8)（输入口 (x,7) 的供给格）
+    const SUPPLY_HEADS: Array<[number, number]> = [[5, 10], [6, 10], [7, 10]];
+    for (const [x] of SUPPLY_HEADS) {
+      if (spawnBelt([[x, 10], [x, 9], [x, 8]], 270) !== 3) return 'T2.10 测试失败: 3 格供给带创建失败';
     }
     // 关键: 用晶体外壳作原料——精炼炉没有以它为原料的配方 → 设备恒 idle、零结算，
     // 输入槽只被本测试的 consumeInput 腾位（若用源矿，生产每 2 秒结算一次会插入额外补货）
     injectInput('origocrust', 50); // 满槽锁定: 每次腾 1 位 → 补货顺序肉眼可辨
-    console.log(`[${ts()}] [步骤1] 场景A就绪: 精炼炉(5,5) + 左/中/右三条供给带（晶体外壳作原料，无配方匹配 → 无生产干扰）。` +
-      `输入槽满载，每次腾出 1 个空位，观察哪个输入口被轮到`);
+    console.log(`[${ts()}] [步骤1] 场景A就绪: 精炼炉(5,5) + 左/中/右三条 3 格供给带（晶体外壳作原料，无配方匹配 → 无生产干扰）。` +
+      `输入槽满载。接下来两波"车队": 每波三件同时上带行进 3 格（约 5 秒），抵达门口后按轮询顺序依次被吸入——` +
+      `观察哪件先消失、哪两件停在门口等待`);
     const seqIn: number[] = [];
-    for (let i = 0; i < 6; i++) {
-      // 等全部供给格门口复位（上一轮的预约物品已走进设备消失，无 entering 残留）——
-      // 条件等待而非固定 sleep，免疫真实仿真的节奏抖动
-      const doorsSettled = await waitFor(() => SUPPLY.every(([x, y]) => {
-        const seg = beltAtCell(x, y);
-        return !seg || seg.items.every((it) => !it.entering);
-      }), 8000);
-      if (!doorsSettled) {
-        console.log(`[${ts()}] T2.10 测试失败: 8 秒内门口物品未完成进设备（仿真未推进？切前台重试）`);
-        return 'T2.10 测试失败: 门口物品未复位';
+    for (let convoy = 0; convoy < 2; convoy++) {
+      // 等三条供给链完全清空（上一波全部进设备: 无在途/无门口停车/无 entering 残留）
+      const cleared = await waitFor(() => SUPPLY_HEADS.every(([x]) =>
+        [8, 9, 10].every((y) => (beltAtCell(x, y)?.items.length ?? 0) === 0)), 15000);
+      if (!cleared) {
+        console.log(`[${ts()}] T2.10 测试失败: 15 秒内供给链未清空（仿真未推进？切前台重试）:\n${beltStatus()}`);
+        return 'T2.10 测试失败: 供给链未复位';
       }
-      // 门口为空的供给格补一件晶体外壳
-      for (const [x, y] of SUPPLY) {
-        const seg = beltAtCell(x, y);
-        if (seg && seg.items.length === 0) {
-          seg.items.push({ itemId: 'origocrust', progress: BeltSystem.beltPhase, delta: 0 });
+      // 三条链头同时各注一件（同一 beltPhase → 三件同步行进，同时抵达门口）
+      for (const [x, y] of SUPPLY_HEADS) {
+        beltAtCell(x, y)?.items.push({ itemId: 'origocrust', progress: BeltSystem.beltPhase, delta: 0 });
+      }
+      for (let k = 0; k < 3; k++) {
+        if (k > 0) await sleep(2000); // 节奏停顿: 看清每个输入口依次"吞"掉门口那件
+        const before = inputPortsOf().length;
+        consumeInput(1); // 腾出 1 个空位（第 1 件等行进到门口 ~5 秒后被吸；后 2 件吃门口停车即时吸入）
+        const landed = await waitFor(() => inputPortsOf().length - before >= 1, 15000);
+        const evs = inputPortsOf().slice(before);
+        seqIn.push(...evs);
+        if (!landed || evs.length !== 1) {
+          console.log(`[${ts()}] T2.10 测试失败: 第 ${convoy + 1} 波第 ${k + 1} 位未按时吸入（${JSON.stringify(evs)}）:\n${beltStatus()}`);
+          return 'T2.10 测试失败: 补货未按时落地';
         }
+        console.log(
+          `[${ts()}] [步骤2-${convoy * 3 + k + 1}/6] 第 ${convoy + 1} 波 → 本次补货端口: 输入口${evs[0] + 1}` +
+          `　累计序列: ${seqIn.map((p) => p + 1).join('→')}`,
+        );
       }
-      const before = inputPortsOf().length;
-      consumeInput(1); // 模拟一次结算扣料: 满→49（恰好 1 个空位）
-      await waitFor(() => inputPortsOf().length - before >= 1, 5000); // 等本次吸入落地
-      const evs = inputPortsOf().slice(before);
-      seqIn.push(...evs);
-      console.log(
-        `[${ts()}] [步骤2-${i + 1}/6] 腾出 1 位 → 本次补货端口: ` +
-        (evs.length === 1 ? `输入口${evs[0] + 1}` : `(异常 ${JSON.stringify(evs)})`) +
-        `　累计序列: ${seqIn.map((p) => p + 1).join('→') || '(空)'}`,
-      );
     }
     if (JSON.stringify(seqIn) !== JSON.stringify([0, 1, 2, 0, 1, 2])) {
       console.log(`[${ts()}] T2.10 测试失败: 输入补货序列应为 左→中→右×2（实际 ${JSON.stringify(seqIn)}）:\n${portStatus()}`);
       return 'T2.10 测试失败: 输入轮询顺序异常';
     }
-    console.log(`[${ts()}] [步骤3] ✅ 输入轮询验证通过: 补货顺序 左→中→右→左→中→右（指针满载冻结、轮转不重置）`);
+    console.log(`[${ts()}] [步骤3] ✅ 输入轮询验证通过: 两波各按 左→中→右 吸入（指针满载冻结、轮转不重置）`);
 
     // ── 场景B: 输出轮转（连续生产·可见版）──
     // 预注源矿让设备 1 件/2 秒稳定产出 → 每次只有 1 件产物待出货 → 轮询严格逐件
@@ -1688,7 +1691,7 @@ async function main() {
   console.log('  T2.9 观察: 点击设备 → 屏幕左上显示"输入: x/50 输出: y/50"单行读数（临时件，T2.15 弹窗吸收）；点击仓库口不显示（非生产设备）');
   console.log('  T2.12 一键测试: __game.test("t212")  ← 复制这一条到控制台回车即可（取货口+4段带+存货口: 源矿持续上带→流动→进存货口消失+暂停/恢复演示）');
   console.log('  T2.12 手动: 工具栏选"仓库取货口"放置（R 只在水平两档旋转） → E 进创建模式悬停其上方（Status 面板蓝） → 从输出口起带上行 → 末端接"仓库存货口"底边 → 物品流进去消失');
-  console.log('  T2.10 一键测试: __game.test("t210")  ← 复制这一条到控制台回车即可（3入补货 左→中→右×2；3出连续生产轮转 1→2→3（3格带流动动画）；中带堵塞跳过+恢复 左→右→中；约 1 分钟）');
+  console.log('  T2.10 一键测试: __game.test("t210")  ← 复制这一条到控制台回车即可（3入: 两波车队沿 3 格供给带行进、按 左→中→右 依次吸入；3出: 连续生产轮转 1→2→3（3格带流动动画）；中带堵塞跳过+恢复 左→右→中；约 1.5 分钟）');
   console.log('  T2.10 手动: portStatus() 查看"输入轮询指针/输出轮询队列"（与 productionLog() 的 输入口N/输出口N 序号对照）；多口接带时满槽腾位看补货顺序、堵一条带看出货跳过与疏通恢复');
 }
 
