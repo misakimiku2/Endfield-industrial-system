@@ -22,9 +22,9 @@
 // 吸入副作用 (A9 §3.6 三件套): 槽 count+1 + 空槽锁定类型由阶段1 tryAcceptItem 完成
 //   （BufferOps，A8 §2.1 输入槽规则），items[] 移除由阶段2完成——拆成两 Tick 相位
 //   只是视觉行程（物品从门口走进设备内部），槽位语义在预约瞬间已一致。
-// 节流 (A8 §4.1): 每个输入端口每 Tick 至多预约 1 件（只看队首）。多端口轮询指针
-//   (inputPollIndex) 按任务划分属 T2.10——本模块按端口定义序遍历，对当前全部
-//   单输入槽设备行为等价（左→中→右按定义顺序依次尝试）。
+// 节流 (A8 §4.1): 每个输入端口每走访至多预约 1 件（只看队首）。多端口轮询指针
+//   (inputPollIndex) 已由 T2.10 实现于 MachineSystem.absorbBeltInputs——本模块只提供
+//   单口预约/放行原语，走访顺序（从指针起循环、满载冻结）由调用方决定。
 
 import type { World, EntityHandle } from '../../ECS.ts';
 import type { Position } from '../../components/Position.ts';

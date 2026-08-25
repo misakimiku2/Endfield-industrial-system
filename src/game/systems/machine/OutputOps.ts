@@ -17,8 +17,9 @@
 //   循环一次，≤0.5 的窗口每秒一次 → 空带吞吐 1 件/2 秒，恰与全部已定义配方节拍一致。
 // 满带判定 (一格一物品): 只往**空段**注入——段上已有物品即满，物品留在输出槽，
 //   每 Tick 重试（带腾位即恢复，对称 T2.6 疏通）。吞吐 1 件/格 × 0.5 格/秒 = 每 2 秒 1 件。
-// 节流 (A8 §4.2): 每个输出端口每 Tick 至多放出 1 件。多端口轮询指针
-//   (outputPollIndex) 按任务划分属 T2.10——本模块按端口定义序遍历（左→中→右）。
+// 节流 (A8 §4.2): 每个输出端口每 Tick 至多放出 1 件。多端口轮询（活跃队列轮转/
+//   堵塞移出/恢复追加队尾）已由 T2.10 实现于 MachineSystem.emitBeltOutputs——本模块
+//   只提供单口注入原语 tryEmitToBelt 与连接判定。
 
 import type { World, EntityHandle } from '../../ECS.ts';
 import type { BeltSegmentComp } from '../../components/BeltSegmentComp.ts';

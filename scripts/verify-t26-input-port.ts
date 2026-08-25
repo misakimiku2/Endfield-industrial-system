@@ -15,7 +15,7 @@
 //   BeltSystem + MachineSystem 集成（真实 World，DD-010 顺序 belt→machine）:
 //     5. 物品从段首走到门口(0.5) → 同 Tick 预约（槽+1）→ 走进设备(progress 越过 0.5 前进)
 //        → 到端口格中心(1.5) → 段上物品消失
-//     6. 吸入事件消息: "精炼炉: 吸入 源矿 ×1（传送带 → 输入槽）"（预约时刻发）
+//     6. 吸入事件消息: "精炼炉: 吸入 源矿 ×1（传送带 → 输入口2）"（预约时刻发；T2.10 起带端口序号）
 //     7. 输入槽满 50/50 → 物品停在门口 progress=0.5 不动，数量不变
 //     8. 疏通恢复: 扣 1 腾位 → 门口物品被预约（槽回 50）→ 走进设备 → 段上清空
 //     9. 类型锁定: 槽锁蓝铁矿、带上是源矿 → 物品停在门口不吸入
@@ -34,7 +34,7 @@ import {
   buildItemRegistry,
 } from '../src/game/data/items.ts';
 import { parseRecipeCsv, buildRecipeIndex } from '../src/game/data/recipes.ts';
-import { BUILDING_DEFINITIONS } from '../src/game/data/buildings.ts';
+import { BUILDING_DEFINITIONS, createOutputPollQueue } from '../src/game/data/buildings.ts';
 import { createBufferSlots, consumeFromSlot } from '../src/game/systems/machine/BufferOps.ts';
 import {
   inputPortCells,
@@ -121,6 +121,7 @@ console.log('[tryAbsorbHeadItem 预约判定 + releaseArrivedItems 放行]');
   const comp: BuildingComp = {
     definitionId: 'refining_unit', direction: 0, state: 'idle',
     bufferInput: createBufferSlots(1), bufferOutput: createBufferSlots(1),
+    inputPollIndex: 0, outputPollQueue: [0, 1, 2], // T2.10（tryAbsorbHeadItem 不读轮询状态，占位补形）
     currentRecipeId: null, progress: 0, elapsed: 0,
   };
   const mk = (items: Array<[string, number, boolean?]>): BeltSegmentComp => ({
@@ -173,6 +174,7 @@ const place = (gx: number, gy: number, dir: 0 | 90 | 180 | 270 = 0): BuildingCom
     definitionId: 'refining_unit', direction: dir, state: 'idle',
     bufferInput: createBufferSlots(def.inputSlotCount),
     bufferOutput: createBufferSlots(def.outputSlotCount),
+    inputPollIndex: 0, outputPollQueue: createOutputPollQueue(def), // T2.10
     currentRecipeId: null, progress: 0, elapsed: 0,
   };
   // 场景确定性（与 demoT26/浏览器验收同手法）: 输出槽注满 → 设备 blocked，
@@ -213,7 +215,7 @@ assert(b1.items.length === 1 && b1.items[0].entering === true && b1.items[0].pro
 tick(40); // 0.5→1.5 需 40 Tick（走进设备半格深处），到 1.5 由 releaseArrivedItems 移除
 assertEq(b1.items.length, 0, '5c. 物品到达端口格中心(1.5) → 段上消失（视觉走进设备内部）');
 assert(inputEvents.some((m) => m.includes('吸入 源矿 ×1')),
-  '6. 吸入事件消息: "精炼炉: 吸入 源矿 ×1（传送带 → 输入槽）"（预约时刻发）');
+  '6. 吸入事件消息: "精炼炉: 吸入 源矿 ×1（传送带 → 输入口2）"（预约时刻发；底中口=定义序#1，T2.10 起消息带端口序号）');
 
 // 7/8: 满槽堵停 → 疏通恢复
 const f2 = place(10, 5); // 底中端口 (11,7)，供给带 (11,8)

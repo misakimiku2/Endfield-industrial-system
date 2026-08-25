@@ -38,6 +38,7 @@ import type { SceneLayers } from '../render/SceneRenderer';
 import type { TextureLookup } from './RenderSystem';
 import type { AtlasGroup } from '../render/AssetsLoader';
 import type { BuildingDefinition } from '../data/buildings';
+import { createOutputPollQueue } from '../data/buildings';
 import type { Direction } from '../components/BuildingComp';
 import type { OccupancyMap } from '../world/OccupancyMap';
 import { CELL_SIZE } from '../render/constants';
@@ -418,6 +419,8 @@ export class PlacementSystem {
       paused: false, // T2.8: 玩家手动暂停（默认运行中）
       bufferInput: createBufferSlots(def.inputSlotCount), // T2.4: 放置即建输入缓冲区（全空槽）
       bufferOutput: createBufferSlots(def.outputSlotCount), // T2.5: 输出缓冲区（一槽一物，全空槽）
+      inputPollIndex: 0, // T2.10: 输入轮询指针从定义序首口（左）开始
+      outputPollQueue: createOutputPollQueue(def), // T2.10: 输出轮询队列=全部输出端口按定义序
       currentRecipeId: null, // T2.5: 生产计时字段（A8 §3.1），放置时无生产任务
       progress: 0,
       elapsed: 0,

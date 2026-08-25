@@ -89,6 +89,7 @@ console.log('[PortStatusOps 端口连接/堵塞判定]');
   const mkComp = (dir: 0 | 90 | 180 | 270 = 0): BuildingComp => ({
     definitionId: 'refining_unit', direction: dir, state: 'idle', paused: false,
     bufferInput: createBufferSlots(1), bufferOutput: createBufferSlots(1),
+    inputPollIndex: 0, outputPollQueue: [0, 1, 2], // T2.10（PortStatusOps 不读轮询状态，占位补形）
     currentRecipeId: null, progress: 0, elapsed: 0,
   });
   const addBelt = (
@@ -215,6 +216,7 @@ const place = (gx: number, gy: number, dir: 0 | 90 | 180 | 270 = 0): { h: number
   const comp: BuildingComp = {
     definitionId: 'refining_unit', direction: dir, state: 'idle', paused: false,
     bufferInput: createBufferSlots(1), bufferOutput: createBufferSlots(1),
+    inputPollIndex: 0, outputPollQueue: [0, 1, 2], // T2.10
     currentRecipeId: null, progress: 0, elapsed: 0,
   };
   world.addComponent(handle, 'BuildingComp', comp);

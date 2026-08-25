@@ -5,8 +5,9 @@
 //   definitionId (指向 BuildingDefinition) + direction (世界朝向) + state (恒 idle)。
 // Phase 2 按任务扩展: T2.4 加 bufferInput（输入缓冲区）；
 //   T2.5 加 bufferOutput + 生产计时字段（currentRecipeId/progress/elapsed，A3 §3/A8 §3.1），
-//   state 扩展为完整状态机 'idle' | 'working' | 'blocked'（A8 §6）。
-//   端口轮询指针 (inputPollIndex/outputPollIndex) 由 T2.10 再加，避免引入未使用的结构。
+//   state 扩展为完整状态机 'idle' | 'working' | 'blocked'（A8 §6）；
+//   T2.8 加 paused（玩家手动暂停）；T2.10 加端口轮询状态（inputPollIndex 指针 +
+//   outputPollQueue 活跃队列，A3 §3.2/A8 §4）。
 //
 // direction (A3 §3.3) 是**世界相对**存储的朝向 (存档/模拟都用世界朝向):
 //   0°=朝右, 90°=朝下, 180°=朝左, 270°=朝上。
@@ -91,4 +92,20 @@ export interface BuildingComp {
   progress: number;
   /** 已消耗生产时间 ms (A8 §3.2)。每 Tick +50ms，不存 Component 之外的派生量。 */
   elapsed: number;
+  /**
+   * 输入轮询指针 (A8 §4.1/A3 §3.2，T2.10)。下一个尝试预约的输入端口下标——
+   * inputPortCells 过滤序（定义序，即"左→中→右"连接序；设备旋转只改端口世界位置，
+   * 不改定义序）。预约成功或端口跳过（无供给带/类型不符/未到门口）指针都 +1（mod n）；
+   * 全部输入槽满载时冻结不动、不重置（A8 §4.1"轮询指针不重置"，精炼炉设备说明
+   * "A 成功那么下一次应该直接轮到 B"）。放置时初始化 0。
+   */
+  inputPollIndex: number;
+  /**
+   * 输出轮询队列 (A8 §4.2，T2.10)。按当前轮询序排列的**活跃**输出端口下标
+   * （outputPortCells 过滤序）。出货成功的端口移到队尾（轮转）；出货失败的端口
+   * （无接收带 / 满带一格一物品）移出队列——堵塞集 = 全部输出端口 − 本队列
+   * （派生值不落盘，DD-012 存档只需保存本字段），恢复探测成功后追加到队尾
+   * （A8 §4.2"追加到当前轮询顺序的末尾，不插回原位"）。放置时初始化为全部端口。
+   */
+  outputPollQueue: number[];
 }

@@ -1,6 +1,8 @@
 // 机器系统 — T2.5 生产计时与生产循环 + T2.6 传送带→设备输入对接 + T2.7 设备→传送带输出对接
-// 依据: implementation-phase-2.md T2.5/T2.6/T2.7、A8 §3 (生产计时系统)、§6 (状态机)、§7 (Tick 内执行顺序)、
-//       §4.1 (输入轮询)、§4.2 (输出轮询)、A9 §2.3(最小间距)/§6.7 (端口连接判定)、A5 §5/DD-010
+//           + T2.10 端口轮询（输入指针轮询 / 输出队列轮转）
+// 依据: implementation-phase-2.md T2.5/T2.6/T2.7/T2.10、A8 §3 (生产计时系统)、§6 (状态机)、
+//       §7 (Tick 内执行顺序)、§4.1 (输入轮询)、§4.2 (输出轮询)、A9 §2.3(最小间距)/§6.7
+//       (端口连接判定)、A3 §3.2 (轮询规则)、精炼炉设备说明.md（轮询次序示例）、A5 §5/DD-010
 //
 // 每 Simulation Tick 对每台带 BuildingComp 的设备执行 A8 §7:
 //   1. 更新设备内部状态 (T2.5):
@@ -9,18 +11,16 @@
 //       输出槽满 → blocked 暂缓（原料不扣，留在输入槽），之后每 Tick 重试，
 //       输出腾出空间即完成暂缓的结算（A8 §2.2/§6.2）
 //   1c. 无计时 → 匹配配方启动新计时（**不扣原料**）；结算成功后同 Tick 立即续启下一次
-//   2. 输入物流 (T2.6): 每个输入端口找指向它的供给传送带（A9 §6.7），
-//       预约制两阶段——队首物品停在供给格中心(0.5)时预约（槽 count+1 + entering，
-//       tryAcceptItem 判定"空槽或锁定同类型未满"，满则物品留在传送带上），
-//       预约物品由 BeltSystem 放行推进到端口格中心(1.5)，本系统在 ≥1.5 时移除
-//       （视觉消失走进设备半格深处，A9 §3.3 修订/精炼炉设备说明）。
-//       吸入不依赖配方——仓库类设备（T2.12）同走此路径。每端口每 Tick 至多预约
-//       1 件 (A8 §4.1)；多端口轮询指针 inputPollIndex 属 T2.10，本版按端口定义序
-//       遍历（单输入槽设备等价）。
-//   3. 输出物流 (T2.7): 每个输出端口找入口朝向它的接收传送带（A9 §6.7 "背离设备"），
-//       从输出槽放 1 件到段首（beltPhase 相位注入，物品=实体 pointer；入口间距不足
-//       → 满带，物品留在输出槽，下 Tick 重试，OutputOps 详注）。每端口每 Tick 至多
-//       1 件 (A8 §4.2)；多端口轮询指针 outputPollIndex 属 T2.10，本版按端口定义序遍历。
+//   2. 输入物流 (T2.6 预约制 + T2.10 轮询): 先对全部输入口放行走到端口格中心(1.5)的
+//       预约物品（视觉行程与轮询解耦），再从 inputPollIndex 指针端口起循环走访一圈
+//       预约停在供给格中心(0.5)的队首——成功/跳过指针都前进，全部输入槽满则冻结不重置
+//       （A8 §4.1；每端口每走访至多预约 1 件）。吸入不依赖配方——仓库类设备（T2.12）
+//       同走物流路径（仓库口自身走 def.depot 分支，无限源/汇无公平性诉求，保持定义序）。
+//   3. 输出物流 (T2.7 注入纪律 + T2.10 轮询): 相位窗口（beltPhase ≤ STOP_MAX）为全局
+//       闸门，窗口外整步跳过且不动 outputPollQueue；窗口内按活跃队列轮转出货——成功
+//       移队尾、失败移出（堵塞集=全部端口−队列），堵塞端口每 Tick 探测真实出货，
+//       恢复追加队尾（A8 §4.2"顺序 1-2-3-1-2-3…；堵塞跳过；恢复追加到末尾"）。
+//       每端口每 Tick 至多 1 件 (A8 §4.2)；注入相位 = beltPhase（物品=实体 pointer）。
 //
 // 状态机 (A8 §6): idle ↔ working ↔ blocked，转换全部由本系统驱动：
 //   idle→working 启动计时；working→idle 结算后无后续配方；working→blocked 计时完成但输出满；
@@ -41,6 +41,7 @@ import { formatRecipeSummary } from '../data/recipes.ts';
 import type { ItemRegistry } from '../data/items.ts';
 import { getBuildingDefinition, type BuildingDefinition } from '../data/buildings.ts';
 import { CELL_SIZE } from '../render/constants.ts';
+import { STOP_MAX, BeltSystem } from './BeltSystem.ts';
 import {
   findMatchingRecipe,
   planRecipeInputs,
@@ -75,6 +76,12 @@ export interface ProductionEvent {
   handle: EntityHandle;
   /** 关联配方 id；input 事件无配方（不适用）。 */
   recipeId?: string;
+  /**
+   * T2.10 轮询端口下标。type='input' → 输入端口过滤序（定义序左→中→右）中的下标；
+   * type='output' → 输出端口过滤序中的下标；其余类型不带。
+   * 供脚本断言轮询顺序（消息文案里同序号以"输入口N/输出口N"呈现）。
+   */
+  portIndex?: number;
   /** 控制台可读消息（T2.5/T2.6 验收格式） */
   message: string;
 }
@@ -324,12 +331,19 @@ export class MachineSystem implements SimulationSystem {
   }
 
   /**
-   * A8 §7 步骤2 (T2.6): 输入物流。对每个输入端口（定义序=连接序）找指向它的供给
-   * 传送带段（A9 §6.7），先放行已走到端口格中心(1.5)的预约物品（releaseArrivedItems，
-   * 阶段2），再预约停在供给格中心(0.5)的队首物品（tryAbsorbHeadItem，阶段1: 槽
-   * count+1 + entering=true）；槽满/类型不符则物品留在传送带上（每 Tick 重试，槽
-   * 腾出即预约，A9 §3.5）。每端口每 Tick 至多预约 1 件（放行不占节流——槽位在
-   * 预约时刻已占用，放行只是完成视觉行程）。
+   * A8 §7 步骤2 (T2.6 预约制 + T2.10 输入轮询)。
+   * 两段式，放行与预约解耦:
+   *   ① 放行扫描（全部输入口、定义序）: releaseArrivedItems 移除走到端口格中心(1.5)
+   *      的预约物品——entering 物品的视觉行程不依赖轮询指针（指针跳过的端口也要放行，
+   *      否则物品滞留在设备半格深处占住供给格）。
+   *   ② 预约轮询（A8 §4.1）: 从 inputPollIndex 指向的端口起循环走访一圈，对每口
+   *      tryAbsorbHeadItem 预约停在供给格中心(0.5)的队首。成功或跳过（无供给带/
+   *      类型不符/未到门口）指针都 +1（mod n）；走访前/补货后检测"全部输入槽满"
+   *      → 冻结: 指针保持不动不重置（A8 §4.1"轮询指针不重置"，精炼炉设备说明
+   *      "A 补完之后…再降到 49 时 B 开始补货"的轮转次序）。
+   * 满载早退放在放行之后——满载只冻结**新预约**，已预约物品照常进门。
+   * 端口序 = inputPortCells 过滤序 = 定义序"左→中→右"；设备旋转只改端口世界位置，
+   * 不改定义序，轮询次序与朝向无关。
    */
   private absorbBeltInputs(
     world: World,
@@ -342,26 +356,57 @@ export class MachineSystem implements SimulationSystem {
     if (!pos) return;
     const gx = Math.round(pos.x / CELL_SIZE);
     const gy = Math.round(pos.y / CELL_SIZE);
-    for (const cell of inputPortCells(gx, gy, def, comp.direction)) {
+    const cells = inputPortCells(gx, gy, def, comp.direction);
+    const n = cells.length;
+    if (n === 0) return;
+    const capacity = def.bufferCapacity;
+
+    // ① 放行扫描: 全部输入口的 entering 物品走到 1.5 即移除（与指针无关）
+    for (const cell of cells) {
       const feeder = findFeederBelt(world, beltAt, cell);
       if (feeder === null) continue;
       const seg = world.getComponent<BeltSegmentComp>(feeder, 'BeltSegmentComp');
       if (!seg) continue;
-      releaseArrivedItems(seg); // 阶段2: 走到端口格中心的预约物品移除（视觉消失）
-      const absorbed = tryAbsorbHeadItem(seg, comp, def.bufferCapacity); // 阶段1: 门口物品预约
-      if (absorbed !== null) {
-        this.emit({
-          type: 'input', handle,
-          message: `${def.name}: 吸入 ${this.nameOf(absorbed)} ×1（传送带 → 输入槽）`,
-        });
+      releaseArrivedItems(seg);
+    }
+
+    // ② 预约轮询。全部输入槽满 → 冻结（指针保持当前位置，A8 §4.1）
+    const allFull = (): boolean => comp.bufferInput.every((s) => s.count >= capacity);
+    if (allFull()) return;
+    // 指针防御性归位（存档迁移/手改越界时回 0 而非崩溃）
+    let idx = ((comp.inputPollIndex % n) + n) % n;
+    for (let visited = 0; visited < n; visited++) {
+      comp.inputPollIndex = (idx + 1) % n; // 先进指针: 成功/跳过同律（A8 §4.1 失败也移动到下一个）
+      const feeder = findFeederBelt(world, beltAt, cells[idx]);
+      if (feeder !== null) {
+        const seg = world.getComponent<BeltSegmentComp>(feeder, 'BeltSegmentComp');
+        if (seg) {
+          const absorbed = tryAbsorbHeadItem(seg, comp, capacity);
+          if (absorbed !== null) {
+            this.emit({
+              type: 'input', handle, portIndex: idx,
+              message: `${def.name}: 吸入 ${this.nameOf(absorbed)} ×1（传送带 → 输入口${idx + 1}）`,
+            });
+            if (allFull()) break; // 补满即冻结在下一端口（下次 vacancy 从它开始）
+          }
+        }
       }
+      idx = (idx + 1) % n;
     }
   }
 
   /**
-   * A8 §7 步骤3 (T2.7): 输出物流。对每个输出端口（定义序=连接序）找入口朝向它的
-   * 接收传送带段（A9 §6.7），从输出槽放 1 件到段首；满带（入口间距不足）则物品
-   * 留在输出槽（每 Tick 重试，带腾位即恢复）。每端口每 Tick 至多 1 件 (A8 §4.2)。
+   * A8 §7 步骤3 (T2.7 注入纪律 + T2.10 输出轮询)。
+   * 输出轮询队列 comp.outputPollQueue（活跃端口按轮询序；堵塞集=全部端口−队列，派生不落盘）:
+   *   - 全局闸门: 全空输出槽早退（队列零维护——无货可分时"失败"不是端口堵塞）；
+   *     相位窗口外（beltPhase > STOP_MAX）整步跳过且**不动队列**——窗口关闭是全局节奏
+   *     而非端口故障，若按端口失败处理会把队列每秒两次清空重建、丢失轮询序记忆
+   *     （T2.7: 空带吞吐 1 件/2 秒的相位窗口纪律不变）。
+   *   - 活跃轮转（A8 §4.2）: 按队列序逐口尝试出货——成功移到队尾（1→2→3→1…轮转）；
+   *     失败（无接收带 / 接收带被占——一格一物品满带）移出队列进入堵塞集。
+   *     分发中途货物耗尽即停，剩余端口保留在队列中（槽空≠端口堵塞）。
+   *   - 恢复探测（A8 §4.2"恢复追加队尾"）: 堵塞端口每 Tick 按下标序尝试真实出货，
+   *     成功即追加到当前轮询队尾（不插回原位）；仍堵则保持引用等待。
    */
   private emitBeltOutputs(
     world: World,
@@ -370,24 +415,69 @@ export class MachineSystem implements SimulationSystem {
     def: BuildingDefinition,
     beltAt: Map<string, EntityHandle>,
   ): void {
-    // 早退: 全空输出槽无货可出（跳过端口遍历——性能基准 100 台空炉零开销）
+    // 早退: 全空输出槽无货可出（跳过端口遍历与队列维护——性能基准 100 台空炉零开销）
     if (!comp.bufferOutput.some((s) => s.count > 0)) return;
     const pos = world.getComponent<Position>(handle, 'Position');
     if (!pos) return;
     const gx = Math.round(pos.x / CELL_SIZE);
     const gy = Math.round(pos.y / CELL_SIZE);
-    for (const cell of outputPortCells(gx, gy, def, comp.direction)) {
-      const receiver = findReceiverBelt(world, beltAt, cell);
-      if (receiver === null) continue;
+    const cells = outputPortCells(gx, gy, def, comp.direction);
+    const n = cells.length;
+    if (n === 0) return;
+    // 相位窗口全局闸门（必须在任何队列变动之前）
+    if (BeltSystem.beltPhase > STOP_MAX) return;
+
+    const hasGoods = (): boolean => comp.bufferOutput.some((s) => s.count > 0);
+    // 队列卫生: 过滤越界/重复项（存档迁移/手改防御），保持既有轮询次序
+    const seen = new Set<number>();
+    const active = comp.outputPollQueue.filter((i) => {
+      if (i < 0 || i >= n || seen.has(i)) return false;
+      seen.add(i);
+      return true;
+    });
+
+    /** 尝试从输出槽放 1 件到端口 idx 的接收带。成功返回 itemId；端口不可写返回 null。 */
+    const tryEmitAt = (idx: number): string | null => {
+      const receiver = findReceiverBelt(world, beltAt, cells[idx]);
+      if (receiver === null) return null;
       const seg = world.getComponent<BeltSegmentComp>(receiver, 'BeltSegmentComp');
-      if (!seg) continue;
-      const emitted = tryEmitToBelt(seg, comp);
-      if (emitted !== null) {
-        this.emit({
-          type: 'output', handle,
-          message: `${def.name}: 输出 ${this.nameOf(emitted)} ×1（输出槽 → 传送带）`,
-        });
+      if (!seg || seg.items.length > 0) return null; // 无段 / 满带（一格一物品）
+      return tryEmitToBelt(seg, comp); // 空段+有货+窗口内必成功
+    };
+    const emitOut = (idx: number, itemId: string): void => {
+      this.emit({
+        type: 'output', handle, portIndex: idx,
+        message: `${def.name}: 输出 ${this.nameOf(itemId)} ×1（输出口${idx + 1} → 传送带）`,
+      });
+    };
+
+    // ── 活跃队列轮转（恰好走访初始队列一轮）──
+    // 成功 → 移队尾；失败 → 移出。两种情形都让"下一个未处理端口"落进 qi 位
+    // （qi 不递增），以 visited 计数保证只走访初始元素一遍——轮转到队尾的
+    // 端口本轮不再回头（它刚出过货/刚被判堵，重访会误伤队列状态）。
+    let qi = 0;
+    for (let visited = 0, total = active.length;
+      visited < total && qi < active.length && hasGoods();
+      visited++) {
+      const idx = active[qi];
+      const itemId = tryEmitAt(idx);
+      if (itemId !== null) {
+        active.splice(qi, 1);
+        active.push(idx);
+        emitOut(idx, itemId);
+      } else {
+        active.splice(qi, 1); // 失败 → 移出队列（堵塞集成员）
       }
     }
+
+    // ── 堵塞恢复探测: 堵塞端口按下标序尝试真实出货，成功 → 追加队尾 ──
+    for (let idx = 0; idx < n && hasGoods(); idx++) {
+      if (active.includes(idx)) continue; // 活跃端口本轮已处理
+      const itemId = tryEmitAt(idx);
+      if (itemId === null) continue; // 仍堵（无接收带/满带），保持引用等待
+      active.push(idx); // 恢复 → 追加到当前轮询顺序末尾（A8 §4.2，不插回原位）
+      emitOut(idx, itemId);
+    }
+    comp.outputPollQueue = active;
   }
 }

@@ -32,7 +32,7 @@ import {
   buildItemRegistry,
 } from '../src/game/data/items.ts';
 import { parseRecipeCsv, buildRecipeIndex } from '../src/game/data/recipes.ts';
-import { BUILDING_DEFINITIONS } from '../src/game/data/buildings.ts';
+import { BUILDING_DEFINITIONS, createOutputPollQueue } from '../src/game/data/buildings.ts';
 import { createBufferSlots } from '../src/game/systems/machine/BufferOps.ts';
 import { buildBeltCellIndex } from '../src/game/systems/machine/IntakeOps.ts';
 import {
@@ -137,6 +137,7 @@ console.log('[tryEmitToBelt 出货判定]');
   const comp: BuildingComp = {
     definitionId: 'refining_unit', direction: 0, state: 'idle',
     bufferInput: createBufferSlots(1), bufferOutput: createBufferSlots(1),
+    inputPollIndex: 0, outputPollQueue: [0, 1, 2], // T2.10（tryEmitToBelt 不读轮询状态，占位补形）
     currentRecipeId: null, progress: 0, elapsed: 0,
   };
   const mk = (items: Array<[string, number]>): BeltSegmentComp => ({
@@ -184,6 +185,7 @@ const place = (gx: number, gy: number, dir: 0 | 90 | 180 | 270 = 0): BuildingCom
     definitionId: 'refining_unit', direction: dir, state: 'idle',
     bufferInput: createBufferSlots(def.inputSlotCount),
     bufferOutput: createBufferSlots(def.outputSlotCount),
+    inputPollIndex: 0, outputPollQueue: createOutputPollQueue(def), // T2.10
     currentRecipeId: null, progress: 0, elapsed: 0,
   };
   world.addComponent(handle, 'BuildingComp', comp);
@@ -220,8 +222,8 @@ assert(chain.every((s) => near(s.items[0].progress, 0.5)),
   '5d. 各件停在格中心 0.50（注入相位 ≤ STOP_MAX + 断头钳制，无后跳）');
 const events5 = log.filter((e) => e.type === 'output');
 assertEq(events5.length, 5, '5e. 5 条 output 事件（每件一条）');
-assert(events5.every((e) => e.message.includes('输出 晶体外壳 ×1（输出槽 → 传送带）')),
-  '5f. 事件消息: "精炼炉: 输出 晶体外壳 ×1（输出槽 → 传送带）"');
+assert(events5.every((e) => e.message.includes('输出 晶体外壳 ×1（输出口2 → 传送带）')),
+  '5f. 事件消息: "精炼炉: 输出 晶体外壳 ×1（输出口2 → 传送带）"（顶中口=定义序#1，T2.10 起消息带端口序号）');
 
 // 6: 流动过程不变量——重跑一遍，中途采样每段 ≤ 1 件
 BeltSystem.beltPhase = 0;

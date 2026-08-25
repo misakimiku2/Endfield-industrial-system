@@ -34,7 +34,7 @@ import {
   buildItemRegistry,
 } from '../src/game/data/items.ts';
 import { parseRecipeCsv, buildRecipeIndex } from '../src/game/data/recipes.ts';
-import { BUILDING_DEFINITIONS } from '../src/game/data/buildings.ts';
+import { BUILDING_DEFINITIONS, createOutputPollQueue } from '../src/game/data/buildings.ts';
 import { createBufferSlots } from '../src/game/systems/machine/BufferOps.ts';
 import { buildBeltCellIndex, inputPortCells } from '../src/game/systems/machine/IntakeOps.ts';
 import { outputPortCells } from '../src/game/systems/machine/OutputOps.ts';
@@ -155,6 +155,7 @@ function freshWorld(): {
       definitionId: id, direction: dir, state: 'idle', paused: false,
       bufferInput: createBufferSlots(def.inputSlotCount),
       bufferOutput: createBufferSlots(def.outputSlotCount),
+      inputPollIndex: 0, outputPollQueue: createOutputPollQueue(def), // T2.10
       currentRecipeId: null, progress: 0, elapsed: 0,
     };
     world.addComponent(handle, 'BuildingComp', comp);

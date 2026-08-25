@@ -21,7 +21,7 @@ import { GridRenderer } from './game/render/GridRenderer';
 import { loadAllAssets, getTexture } from './game/render/AssetsLoader';
 import { InventoryUI } from './game/ui/InventoryUI';
 import { deviceReadoutText } from './game/ui/DeviceReadout';
-import { BUILDING_DEFINITIONS, getBuildingDefinition, type BuildingDefinition } from './game/data/buildings';
+import { BUILDING_DEFINITIONS, getBuildingDefinition, createOutputPollQueue, type BuildingDefinition } from './game/data/buildings';
 import type { BuildingComp, BufferSlot, Direction } from './game/components/BuildingComp';
 import { loadItemRegistry } from './game/data/items';
 import { parseRecipeCsv, buildRecipeIndex, formatRecipeSummary } from './game/data/recipes';
@@ -461,6 +461,8 @@ async function main() {
       paused: false, // T2.8: 玩家手动暂停（默认运行中）
       bufferInput: createBufferSlots(def.inputSlotCount), // T2.4: 放置即建输入缓冲区
       bufferOutput: createBufferSlots(def.outputSlotCount), // T2.5: 输出缓冲区（一槽一物）
+      inputPollIndex: 0, // T2.10: 输入轮询指针从定义序首口（左）开始
+      outputPollQueue: createOutputPollQueue(def), // T2.10: 输出轮询队列=全部输出端口按定义序
       currentRecipeId: null, progress: 0, elapsed: 0, // T2.5: 生产计时字段（放置时无任务）
     });
     game.world.addComponent(handle, 'SpriteComp', {
@@ -956,9 +958,10 @@ async function main() {
     game.update();
     return true;
   };
-  /** 最近生产事件（start/settle/blocked/cancel，验收控制台消息用）。 */
-  const productionLog = (): Array<{ type: string; message: string }> =>
-    machineSystem.recentEvents.map((e) => ({ type: e.type, message: e.message }));
+  /** 最近生产事件（start/settle/blocked/cancel/input/output…，验收控制台消息用）。
+   *  portIndex 为 T2.10 轮询端口下标（input/output 事件带，其余 undefined）。 */
+  const productionLog = (): Array<{ type: string; portIndex?: number; message: string }> =>
+    machineSystem.recentEvents.map((e) => ({ type: e.type, portIndex: e.portIndex, message: e.message }));
 
   // ── T2.8 验收钩子: 玩家手动暂停 + 端口连接状态 ──
   // setPaused(bool, handle?): 置/清设备 paused（正式入口是 T2.15 弹窗电源开关，
@@ -990,10 +993,23 @@ async function main() {
     const def = getBuildingDefinition(comp.definitionId);
     if (!def) return '未知设备定义';
     const st = portStatuses(game.world, h, comp, def);
+    // T2.10: 轮询状态与端口高亮同屏对照——指针指向下一个补货的输入口，
+    // 队列是当前活跃的输出端口轮询序（未列出 = 堵塞集，恢复后自动追加队尾）。
+    const nIn = st.input.length;
+    const pollLine = nIn > 0
+      ? `  输入轮询指针: 下一个=输入口${(comp.inputPollIndex % nIn) + 1}`
+      : '  输入轮询指针: (无输入口)';
+    const queueLine = st.output.length > 0
+      ? `  输出轮询队列: ${comp.outputPollQueue.length > 0
+        ? comp.outputPollQueue.map((i) => `输出口${i + 1}`).join('→')
+        : '(空——全部输出口堵塞，恢复后追加队尾)'}`
+      : '  输出轮询队列: (无输出口)';
     return [
       `${def.name} 端口状态（画面: 黄=已连接 红=堵塞; paused=${comp.paused}）:`,
       formatPortStatus(st.input, '输入'),
       formatPortStatus(st.output, '输出'),
+      pollLine,
+      queueLine,
     ].join('\n');
   };
 
@@ -1389,8 +1405,137 @@ async function main() {
     return 'T2.12 一键测试完成（关键观察: 源矿持续上带 → 流动 → 进存货口消失；暂停停供/恢复续供）';
   };
 
+  /** 按格坐标精确定位传送带段（demoT210 用: injectBeltItem 只认 segmentIndex===0 的
+   *  第一条链，多条独立单格链无法定向——按 Position 匹配目标格）。 */
+  const beltAtCell = (gx: number, gy: number): BeltSegmentComp | null => {
+    for (const h of game.world.query('BeltSegmentComp')) {
+      const pos = game.world.getComponent<Position>(h, 'Position');
+      if (!pos) continue;
+      if (Math.round(pos.x / CELL_SIZE) === gx && Math.round(pos.y / CELL_SIZE) === gy) {
+        return game.world.getComponent<BeltSegmentComp>(h, 'BeltSegmentComp') ?? null;
+      }
+    }
+    return null;
+  };
+  /** 移除指定格传送带段上的队首物品（demoT210 定向疏通用，consumeBeltTailItem 是全链扫射）。 */
+  const takeBeltItemAtCell = (gx: number, gy: number): boolean => {
+    const seg = beltAtCell(gx, gy);
+    if (!seg || seg.items.length === 0) return false;
+    seg.items.sort((a, b) => b.progress - a.progress);
+    seg.items.shift();
+    return true;
+  };
+  /** T2.10 一键测试主体（并发/重复保护见 runTest 的 phase 状态机）。
+   * 场景A（输入轮询）: 精炼炉三侧各一条供给带 + 输出注满保持 blocked（结算暂缓、
+   *   不消耗输入槽——t26 同手法保证时序确定）。满槽每次 consumeInput 腾 1 位 →
+   *   观察补货顺序 左→中→右 轮转（事件 portIndex 序 [0,1,2]×2）。
+   * 场景B（输出轮询）: 三条断头接收带 + 预填中带模拟堵塞 → 出货跳过中口（[0,2]）；
+   *   依次清左/中带 → 堵塞端口恢复探测出货并追加队尾（完整序 [0,2,0,1]）。 */
+  const demoT210 = async (): Promise<string> => {
+    console.log(`[${ts()}] ════ T2.10 一键测试: 端口轮询系统 ════`);
+    const inputPortsOf = (): number[] =>
+      machineSystem.recentEvents.filter((e) => e.type === 'input').map((e) => e.portIndex ?? -1);
+    const outputPortsOf = (): number[] =>
+      machineSystem.recentEvents.filter((e) => e.type === 'output').map((e) => e.portIndex ?? -1);
+
+    // ── 场景A: 输入轮询（左→中→右）──
+    clearAllPlaced();
+    if (!placeAt('refining_unit', 5, 5)) return 'T2.10 测试失败: 精炼炉放置失败';
+    const SUPPLY: Array<[number, number]> = [[5, 8], [6, 8], [7, 8]]; // 左/中/右输入口的供给格
+    for (const [x, y] of SUPPLY) {
+      if (spawnBelt([[x, y]], 270) !== 1) return 'T2.10 测试失败: 供给带创建失败';
+    }
+    // 关键: 用晶体外壳作原料——精炼炉没有以它为原料的配方 → 设备恒 idle、零结算，
+    // 输入槽只被本测试的 consumeInput 腾位（若用源矿，生产每 2 秒结算一次会插入额外补货）
+    injectInput('origocrust', 50); // 满槽锁定: 每次腾 1 位 → 补货顺序肉眼可辨
+    console.log(`[${ts()}] [步骤1] 场景A就绪: 精炼炉(5,5) + 左/中/右三条供给带（晶体外壳作原料，无配方匹配 → 无生产干扰）。` +
+      `输入槽满载，每次腾出 1 个空位，观察哪个输入口被轮到`);
+    const seqIn: number[] = [];
+    for (let i = 0; i < 6; i++) {
+      // 等全部供给格门口复位（上一轮的预约物品已走进设备消失，无 entering 残留）——
+      // 条件等待而非固定 sleep，免疫真实仿真的节奏抖动
+      const doorsSettled = await waitFor(() => SUPPLY.every(([x, y]) => {
+        const seg = beltAtCell(x, y);
+        return !seg || seg.items.every((it) => !it.entering);
+      }), 8000);
+      if (!doorsSettled) {
+        console.log(`[${ts()}] T2.10 测试失败: 8 秒内门口物品未完成进设备（仿真未推进？切前台重试）`);
+        return 'T2.10 测试失败: 门口物品未复位';
+      }
+      // 门口为空的供给格补一件晶体外壳
+      for (const [x, y] of SUPPLY) {
+        const seg = beltAtCell(x, y);
+        if (seg && seg.items.length === 0) {
+          seg.items.push({ itemId: 'origocrust', progress: BeltSystem.beltPhase, delta: 0 });
+        }
+      }
+      const before = inputPortsOf().length;
+      consumeInput(1); // 模拟一次结算扣料: 满→49（恰好 1 个空位）
+      await waitFor(() => inputPortsOf().length - before >= 1, 5000); // 等本次吸入落地
+      const evs = inputPortsOf().slice(before);
+      seqIn.push(...evs);
+      console.log(
+        `[${ts()}] [步骤2-${i + 1}/6] 腾出 1 位 → 本次补货端口: ` +
+        (evs.length === 1 ? `输入口${evs[0] + 1}` : `(异常 ${JSON.stringify(evs)})`) +
+        `　累计序列: ${seqIn.map((p) => p + 1).join('→') || '(空)'}`,
+      );
+    }
+    if (JSON.stringify(seqIn) !== JSON.stringify([0, 1, 2, 0, 1, 2])) {
+      console.log(`[${ts()}] T2.10 测试失败: 输入补货序列应为 左→中→右×2（实际 ${JSON.stringify(seqIn)}）:\n${portStatus()}`);
+      return 'T2.10 测试失败: 输入轮询顺序异常';
+    }
+    console.log(`[${ts()}] [步骤3] ✅ 输入轮询验证通过: 补货顺序 左→中→右→左→中→右（指针满载冻结、轮转不重置）`);
+
+    // ── 场景B: 输出轮询（堵塞跳过 + 恢复追加队尾）──
+    console.log(`[${ts()}] [步骤4] 切换场景B: 三条断头接收带 + 预填中带（模拟中口堵塞）`);
+    clearAllPlaced();
+    if (!placeAt('refining_unit', 5, 5)) return 'T2.10 测试失败: 场景B 精炼炉放置失败';
+    for (const x of [5, 6, 7]) {
+      if (spawnBelt([[x, 4]], 270) !== 1) return 'T2.10 测试失败: 场景B 接收带创建失败';
+    }
+    beltAtCell(6, 4)?.items.push({ itemId: 'origocrust', progress: 0.5, delta: 0 }); // 中带预置满
+    injectOutput('origocrust', 4);
+    const outBase = outputPortsOf().length;
+    const twoOut = await waitFor(() => outputPortsOf().length - outBase >= 2, 15000);
+    if (!twoOut) {
+      console.log(`[${ts()}] T2.10 测试失败: 15 秒内不足 2 件出货（仿真未推进？切前台重试）:\n${portStatus()}`);
+      return 'T2.10 测试失败: 输出未出货';
+    }
+    const skipSeq = outputPortsOf().slice(outBase);
+    console.log(`[${ts()}] [步骤5] 前 2 件出货端口: 输出口${skipSeq.map((p) => p + 1).join('、')}（中口被跳过）`);
+    if (JSON.stringify(skipSeq) !== JSON.stringify([0, 2])) {
+      console.log(`[${ts()}] T2.10 测试失败: 中口堵塞时应只从左右出货（实际 ${JSON.stringify(skipSeq)}）`);
+      return 'T2.10 测试失败: 堵塞端口未被跳过';
+    }
+    await sleep(3000); // 观察: 中口红堵、货物留槽
+    const outCountOf = (p: number): number =>
+      outputPortsOf().filter((v) => v === p).length; // 全史计数（recentEvents 环形缓冲未溢出即可靠）
+    console.log(`[${ts()}] [步骤6] 清空左带物品（模拟下游取走）→ 左口应恢复出货`);
+    const leftBase = outCountOf(0);
+    takeBeltItemAtCell(5, 4);
+    const recLeft = await waitFor(() => outCountOf(0) > leftBase, 15000);
+    if (!recLeft) {
+      console.log(`[${ts()}] T2.10 测试失败: 左口疏通后未恢复出货:\n${portStatus()}`);
+      return 'T2.10 测试失败: 堵塞恢复未生效';
+    }
+    console.log(`[${ts()}] [步骤7] 清空中带预填物 → 中口恢复出货（追加到当前轮询末尾）`);
+    const midBase = outCountOf(1);
+    takeBeltItemAtCell(6, 4);
+    const recMid = await waitFor(() => outCountOf(1) > midBase, 15000);
+    if (!recMid) {
+      console.log(`[${ts()}] T2.10 测试失败: 中口疏通后未恢复出货:\n${portStatus()}`);
+      return 'T2.10 测试失败: 中口恢复未生效';
+    }
+    const fullSeq = outputPortsOf().slice(outBase);
+    console.log(`[${ts()}] [步骤8] ✅ 输出轮询验证通过: 完整出货序 输出口${fullSeq.map((p) => p + 1).join('→')}` +
+      `（堵塞跳过 → 恢复探测出货）。最终轮询状态:\n${portStatus()}`);
+    console.log(`[${ts()}] ════ T2.10 一键测试完成 ════`);
+    return 'T2.10 一键测试完成（关键输出: [步骤2-N] 补货序列 左→中→右×2；场景B 出货序 左→右→左→中）';
+  };
+
   const TESTS: Record<string, () => Promise<string>> = {
     t25: demoT25, t26: demoT26, t27: demoT27, t28: demoT28, t212: demoT212,
+    t210: demoT210,
   };
   const runTest = async (name: string): Promise<string> => {
     const demo = TESTS[name];
@@ -1501,6 +1646,8 @@ async function main() {
   console.log('  T2.9 观察: 点击设备 → 屏幕左上显示"输入: x/50 输出: y/50"单行读数（临时件，T2.15 弹窗吸收）；点击仓库口不显示（非生产设备）');
   console.log('  T2.12 一键测试: __game.test("t212")  ← 复制这一条到控制台回车即可（取货口+4段带+存货口: 源矿持续上带→流动→进存货口消失+暂停/恢复演示）');
   console.log('  T2.12 手动: 工具栏选"仓库取货口"放置（R 只在水平两档旋转） → E 进创建模式悬停其上方（Status 面板蓝） → 从输出口起带上行 → 末端接"仓库存货口"底边 → 物品流进去消失');
+  console.log('  T2.10 一键测试: __game.test("t210")  ← 复制这一条到控制台回车即可（3入补货 左→中→右 轮转 + 3出堵塞跳过/恢复出货演示，约 40 秒）');
+  console.log('  T2.10 手动: portStatus() 查看"输入轮询指针/输出轮询队列"（与 productionLog() 的 输入口N/输出口N 序号对照）；多口接带时满槽腾位看补货顺序、堵一条带看出货跳过与疏通恢复');
 }
 
 main().catch((err) => {

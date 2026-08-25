@@ -9,7 +9,7 @@
 //   3. 多槽位求和（未来多槽设备等价）
 //   4. 仓库取货口/存货口（无任何槽位）→ null（T2.9 读数不显示数据）
 import { readFileSync } from 'node:fs';
-import { BUILDING_DEFINITIONS } from '../src/game/data/buildings.ts';
+import { BUILDING_DEFINITIONS, createOutputPollQueue } from '../src/game/data/buildings.ts';
 import { createBufferSlots } from '../src/game/systems/machine/BufferOps.ts';
 import { deviceReadoutText } from '../src/game/ui/DeviceReadout.ts';
 import type { BuildingComp } from '../src/game/components/BuildingComp.ts';
@@ -29,6 +29,8 @@ const mkComp = (id: string): BuildingComp => ({
   definitionId: id, direction: 0, state: 'idle', paused: false,
   bufferInput: createBufferSlots(BUILDING_DEFINITIONS[id]?.inputSlotCount ?? 0),
   bufferOutput: createBufferSlots(BUILDING_DEFINITIONS[id]?.outputSlotCount ?? 0),
+  inputPollIndex: 0, // T2.10
+  outputPollQueue: BUILDING_DEFINITIONS[id] ? createOutputPollQueue(BUILDING_DEFINITIONS[id]) : [],
   currentRecipeId: null, progress: 0, elapsed: 0,
 });
 

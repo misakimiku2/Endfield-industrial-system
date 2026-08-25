@@ -19,7 +19,7 @@ import type { SceneLayers } from '../src/game/render/SceneRenderer.ts';
 import { RenderSystem } from '../src/game/systems/RenderSystem.ts';
 import { SelectionSystem } from '../src/game/systems/SelectionSystem.ts';
 import { DeleteSystem } from '../src/game/systems/DeleteSystem.ts';
-import { getBuildingDefinition, type BuildingDefinition } from '../src/game/data/buildings.ts';
+import { createOutputPollQueue, getBuildingDefinition, type BuildingDefinition } from '../src/game/data/buildings.ts';
 import type { Direction } from '../src/game/components/BuildingComp.ts';
 import { MapInstance } from '../src/game/world/MapInstance.ts';
 import { OccupancyMap } from '../src/game/world/OccupancyMap.ts';
@@ -79,6 +79,7 @@ function placeBuilding(
     paused: false, // T2.8 字段（PortStatusOps 渲染需要；测试实体补全与 placeAt 同形）
     bufferInput: createBufferSlots(def.inputSlotCount), // T2.4
     bufferOutput: createBufferSlots(def.outputSlotCount), // T2.5
+    inputPollIndex: 0, outputPollQueue: createOutputPollQueue(def), // T2.10
     currentRecipeId: null, progress: 0, elapsed: 0, // T2.5
   });
   world.addComponent(h, 'SpriteComp', {

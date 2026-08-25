@@ -17,7 +17,7 @@
 //
 // 截图输出: gui-test-screenshots/t212-*.png
 const PW_URL = 'file:///C:/Users/Misaki/AppData/Roaming/npm/node_modules/@playwright/cli/node_modules/playwright/index.mjs';
-const BASE_URL = 'http://localhost:5175/';
+const BASE_URL = process.env.BASE_URL ?? 'http://localhost:5175/';
 const OUT_DIR = 'gui-test-screenshots';
 
 const { chromium } = await import(PW_URL);
