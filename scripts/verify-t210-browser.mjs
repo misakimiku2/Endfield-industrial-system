@@ -69,10 +69,22 @@ if (!seq.messages.every((m) => m.includes('输入口'))) {
 const inTail = seq.input.slice(-6);
 ok(JSON.stringify(inTail) === JSON.stringify([0, 1, 2, 0, 1, 2]),
   `B1. input 事件尾 6 位 = [0,1,2,0,1,2]（实际 ${JSON.stringify(inTail)}）——补货顺序左→中→右轮转`);
-// 场景B 的出货序 = 最后 4 条 output（此前只有场景A 排水口的 idx1 事件）
-const outTail = seq.output.slice(-4);
-ok(JSON.stringify(outTail) === JSON.stringify([0, 2, 0, 1]),
-  `B2. output 事件尾 4 位 = [0,2,0,1]（实际 ${JSON.stringify(outTail)}）——中口堵塞跳过、恢复探测随后出货`);
+// 场景B（连续生产）: 前 6 条 output = 1→2→3 循环；场景C 恢复段: 尾 3 条 = [0,2,1]（中口追加队尾）
+const outHead6 = seq.output.slice(0, 6);
+ok(JSON.stringify(outHead6) === JSON.stringify([0, 1, 2, 0, 1, 2]),
+  `B2. output 前 6 位 = [0,1,2,0,1,2]（实际 ${JSON.stringify(outHead6)}）——连续生产下逐件轮转`);
+const outTail = seq.output.slice(-3);
+ok(JSON.stringify(outTail) === JSON.stringify([0, 2, 1]),
+  `B3. output 尾 3 位 = [0,2,1]（实际 ${JSON.stringify(outTail)}）——中口恢复排在左右之后（追加队尾）`);
+// 场景B 观察期的额外出货条数不固定（8 秒观察窗内 0~3 件），堵塞区用结构化方式圈定:
+// 从恢复段（尾 3 位）往前回溯，直到遇到最后一个中口(1)事件为止——中间全部属于场景C
+// 堵塞期，必须不含中口。
+const recStart = seq.output.length - 3;
+let lastOne = -1;
+for (let i = 0; i < recStart; i++) if (seq.output[i] === 1) lastOne = i;
+const skipZone = seq.output.slice(lastOne + 1, recStart);
+ok(skipZone.length >= 4 && skipZone.every((p) => p === 0 || p === 2),
+  `B4. 场景C 堵塞期出货不含中口（${JSON.stringify(skipZone)}）——堵塞端口跳过`);
 
 // ══ C. portStatus 轮询状态展示 ══
 console.log('[C] portStatus() 轮询状态展示');

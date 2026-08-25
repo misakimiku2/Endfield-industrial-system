@@ -1426,11 +1426,14 @@ async function main() {
     return true;
   };
   /** T2.10 一键测试主体（并发/重复保护见 runTest 的 phase 状态机）。
-   * 场景A（输入轮询）: 精炼炉三侧各一条供给带 + 输出注满保持 blocked（结算暂缓、
-   *   不消耗输入槽——t26 同手法保证时序确定）。满槽每次 consumeInput 腾 1 位 →
-   *   观察补货顺序 左→中→右 轮转（事件 portIndex 序 [0,1,2]×2）。
-   * 场景B（输出轮询）: 三条断头接收带 + 预填中带模拟堵塞 → 出货跳过中口（[0,2]）；
-   *   依次清左/中带 → 堵塞端口恢复探测出货并追加队尾（完整序 [0,2,0,1]）。 */
+   * 场景A（输入轮询）: 精炼炉三侧各一条供给带，晶体外壳作原料（无配方匹配 → 设备
+   *   恒 idle 零结算干扰）。满槽每次 consumeInput 腾 1 位 → 观察补货顺序
+   *   左→中→右 轮转（事件 portIndex 序 [0,1,2]×2）。
+   * 场景B（输出轮转·可见版）: 预注源矿连续生产（1件/2秒），三个输出口各接 3 格
+   *   传送带汇入顶部存货口 → 产物每 2 秒出现在下一条带首（输出口1→2→3 循环），
+   *   沿带流动 3 格消失——轮询次序肉眼可辨。
+   * 场景C（堵塞跳过+恢复·可见版）: 中带截短 2 格断头并预置满（永久堵塞）→ 产物
+   *   只在左/右带交替出现；等左右带首腾空后注 3 件 → 左→右→中（恢复探测追加队尾）。 */
   const demoT210 = async (): Promise<string> => {
     console.log(`[${ts()}] ════ T2.10 一键测试: 端口轮询系统 ════`);
     const inputPortsOf = (): number[] =>
@@ -1486,51 +1489,90 @@ async function main() {
     }
     console.log(`[${ts()}] [步骤3] ✅ 输入轮询验证通过: 补货顺序 左→中→右→左→中→右（指针满载冻结、轮转不重置）`);
 
-    // ── 场景B: 输出轮询（堵塞跳过 + 恢复追加队尾）──
-    console.log(`[${ts()}] [步骤4] 切换场景B: 三条断头接收带 + 预填中带（模拟中口堵塞）`);
+    // ── 场景B: 输出轮转（连续生产·可见版）──
+    // 预注源矿让设备 1 件/2 秒稳定产出 → 每次只有 1 件产物待出货 → 轮询严格逐件
+    // 轮转: 晶体外壳每 2 秒出现在**下一条**带首（输出口1→2→3 循环），沿 3 格带
+    // 流动走进顶部存货口。三条带对称全空时同 Tick 多口齐出的"爆发"在这里不会
+    // 发生——轮询次序因此肉眼可辨（用户 2026-08-25 反馈: 1 格断头带场景两端口
+    // 同 Tick 齐出，看不出轮询；节流是每端口每 Tick 1 件，不是每设备 1 件）。
+    console.log(`[${ts()}] [步骤4] 切换场景B: 预注源矿连续生产（1件/2秒），三个输出口各接 3 格传送带汇入顶部存货口 → 观察产物轮流出现在左/中/右带首`);
     clearAllPlaced();
     if (!placeAt('refining_unit', 5, 5)) return 'T2.10 测试失败: 场景B 精炼炉放置失败';
+    injectInput('originium_ore', 30); // 连续生产 ≈60 秒产物供给（1件/2秒）
+    if (!placeAt('depot_loader', 5, 1)) return 'T2.10 测试失败: 场景B 存货口放置失败';
     for (const x of [5, 6, 7]) {
-      if (spawnBelt([[x, 4]], 270) !== 1) return 'T2.10 测试失败: 场景B 接收带创建失败';
+      if (spawnBelt([[x, 4], [x, 3], [x, 2]], 270) !== 3) return 'T2.10 测试失败: 场景B 3 格接收带创建失败';
     }
-    beltAtCell(6, 4)?.items.push({ itemId: 'origocrust', progress: 0.5, delta: 0 }); // 中带预置满
-    injectOutput('origocrust', 4);
-    const outBase = outputPortsOf().length;
-    const twoOut = await waitFor(() => outputPortsOf().length - outBase >= 2, 15000);
-    if (!twoOut) {
-      console.log(`[${ts()}] T2.10 测试失败: 15 秒内不足 2 件出货（仿真未推进？切前台重试）:\n${portStatus()}`);
-      return 'T2.10 测试失败: 输出未出货';
+    const rotBase = outputPortsOf().length;
+    const sixOut = await waitFor(() => outputPortsOf().length - rotBase >= 6, 30000);
+    if (!sixOut) {
+      console.log(`[${ts()}] T2.10 测试失败: 30 秒内不足 6 件出货（仿真未推进？切前台重试）:\n${portStatus()}`);
+      return 'T2.10 测试失败: 连续生产未出货';
     }
-    const skipSeq = outputPortsOf().slice(outBase);
-    console.log(`[${ts()}] [步骤5] 前 2 件出货端口: 输出口${skipSeq.map((p) => p + 1).join('、')}（中口被跳过）`);
-    if (JSON.stringify(skipSeq) !== JSON.stringify([0, 2])) {
-      console.log(`[${ts()}] T2.10 测试失败: 中口堵塞时应只从左右出货（实际 ${JSON.stringify(skipSeq)}）`);
+    const rotSeq = outputPortsOf().slice(rotBase, rotBase + 6);
+    console.log(`[${ts()}] [步骤5] 前 6 件出货端口: 输出口${rotSeq.map((p) => p + 1).join('→')}${rotSeq.length > 6 ? `（后续继续轮转: ${outputPortsOf().slice(rotBase + 6).map((p) => p + 1).join('→')}）` : ''}`);
+    if (JSON.stringify(rotSeq) !== JSON.stringify([0, 1, 2, 0, 1, 2])) {
+      console.log(`[${ts()}] T2.10 测试失败: 连续生产下出货应为 1→2→3 循环（实际 ${JSON.stringify(rotSeq)}）:\n${portStatus()}`);
+      return 'T2.10 测试失败: 输出轮询顺序异常';
+    }
+    console.log(`[${ts()}] [步骤5b] ✅ 输出轮转验证通过。观察画面 8 秒: 晶体外壳轮流出现在三条带首、沿 3 格带上升、走进存货口消失...`);
+    await sleep(8000);
+
+    // ── 场景C: 堵塞跳过 + 恢复追加队尾（可见版）──
+    // 中带截短为 2 格断头带并预置满（永久堵塞）→ 产物只在左/右带交替出现；
+    // 等左右带首都腾空后一次性注 3 件货 → 依次 左→右→（恢复探测）中，中口排在
+    // 最后 = "恢复追加到当前轮询顺序末尾"的可见形态。
+    console.log(`[${ts()}] [步骤6] 切换场景C: 左/右 3 格带接存货口，中带截短为 2 格断头带并预置满（永久堵塞）→ 产物应只在左右带交替出现`);
+    clearAllPlaced();
+    if (!placeAt('refining_unit', 5, 5)) return 'T2.10 测试失败: 场景C 精炼炉放置失败';
+    injectInput('originium_ore', 30);
+    if (!placeAt('depot_loader', 5, 1)) return 'T2.10 测试失败: 场景C 存货口放置失败';
+    if (spawnBelt([[5, 4], [5, 3], [5, 2]], 270) !== 3) return 'T2.10 测试失败: 场景C 左带创建失败';
+    if (spawnBelt([[6, 4], [6, 3]], 270) !== 2) return 'T2.10 测试失败: 场景C 中带创建失败';
+    if (spawnBelt([[7, 4], [7, 3], [7, 2]], 270) !== 3) return 'T2.10 测试失败: 场景C 右带创建失败';
+    beltAtCell(6, 4)?.items.push({ itemId: 'origocrust', progress: 0.5, delta: 0 }); // 中带预置满（2 格断头）
+    beltAtCell(6, 3)?.items.push({ itemId: 'origocrust', progress: 0.5, delta: 0 });
+    const skipBase = outputPortsOf().length;
+    const fourOut = await waitFor(() => outputPortsOf().length - skipBase >= 4, 30000);
+    if (!fourOut) {
+      console.log(`[${ts()}] T2.10 测试失败: 30 秒内不足 4 件出货:\n${portStatus()}`);
+      return 'T2.10 测试失败: 场景C 未出货';
+    }
+    const skipSeq = outputPortsOf().slice(skipBase, skipBase + 4);
+    console.log(`[${ts()}] [步骤7] 堵塞期出货端口: 输出口${skipSeq.map((p) => p + 1).join('→')}（中口被跳过，画面: 中带红堵、左右带轮流流动）`);
+    if (!skipSeq.every((p) => p === 0 || p === 2)) {
+      console.log(`[${ts()}] T2.10 测试失败: 中口堵塞时产物不应出现在中带（实际 ${JSON.stringify(skipSeq)}）`);
       return 'T2.10 测试失败: 堵塞端口未被跳过';
     }
-    await sleep(3000); // 观察: 中口红堵、货物留槽
-    const outCountOf = (p: number): number =>
-      outputPortsOf().filter((v) => v === p).length; // 全史计数（recentEvents 环形缓冲未溢出即可靠）
-    console.log(`[${ts()}] [步骤6] 清空左带物品（模拟下游取走）→ 左口应恢复出货`);
-    const leftBase = outCountOf(0);
-    takeBeltItemAtCell(5, 4);
-    const recLeft = await waitFor(() => outCountOf(0) > leftBase, 15000);
-    if (!recLeft) {
-      console.log(`[${ts()}] T2.10 测试失败: 左口疏通后未恢复出货:\n${portStatus()}`);
-      return 'T2.10 测试失败: 堵塞恢复未生效';
+    // 等左右带首都腾空（在途物品已推进到带深处）→ 一次性注 3 件 → 左→右→中
+    console.log(`[${ts()}] [步骤8] 等左右带首腾空后注 3 件产物 → 预期出货 左→右→中（中口恢复探测追加队尾）`);
+    const headsFree = await waitFor(() => {
+      const l = beltAtCell(5, 4);
+      const r = beltAtCell(7, 4);
+      return (l?.items.length ?? 0) === 0 && (r?.items.length ?? 0) === 0;
+    }, 20000);
+    if (!headsFree) {
+      console.log(`[${ts()}] T2.10 测试失败: 20 秒内左右带首未同时腾空:\n${beltStatus()}`);
+      return 'T2.10 测试失败: 左右带首未腾空';
     }
-    console.log(`[${ts()}] [步骤7] 清空中带预填物 → 中口恢复出货（追加到当前轮询末尾）`);
-    const midBase = outCountOf(1);
-    takeBeltItemAtCell(6, 4);
-    const recMid = await waitFor(() => outCountOf(1) > midBase, 15000);
-    if (!recMid) {
-      console.log(`[${ts()}] T2.10 测试失败: 中口疏通后未恢复出货:\n${portStatus()}`);
-      return 'T2.10 测试失败: 中口恢复未生效';
+    takeBeltItemAtCell(6, 4); // 清空 2 格断头中带 → 中口恢复
+    takeBeltItemAtCell(6, 3);
+    injectOutput('origocrust', 3);
+    const recBase = outputPortsOf().length;
+    const threeOut = await waitFor(() => outputPortsOf().length - recBase >= 3, 30000);
+    if (!threeOut) {
+      console.log(`[${ts()}] T2.10 测试失败: 30 秒内不足 3 件恢复出货:\n${portStatus()}`);
+      return 'T2.10 测试失败: 恢复出货未发生';
     }
-    const fullSeq = outputPortsOf().slice(outBase);
-    console.log(`[${ts()}] [步骤8] ✅ 输出轮询验证通过: 完整出货序 输出口${fullSeq.map((p) => p + 1).join('→')}` +
-      `（堵塞跳过 → 恢复探测出货）。最终轮询状态:\n${portStatus()}`);
+    const recSeq = outputPortsOf().slice(recBase, recBase + 3);
+    console.log(`[${ts()}] [步骤9] 恢复后出货端口: 输出口${recSeq.map((p) => p + 1).join('→')}`);
+    if (JSON.stringify(recSeq) !== JSON.stringify([0, 2, 1])) {
+      console.log(`[${ts()}] T2.10 测试失败: 恢复后应 左→右→中（中口追加队尾，不插队；实际 ${JSON.stringify(recSeq)}）:\n${portStatus()}`);
+      return 'T2.10 测试失败: 恢复端口未追加队尾';
+    }
+    console.log(`[${ts()}] [步骤10] ✅ 堵塞跳过 + 恢复追加队尾验证通过。最终轮询状态:\n${portStatus()}`);
     console.log(`[${ts()}] ════ T2.10 一键测试完成 ════`);
-    return 'T2.10 一键测试完成（关键输出: [步骤2-N] 补货序列 左→中→右×2；场景B 出货序 左→右→左→中）';
+    return 'T2.10 一键测试完成（场景A 补货 1→2→3×2；场景B 出货 1→2→3 循环；场景C 跳过中带 + 恢复 左→右→中）';
   };
 
   const TESTS: Record<string, () => Promise<string>> = {
@@ -1646,7 +1688,7 @@ async function main() {
   console.log('  T2.9 观察: 点击设备 → 屏幕左上显示"输入: x/50 输出: y/50"单行读数（临时件，T2.15 弹窗吸收）；点击仓库口不显示（非生产设备）');
   console.log('  T2.12 一键测试: __game.test("t212")  ← 复制这一条到控制台回车即可（取货口+4段带+存货口: 源矿持续上带→流动→进存货口消失+暂停/恢复演示）');
   console.log('  T2.12 手动: 工具栏选"仓库取货口"放置（R 只在水平两档旋转） → E 进创建模式悬停其上方（Status 面板蓝） → 从输出口起带上行 → 末端接"仓库存货口"底边 → 物品流进去消失');
-  console.log('  T2.10 一键测试: __game.test("t210")  ← 复制这一条到控制台回车即可（3入补货 左→中→右 轮转 + 3出堵塞跳过/恢复出货演示，约 40 秒）');
+  console.log('  T2.10 一键测试: __game.test("t210")  ← 复制这一条到控制台回车即可（3入补货 左→中→右×2；3出连续生产轮转 1→2→3（3格带流动动画）；中带堵塞跳过+恢复 左→右→中；约 1 分钟）');
   console.log('  T2.10 手动: portStatus() 查看"输入轮询指针/输出轮询队列"（与 productionLog() 的 输入口N/输出口N 序号对照）；多口接带时满槽腾位看补货顺序、堵一条带看出货跳过与疏通恢复');
 }
 
