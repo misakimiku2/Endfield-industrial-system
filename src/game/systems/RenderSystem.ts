@@ -194,7 +194,7 @@ export class RenderSystem {
     // 前两个同时转发给 PortHighlightRenderer（普通设备端口染色）。
     this.isBeltCreationActive = isBeltCreationActive;
     this.getHoveredAnyPortCell = getHoveredAnyPortCell;
-    this.pointerRenderer = new BeltPointerRenderer(world, layers.layer2Building, getTexture);
+    this.pointerRenderer = new BeltPointerRenderer(world, layers.layer2Building);
     // T2.8 层级修订（从下到上: 带身→物品→设备→端口高亮→箭头）:
     // belowItems 挂 layer2Building 且 zIndex=0.5（带身 0 之上、设备 1 之下）→
     // 所有传送带物品在带身上传输，进入设备 footprint 即被设备纹理遮挡（"钻到设备下方"）。
