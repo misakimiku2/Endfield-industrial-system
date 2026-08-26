@@ -158,9 +158,9 @@ export class RenderSystem {
 
   /** handle → 渲染态。每帧 diff 维护。 */
   private entries = new Map<EntityHandle, SpriteEntry>();
-  /** 传送带 pointer 流动渲染器（T2.0 阶段1）。v9 起挂在 layer2Building zIndex 0.25（带身之上、物品之下）。 */
+  /** 传送带 pointer 流动渲染器（T2.0 阶段1）。挂在 layer3Item，盖在带身之上。 */
   private readonly pointerRenderer: BeltPointerRenderer;
-  /** 传送带物品渲染器（T2.1）。物品挂在 layer2Building zIndex 0.5，盖在 pointer 之上（v9 遮挡成立）。 */
+  /** 传送带物品渲染器（T2.1）。挂在 layer3Item，与 pointer 同层（二者互斥：有物品隐 pointer）。 */
   private readonly beltItemRenderer: BeltItemRenderer;
   /** 传送带带身矢量渲染器（T2.0 方案A）。挂在 layer2Building，替代传送带 Sprite。 */
   private readonly beltVectorRenderer: BeltVectorRenderer;
@@ -194,7 +194,7 @@ export class RenderSystem {
     // 前两个同时转发给 PortHighlightRenderer（普通设备端口染色）。
     this.isBeltCreationActive = isBeltCreationActive;
     this.getHoveredAnyPortCell = getHoveredAnyPortCell;
-    this.pointerRenderer = new BeltPointerRenderer(world, layers.layer2Building);
+    this.pointerRenderer = new BeltPointerRenderer(world, layers.layer3Item, getTexture);
     // T2.8 层级修订（从下到上: 带身→物品→设备→端口高亮→箭头）:
     // belowItems 挂 layer2Building 且 zIndex=0.5（带身 0 之上、设备 1 之下）→
     // 所有传送带物品在带身上传输，进入设备 footprint 即被设备纹理遮挡（"钻到设备下方"）。
