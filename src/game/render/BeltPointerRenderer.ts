@@ -63,6 +63,17 @@ const POINTER_TINT_NORMAL = 0xdfb615;
 const POINTER_TINT_BLOCKED = 0xe6956f;
 /** 指针显隐变化日志环形容量。 */
 const POINTER_LOG_MAX = 300;
+/** 临时调试开关: 指针显隐跳变直接 console.log 到浏览器控制台。
+ *  ⚠️ 仅为定位"指针×物品同格"临时存在——问题解决后把本开关改 false 或整段删除
+ *  （搜索 POINTER_DEBUG_CONSOLE）。 */
+const POINTER_DEBUG_CONSOLE = true;
+/** 显隐原因的控制台中文表述。 */
+const EXCL_REASON_CN: Record<string, string> = {
+  self: '本格有物品',
+  cell: '物品压入本格',
+  tip: '指针尖触到邻格物品',
+  restore: '物品离开, 恢复显示',
+};
 
 /** 方向 → 序号：up=0, right=1, down=2, left=3（与旧项目 _directionToIndex 一致）。 */
 function directionToIndex(dir: Direction): number {
@@ -370,15 +381,23 @@ export class BeltPointerRenderer {
         entry.lastPtrAlpha = ptrAlpha;
         entry.lastExclReason = excl ?? '';
       } else if (entry.lastPtrAlpha !== ptrAlpha) {
+        const reason = ptrAlpha === 0 ? (excl ?? '') : 'restore';
         this.pointerLogRing.push({
           t: performance.now(),
           gx, gy,
           ev: ptrAlpha === 0 ? 'hide' : 'show',
-          reason: ptrAlpha === 0 ? (excl ?? '') : 'restore',
+          reason,
         });
         if (this.pointerLogRing.length > POINTER_LOG_MAX) this.pointerLogRing.shift();
         entry.lastPtrAlpha = ptrAlpha;
-        entry.lastExclReason = excl ?? '';
+        entry.lastExclReason = reason;
+        // 实时控制台输出（临时调试，见 POINTER_DEBUG_CONSOLE 注释）
+        if (POINTER_DEBUG_CONSOLE) {
+          console.log(
+            `[指针] +${(performance.now() / 1000).toFixed(2)}s (${gx},${gy}) ` +
+            `${ptrAlpha === 0 ? '隐藏' : '显示'}←${EXCL_REASON_CN[reason] ?? reason}`,
+          );
+        }
       }
       // 黄色 pointer（底层，始终显示，保证自动扶梯跨格衔接不断层）
       entry.sprite.position.set(px, py);
