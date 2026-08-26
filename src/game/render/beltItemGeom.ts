@@ -103,3 +103,48 @@ export function circleIntersectsRect(
   const dy = cy - ny;
   return dx * dx + dy * dy <= r * r;
 }
+
+// ── v7b（2026-08-27 第二轮反馈）: 指针自身出格方向的互斥 ──
+// v7 只挡了"物品伸进空格"，漏了反向: **指针 Sprite 自身会画出自己的格子**——
+// 中格扫掠范围 ±0.5 格（中心最远停在边界线上）、端点格还带 HALF_PTR 扩程，
+// 尖端伸进邻格可达 ~8px+。邻格有物品时同样像素共存。故对"指针渲染中心"与
+// 邻近物品圆做近距离判定（指针按贴图外接半径保守膨胀）。
+
+/** 指针尖端外接半径: 贴图高度 0.25 格的一半 + 余量 2px。旋转任意方向下作保守圆近似。 */
+export const POINTER_TIP_RADIUS = Math.round((CELL_SIZE * 0.25) / 2) + 2;
+
+/** 指针互斥判定输入（全部为世界像素）。cx/cy=指针渲染中心。 */
+export interface PointerExclusionInput {
+  /** 本段物品数（含 entering 行走中的——它们仍在 items 数组里）。 */
+  selfItemCount: number;
+  /** 指针渲染中心（本帧相位换算后的世界坐标）。 */
+  cx: number;
+  cy: number;
+  /** 本格左上角世界坐标。 */
+  rectX: number;
+  rectY: number;
+  /** 邻接格（含本格外 4 向段）的全部物品渲染坐标（已带插值）。 */
+  neighborItemPts: Array<{ x: number; y: number }>;
+}
+
+/**
+ * 指针是否因物品而隐藏。返回原因（供运行日志），不隐藏返回 null:
+ *  - 'self': 本段 items 非空（v6 按段判定，最高优先级）；
+ *  - 'cell': 物品圆压到本格矩形（v7 格级占据——物品在自己格内但本格仍空着显示指针？不可能；
+ *            实际触发形态是物品跨格瞬态压线）;
+ *  - 'tip' : 指针贴图（保守外接圆）与邻近物品圆相接触（v7b 出格尖端避让）。
+ * 三条均为二值硬切，无渐变。
+ */
+export function pointerExcludedByItems(input: PointerExclusionInput): 'self' | 'cell' | 'tip' | null {
+  if (input.selfItemCount > 0) return 'self';
+  for (const q of input.neighborItemPts) {
+    if (circleIntersectsRect(q.x, q.y, ITEM_PROBE_RADIUS, input.rectX, input.rectY, CELL_SIZE, CELL_SIZE)) {
+      return 'cell';
+    }
+    const dx = q.x - input.cx;
+    const dy = q.y - input.cy;
+    const rr = ITEM_PROBE_RADIUS + POINTER_TIP_RADIUS;
+    if (dx * dx + dy * dy <= rr * rr) return 'tip';
+  }
+  return null;
+}

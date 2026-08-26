@@ -20,6 +20,7 @@
 import {
   itemWorldPosOnSegment,
   circleIntersectsRect,
+  pointerExcludedByItems,
   ITEM_PROBE_RADIUS,
 } from '../src/game/render/beltItemGeom.ts';
 import { CELL_SIZE } from '../src/game/render/constants.ts';
@@ -118,6 +119,40 @@ const hit = (segDef: ReturnType<typeof seg>, sp: { x: number; y: number }, prog:
   assert(hit(up, pHead, 1.05, 31, 33), 'c5a 翻转后在新格浅处 → 新格被占据');
   assert(hit(up, pHead, 1.05, 31, 34), 'c5b 同刻原格仍在圆包络内 → 原格也显示物品(不出指针)');
   assert(!hit(up, pHead, 1.5, 31, 34), 'c5c 走深后原格脱离包络 → 原格指针恢复');
+}
+
+console.log('--- D. v7b pointerExcludedByItems（self/cell/tip 三层 + tip 出格方向）---');
+const CC = CELL_SIZE / 2;
+{
+  // 场景: 竖直上行链，指针格 = (31,33)，上游物品格 = (31,34)。
+  const up = seg({ direction: 270 });
+  const pHead = pos(31, 34);
+  const ptAt = (p: number) => itemWorldPosOnSegment(up, pHead, p);
+  const cellTL = pos(31, 33);
+  const cellCenter = { x: cellTL.x + CC, y: cellTL.y + CC };
+  const call = (self: number, pt: { x: number; y: number } | null, cxOff = 0, cyOff = 0) =>
+    pointerExcludedByItems({
+      selfItemCount: self,
+      cx: cellCenter.x + cxOff,
+      cy: cellCenter.y + cyOff,
+      rectX: cellTL.x,
+      rectY: cellTL.y,
+      neighborItemPts: pt ? [pt] : [],
+    });
+  assert(call(2, null) === 'self', 'D1 本段有物品 → self（最高优先级）');
+  // tip 纯场景: 物品圆距本格矩形 2px（cell 规则不触发），指针中心停在本格远端边界线上
+  // （中格扫掠 ±0.5 格的极限相位）→ 距物品中心 22px ≤ ITEM_PROBE_RADIUS+POINTER_TIP_RADIUS
+  const far = ptAt(0.656); // 距 (31,33) 底边 22px
+  assert(!circleIntersectsRect(far.x, far.y, ITEM_PROBE_RADIUS, cellTL.x, cellTL.y, CELL_SIZE, CELL_SIZE),
+    'D2 前置: 物品圆未压入本格矩形（cell 规则确实不触发）');
+  assert(call(0, far, 0, CC) === 'tip', 'D2 指针中心停在边界线 → tip 隐藏（v7b 补的反向路径）');
+  assert(call(0, far) === null, 'D3 指针中心在格中央 → 与该物品不相触 → 显示');
+  assert(call(0, null) === null, 'D4 无物品无接触 → 显示（restore 语义）');
+  // v7 场景在新函数下的等价性: 物品压入本格矩形 → 'cell'
+  assert(call(0, ptAt(0.95), 0, CC) === 'cell', 'D5 物品压格 → cell（v7 结论在纯函数下等价）');
+  // 端点格扩程: 链尾指针中心可越出格 HALF_PTR=8px，仍按同一 tip 圆判定
+  const tailOff = CC + CELL_SIZE * 0.125;
+  assert(call(0, far, 0, tailOff) === 'tip', 'D6 端点扩程相位(中心已出格8px) → tip 隐藏');
 }
 
 console.log(`\n结果: ${passed} 通过 / ${failed} 失败`);

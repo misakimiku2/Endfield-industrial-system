@@ -25,6 +25,11 @@
 //     瞬态会与邻格空段指针像素共存。新增**格级像素占据判定**: 邻段任一物品的渲染位置
 //     （圆包络 r=20px）压到本格矩形 → 本格指针让位隐藏；离开即恢复。仍是二值硬切，
 //     无任何 alpha 渐变/缓动（v5 教训）；占据几何与物品渲染坐标逐字同源（beltItemGeom.ts）。
+//   - 2026-08-27 v7b 补丁（用户第二轮反馈"完全没解决"）: v7 只挡了"物品伸进空格"，
+//     漏了反向——**指针 Sprite 自身画出自己的格子**（中格扫掠 ±0.5 格中心停在边界线、
+//     端点格还有 HALF_PTR 扩程，尖端伸入邻格 ~8px+）。三层判定收口为纯函数
+//     pointerExcludedByItems（self/cell/tip），并新增**指针显隐变化运行日志**
+//     （环形 300 条，__game.pointerLog() 覆盘每次 hide/show 及原因），供用户实测观察。
 //
 // PixiJS v8 注意：Graphics 作为 StencilMask，clear()+redraw 后模板缓冲不更新（github #10290）。
 //   drawEndpointMask 重画后必须 cellWrap.mask=null 再绑回，否则蒙版形同虚设——曾导致起点
@@ -44,7 +49,11 @@ import { CELL_SIZE } from './constants';
 import { turnInfoFromDirections } from '../systems/belt/BeltPathGeometry';
 import { BeltSystem } from '../systems/BeltSystem';
 import { lerpColor, BLOCKED_BLEND_MS } from './BeltVectorGeometry';
-import { itemWorldPosOnSegment, circleIntersectsRect, ITEM_PROBE_RADIUS } from './beltItemGeom.ts';
+import {
+  itemWorldPosOnSegment,
+  pointerExcludedByItems,
+  type PointerExclusionInput,
+} from './beltItemGeom.ts';
 
 /** pointer 在格内的视觉尺寸（相对 CELL_SIZE）。与旧项目 cellSize*0.25 一致（按 pointer 高度）。 */
 const POINTER_SIZE_RATIO = 0.25;
@@ -52,6 +61,8 @@ const POINTER_SIZE_RATIO = 0.25;
 const POINTER_TINT_NORMAL = 0xdfb615;
 /** 堵塞时箭头 tint（用户指定 #E6956F）。 */
 const POINTER_TINT_BLOCKED = 0xe6956f;
+/** 指针显隐变化日志环形容量。 */
+const POINTER_LOG_MAX = 300;
 
 /** 方向 → 序号：up=0, right=1, down=2, left=3（与旧项目 _directionToIndex 一致）。 */
 function directionToIndex(dir: Direction): number {
@@ -101,6 +112,23 @@ interface PointerEntry {
   handle: EntityHandle;
   /** 堵塞渐变进度 0~1（箭头黄 → 橙 #E6956F）。每帧向目标趋近。 */
   blockedBlend: number;
+  /** 上一帧指针可见性（-1=未记录；用于显隐变化日志去重）。 */
+  lastPtrAlpha: number;
+  /** 上一帧隐藏原因（'self'|'cell'|'tip'，恢复时日志用）。 */
+  lastExclReason: string;
+}
+
+/** 指针显隐变化日志条目（__game.pointerLog() 覆盘用）。 */
+export interface PointerLogEntry {
+  /** 页面毫秒时间戳（performance.now）。 */
+  t: number;
+  /** 格网格坐标。 */
+  gx: number;
+  gy: number;
+  /** 'hide' | 'show'。 */
+  ev: 'hide' | 'show';
+  /** 触发原因: self(本段有物品) / cell(物品压本格) / tip(指针尖端触邻物品) / restore(物品离开恢复)。 */
+  reason: string;
 }
 
 /**
@@ -133,6 +161,8 @@ export class BeltPointerRenderer {
   private entries = new Map<EntityHandle, PointerEntry>();
   /** 选中态（SelectionSystem 写）；选中段叠加白色 pointer（whiteSprite alpha 渐变）。 */
   private beltSelection: BeltSelection | null = null;
+  /** 指针显隐变化环形日志（__game.pointerLog() 读取，最近 POINTER_LOG_MAX 条）。 */
+  private pointerLogRing: PointerLogEntry[] = [];
 
   constructor(world: World, layer: Container, getTexture: TextureLookup) {
     this.world = world;
@@ -143,6 +173,11 @@ export class BeltPointerRenderer {
   /** 注入选中态（由 RenderSystem.setBeltSelection 转发）。 */
   setBeltSelection(bs: BeltSelection): void {
     this.beltSelection = bs;
+  }
+
+  /** 指针显隐变化日志（最近 POINTER_LOG_MAX 条，供 __game.pointerLog() 覆盘）。 */
+  getPointerLog(): PointerLogEntry[] {
+    return this.pointerLogRing;
   }
 
   /**
@@ -240,7 +275,7 @@ export class BeltPointerRenderer {
         cellWrap.addChild(sprite);
         cellWrap.addChild(whiteSprite);
         this.layer.addChild(cellWrap);
-        entry = { sprite, whiteSprite, cellWrap, cellMask, lastMaskKey: '', handle, blockedBlend: 0 };
+        entry = { sprite, whiteSprite, cellWrap, cellMask, lastMaskKey: '', handle, blockedBlend: 0, lastPtrAlpha: -1, lastExclReason: '' };
         this.entries.set(handle, entry);
       }
 
@@ -300,32 +335,45 @@ export class BeltPointerRenderer {
       const px = CELL_SIZE / 2 + x;
       const py = CELL_SIZE / 2 + y;
 
-      // 一格一物品（A9 §5.2.2；2026-08-25 v6 定稿 + 2026-08-27 v7 像素级扩展）:
-      // 该格显示**指针或物品二选一**，硬切无过渡、无任何渐隐/缓动/半径特效（渐变系
-      // 变体均经用户实测否决——"跟其他的指针一样"）。判定两层:
-      //   ① 按段: 本段 items 非空（含 entering 行走中）→ 指针立即隐藏；
-      //   ② 按格(v7): 物品与指针贴图都会越过段边界（物品前半身 ~16px、指针尖 ~8px，
-      //      相位独立），仅①时物品跨格瞬态会与邻格空段的流动指针像素共存——用户直线带
-      //      实拍复现并重申不变量。故邻段（4 向）任一物品渲染位置（圆 r=ITEM_PROBE_RADIUS）
-      //      压到本格矩形 → 本格指针让位隐藏，物品离开即恢复。转角弧与端口预约延伸
-      //      （progress>1）由 beltItemGeom 的同源坐标统一覆盖。
-      let ptrAlpha = (seg.items ?? []).length > 0 ? 0 : 1;
-      if (ptrAlpha === 1) {
-        const gx = Math.round(pos.x / CELL_SIZE);
-        const gy = Math.round(pos.y / CELL_SIZE);
-        neighborLoop:
-        for (let d = 0; d < 4; d++) {
-          const nx = gx + (d === 0 ? 1 : d === 1 ? -1 : 0);
-          const ny = gy + (d === 2 ? 1 : d === 3 ? -1 : 0);
-          const nbPts = itemPtsByCell.get(`${nx},${ny}`);
-          if (!nbPts) continue;
-          for (const p of nbPts) {
-            if (circleIntersectsRect(p.x, p.y, ITEM_PROBE_RADIUS, pos.x, pos.y, CELL_SIZE, CELL_SIZE)) {
-              ptrAlpha = 0;
-              break neighborLoop;
-            }
-          }
-        }
+      // 一格一物品（A9 §5.2.2；v6 按段 → v7/v7b 像素级，2026-08-27 用户两轮反馈定案）:
+      // 该格显示**指针或物品二选一**，硬切无过渡、无任何渐隐/缓动/半径特效。三层判定
+      // 收口在 beltItemGeom.pointerExcludedByItems（纯函数、单测覆盖）:
+      //   ① self: 本段 items 非空（含 entering 行走中）→ 隐藏；
+      //   ② cell: 邻段物品圆压到本格矩形 → 隐藏（v7: 物品跨格瞬态伸进空格 ~16px）;
+      //   ③ tip : 指针渲染中心与邻近物品圆相触 → 隐藏（v7b: 指针自身画出格子——中格
+      //      扫掠 ±0.5 格中心停在边界、端点格还有 HALF_PTR 扩程，尖端伸进邻格 ~8px+。
+      //      第二轮用户反馈"完全没解决"的正是这条反向路径: 邻格空段的箭头尖压在
+      //      有物品的格上）。
+      // 三层均二值硬切；物品离开即恢复（restore）。显隐跳变写入环形日志供实测覆盘。
+      const gx = Math.round(pos.x / CELL_SIZE);
+      const gy = Math.round(pos.y / CELL_SIZE);
+      const neighborPts: Array<{ x: number; y: number }> = [];
+      for (let d = 0; d < 4; d++) {
+        const nx = gx + (d === 0 ? 1 : d === 1 ? -1 : 0);
+        const ny = gy + (d === 2 ? 1 : d === 3 ? -1 : 0);
+        const pts = itemPtsByCell.get(`${nx},${ny}`);
+        if (pts) neighborPts.push(...pts);
+      }
+      const exclInput: PointerExclusionInput = {
+        selfItemCount: (seg.items ?? []).length,
+        cx: pos.x + px,
+        cy: pos.y + py,
+        rectX: pos.x,
+        rectY: pos.y,
+        neighborItemPts: neighborPts,
+      };
+      const excl = pointerExcludedByItems(exclInput);
+      const ptrAlpha = excl === null ? 1 : 0;
+      if (entry.lastPtrAlpha !== ptrAlpha) {
+        this.pointerLogRing.push({
+          t: performance.now(),
+          gx, gy,
+          ev: ptrAlpha === 0 ? 'hide' : 'show',
+          reason: ptrAlpha === 0 ? (excl ?? '') : 'restore',
+        });
+        if (this.pointerLogRing.length > POINTER_LOG_MAX) this.pointerLogRing.shift();
+        entry.lastPtrAlpha = ptrAlpha;
+        entry.lastExclReason = excl ?? '';
       }
       // 黄色 pointer（底层，始终显示，保证自动扶梯跨格衔接不断层）
       entry.sprite.position.set(px, py);

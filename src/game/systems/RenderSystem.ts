@@ -346,6 +346,11 @@ export class RenderSystem {
     this.portHighlightRenderer.update(deltaMS);
   }
 
+  /** 指针显隐变化日志（v7b 调试，转发 BeltPointerRenderer 环形缓冲，__game.pointerLog() 消费）。 */
+  getPointerLog() {
+    return this.pointerRenderer.getPointerLog();
+  }
+
   /** 销毁所有 Sprite（场景切换/ teardown 用）。实体本身不动（由 ECS 管理）。 */
   clear(): void {
     for (const entry of this.entries.values()) this.disposeEntry(entry);
