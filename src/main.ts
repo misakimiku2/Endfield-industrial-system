@@ -129,13 +129,6 @@ async function main() {
   const placement = game.placement;
   const occupancy = game.occupancy;
 
-  // 指针 v7b 门口格探测: 出口紧邻格被**设备**（非传送带）占用 → 该格恒不显示箭头
-  // （根治存货口/机器门口的吸收间隙箭头闪动；物品走进设备的格子不表达"流动"）。
-  game.renderSystem.setDoorCellProbe((gx, gy) => {
-    const occ = occupancy.getOccupant(gx, gy);
-    return occ !== null && occ !== 'transport_belt';
-  });
-
   // ── T1.10 性能基准: FPS + 内存（JS 堆 + GPU 纹理估算）──
   const perf = new PerfMonitor(app, game.world, game.renderSystem, occupancy);
 

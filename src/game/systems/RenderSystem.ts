@@ -356,11 +356,6 @@ export class RenderSystem {
     return this.pointerRenderer.getPointerState(this.world);
   }
 
-  /** 注入门口格探测（出口紧邻格是否为设备；main 用 occupancy 接线）。 */
-  setDoorCellProbe(probe: ((gx: number, gy: number) => boolean) | null): void {
-    this.pointerRenderer.setDoorCellProbe(probe);
-  }
-
   /** 销毁所有 Sprite（场景切换/ teardown 用）。实体本身不动（由 ECS 管理）。 */
   clear(): void {
     for (const entry of this.entries.values()) this.disposeEntry(entry);

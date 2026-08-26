@@ -20,20 +20,17 @@
 //     渐隐、占据半径、显隐缓动）均被用户实测否决——队列前方箭头出现各种形式的
 //     alpha 渐变闪动。定稿: **无任何特殊效果**，段上 items 非空即隐藏、空段常显流动，
 //     与其他指针行为完全一致。
-//   - 2026-08-27 v7 补丁（用户重申不变量"每一格画面上只允许指针或物品其一"）: 物品与
-//     指针贴图都会越界（物品前半身伸入邻格 ~16px、指针尖端 ~8px），按段判定下物品跨格
-//     瞬态会与邻格空段指针像素共存。新增**格级像素占据判定**: 邻段任一物品的渲染位置
-//     （圆包络 r=20px）压到本格矩形 → 本格指针让位隐藏；离开即恢复。仍是二值硬切，
-//     无任何 alpha 渐变/缓动（v5 教训）；占据几何与物品渲染坐标逐字同源（beltItemGeom.ts）。
-//   - 2026-08-27 v7b 补丁（用户第二轮反馈"完全没解决"）: v7 只挡了"物品伸进空格"，
-//     漏了反向——**指针 Sprite 自身画出自己的格子**（中格扫掠 ±0.5 格中心停在边界线、
-//     端点格还有 HALF_PTR 扩程，尖端伸入邻格 ~8px+）。三层判定收口为纯函数
-//     pointerExcludedByItems（self/cell/tip），并新增**指针显隐变化运行日志**
-//     （环形 300 条，__game.pointerLog() 覆盘每次 hide/show 及原因），供用户实测观察。
+//   - 2026-08-27 v8 终稿（用户第九轮澄清"我要的其实就是队列前的箭头，不要闪动"）:
+//     v7/v7b 的邻接接近隐藏（物品压线/指针尖触邻物品即隐）会让**队列前方的箭头提前
+//     0.6~0.9s 消失**——每次队列推进箭头先没、物品后才到，读作"闪动"；v7c 门口恒隐
+//     更是把用户要的箭头删了。全部撤销。像素互斥改由**几何保证**:
+//     **每一格的箭头都蒙版裁剪在自己格内**（贴图像素永不过线），物品过线时两者正好
+//     在格界两侧交接——空格箭头常驻稳定（直到物品真正进格才硬切为物品）、零像素共存、
+//     零闪动。相邻格箭头由链相位自动接力（N 格出口边 = N+1 格入口边，wrap 瞬间下一格
+//     接管同一世界位置），扶梯观感保留。判定回归唯一规则: 本段 items 非空 → 隐藏。
 //
 // PixiJS v8 注意：Graphics 作为 StencilMask，clear()+redraw 后模板缓冲不更新（github #10290）。
-//   drawEndpointMask 重画后必须 cellWrap.mask=null 再绑回，否则蒙版形同虚设——曾导致起点
-//   pointer 从传送带外面飘入。详见 update 中 isHead 分支的 workaround 注释。
+//   本类 v8 起蒙版形状恒为整格、创建后从不清空重画，不触发该 regression。
 //
 // pointer 纹理：devices 图集的 pointer.png（来自 pointer.svg，9.4×21.3，纵向，默认箭头朝上）。
 // 挂 layer3Item（物品层），盖在传送带带身（layer2Building）之上。
@@ -46,14 +43,9 @@ import type { Direction } from '../components/BuildingComp';
 import type { TextureLookup } from '../systems/RenderSystem';
 import type { BeltSelection } from '../systems/belt/BeltSelection';
 import { CELL_SIZE } from './constants';
-import { turnInfoFromDirections, directionVector } from '../systems/belt/BeltPathGeometry';
+import { turnInfoFromDirections } from '../systems/belt/BeltPathGeometry';
 import { BeltSystem } from '../systems/BeltSystem';
 import { lerpColor, BLOCKED_BLEND_MS } from './BeltVectorGeometry';
-import {
-  itemWorldPosOnSegment,
-  pointerExcludedByItems,
-  type PointerExclusionInput,
-} from './beltItemGeom.ts';
 
 /** pointer 在格内的视觉尺寸（相对 CELL_SIZE）。与旧项目 cellSize*0.25 一致（按 pointer 高度）。 */
 const POINTER_SIZE_RATIO = 0.25;
@@ -67,12 +59,9 @@ const POINTER_LOG_MAX = 300;
  *  ⚠️ 仅为定位"指针×物品同格"临时存在——问题解决后把本开关改 false 或整段删除
  *  （搜索 POINTER_DEBUG_CONSOLE）。 */
 const POINTER_DEBUG_CONSOLE = true;
-/** 显隐原因的控制台中文表述。 */
+/** 显隐原因的控制台中文表述（v8 只剩 self/restore——邻接接近隐藏已撤销）。 */
 const EXCL_REASON_CN: Record<string, string> = {
   self: '本格有物品',
-  door: '门口格(正喂设备), 恒不显示箭头',
-  cell: '物品压入本格',
-  tip: '指针尖触到邻格物品',
   restore: '物品离开, 恢复显示',
 };
 
@@ -99,16 +88,6 @@ function chainPhaseOf(chainId: string): number {
   return h / 997;
 }
 
-/** 方向对应的角度（弧度），right=0, down=π/2, left=π, up=3π/2。 */
-function directionAngle(dir: Direction): number {
-  switch (dir) {
-    case 0:   return 0;
-    case 90:  return Math.PI / 2;
-    case 180: return Math.PI;
-    case 270: return (3 * Math.PI) / 2;
-  }
-}
-
 /** 单个 pointer Sprite 的运行时状态。 */
 interface PointerEntry {
   sprite: Sprite;
@@ -117,16 +96,14 @@ interface PointerEntry {
   /** 包裹 sprite 的容器（作为蒙版裁剪单元，位置=格左上角世界坐标）。 */
   cellWrap: Container;
   /** 单元蒙版（Graphics，走 StencilMask 路径，无纹理、resize 安全）。
-   *  形状随端点类型变化（见 lastMaskKey），仅在 kind/direction 变化时重画，避免每帧 redraw 开销。 */
+   *  v8 起恒为整格形状、创建后从不清空重画（箭头像素永不出自己的格）。 */
   cellMask: Graphics;
-  /** 当前已画进 cellMask 的形状 key（kind+direction，避免每帧重画相同形状）。 */
-  lastMaskKey: string;
   handle: EntityHandle;
   /** 堵塞渐变进度 0~1（箭头黄 → 橙 #E6956F）。每帧向目标趋近。 */
   blockedBlend: number;
   /** 上一帧指针可见性（-1=未记录；用于显隐变化日志去重）。 */
   lastPtrAlpha: number;
-  /** 上一帧隐藏原因（'self'|'cell'|'tip'，恢复时日志用）。 */
+  /** 上一帧隐藏原因（'self'，恢复时日志用）。 */
   lastExclReason: string;
 }
 
@@ -139,19 +116,9 @@ export interface PointerLogEntry {
   gy: number;
   /** 'hide' | 'show'。 */
   ev: 'hide' | 'show';
-  /** 触发原因: self(本段有物品) / cell(物品压本格) / tip(指针尖端触邻物品) / restore(物品离开恢复)。 */
+  /** 触发原因: self(本段有物品) / restore(物品离开恢复)。 */
   reason: string;
 }
-
-/**
- * 蒙版形状种类。决定 cellMask 画什么形状：
- *  - 'none'：中间格，不裁（renderable=false、mask=null）。
- *  - 'head'：链首格，只裁"背向"方向那一侧（传送带真正的起点），其余三面向链内敞开。
- *  - 'tail'：链尾格，只裁"朝向"方向那一侧（传送带真正的终点），其余三面向链内敞开。
- *  - 'single'：单格链（head+tail 同格），两端都是尽头，完整格蒙版（两端都裁）。
- * 选中格不再单独用蒙版——改用 whiteSprite 叠层 + alpha 渐变实现"白色 pointer"，避免硬切断层。
- */
-type MaskKind = 'none' | 'head' | 'tail' | 'single';
 
 /**
  * 传送带 pointer 渲染器。
@@ -175,8 +142,6 @@ export class BeltPointerRenderer {
   private beltSelection: BeltSelection | null = null;
   /** 指针显隐变化环形日志（__game.pointerLog() 读取，最近 POINTER_LOG_MAX 条）。 */
   private pointerLogRing: PointerLogEntry[] = [];
-  /** 门口格探测（"该格出口紧邻格是否为设备"），由 main 注入 occupancy 查询。null = 未接线（视为否）。 */
-  private doorProbe: ((gx: number, gy: number) => boolean) | null = null;
 
   constructor(world: World, layer: Container, getTexture: TextureLookup) {
     this.world = world;
@@ -192,11 +157,6 @@ export class BeltPointerRenderer {
   /** 指针显隐变化日志（最近 POINTER_LOG_MAX 条，供 __game.pointerLog() 覆盘）。 */
   getPointerLog(): PointerLogEntry[] {
     return this.pointerLogRing;
-  }
-
-  /** 注入门口格探测（出口紧邻格是否为设备）。 */
-  setDoorCellProbe(probe: ((gx: number, gy: number) => boolean) | null): void {
-    this.doorProbe = probe;
   }
 
   /** 当前每格指针状态快照（alpha + 卡住的原因）——专抓"隐藏后不恢复"的格。 */
@@ -259,44 +219,25 @@ export class BeltPointerRenderer {
     // 堵塞渐变步长（线性插值，固定时长；deltaMS=0 时瞬间到位，兼容旧调用）
     const blendStep = deltaMS > 0 ? deltaMS / BLOCKED_BLEND_MS : 1;
 
-    // 3. v7 格级像素互斥数据准备: 全部可见段的 (seg,pos) 格索引 + 各段物品的渲染世界
-    //    坐标（与 BeltItemRenderer 同帧同 alpha 插值）。只对有物品的段算坐标（空段零开销）。
-    const cellByXY = new Map<string, { seg: BeltSegmentComp; pos: Position }>();
-    for (const handle of visible) {
-      const seg = this.world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp');
-      const pos = this.world.getComponent<Position>(handle, 'Position');
-      if (!seg || !pos) continue;
-      cellByXY.set(`${Math.round(pos.x / CELL_SIZE)},${Math.round(pos.y / CELL_SIZE)}`, { seg, pos });
-    }
-    const itemPtsByCell = new Map<string, Array<{ x: number; y: number }>>();
-    for (const [key, ref] of cellByXY) {
-      const items = ref.seg.items ?? [];
-      if (items.length === 0) continue;
-      itemPtsByCell.set(
-        key,
-        items.map((it) => itemWorldPosOnSegment(ref.seg, ref.pos, it.progress + alpha * (it.delta || 0))),
-      );
-    }
-
-    // 4. 新增 + 同步
+    // 3. 新增 + 同步
     for (const handle of visible) {
       let entry = this.entries.get(handle);
       if (!entry) {
         // 结构: layer → cellWrap(位置=格左上角) → sprite(相对 cellWrap 偏移)
-        //          ↑ cellMask(Graphics 正方形蒙版, 同为 cellWrap 子级, 坐标系=cellWrap 本地)
+        //          ↑ cellMask(Graphics 整格正方形蒙版, 同为 cellWrap 子级, 坐标系=cellWrap 本地)
         // Graphics 非 Sprite → 走 StencilMask(模板缓冲) 路径，无纹理、resize 安全
         // （GridRenderer 注释里警示的是 Sprite 蒙版即 AlphaMaskPipe 的悬挂引用问题）。
         const cellWrap = new Container();
         const cellMask = new Graphics();
         cellMask.rect(0, 0, CELL_SIZE, CELL_SIZE).fill({ color: 0xffffff });
-        // cellMask.renderable 的值随端点/中间状态每帧切换（见下方 isEndpoint 分支）。
-        // 端点格（启用蒙版）置 true：StencilMask 靠 collectRenderables 把它画进模板缓冲
-        //   （渲染时 colorMask.setMask(0) 关颜色写入，蒙版形状不会出现在最终画面）。
-        // 中间格（不蒙版）置 false：否则白色填充正方形会被当作普通子节点画出来。
+        // v8: 蒙版恒为整格、恒启用——箭头像素被裁剪在自己格内（像素互斥的几何保证）。
+        // StencilMask 靠 collectRenderables 把它画进模板缓冲（渲染时 colorMask.setMask(0)
+        // 关颜色写入，蒙版形状不出现在最终画面）。形状从不清空重画，不触发 github #10290。
+        cellMask.renderable = true;
         const sprite = new Sprite(this.pointerTex!);
         sprite.anchor.set(0.5);
         sprite.scale.set(this.pointerScale);
-        sprite.tint = POINTER_TINT_NORMAL; // 黄色 pointer（常态底层，始终显示保证跨格衔接）
+        sprite.tint = POINTER_TINT_NORMAL; // 黄色 pointer
         // whiteSprite：选中段叠加的白色 pointer，tint 白，alpha 随相位渐入渐出（见 update）
         const whiteSprite = new Sprite(this.pointerTex!);
         whiteSprite.anchor.set(0.5);
@@ -306,8 +247,9 @@ export class BeltPointerRenderer {
         cellWrap.addChild(cellMask);
         cellWrap.addChild(sprite);
         cellWrap.addChild(whiteSprite);
+        cellWrap.mask = cellMask;
         this.layer.addChild(cellWrap);
-        entry = { sprite, whiteSprite, cellWrap, cellMask, lastMaskKey: '', handle, blockedBlend: 0, lastPtrAlpha: -1, lastExclReason: '' };
+        entry = { sprite, whiteSprite, cellWrap, cellMask, handle, blockedBlend: 0, lastPtrAlpha: -1, lastExclReason: '' };
         this.entries.set(handle, entry);
       }
 
@@ -330,82 +272,28 @@ export class BeltPointerRenderer {
       // 传送带创建时间不同，全局同步不符实际玩法）。
       const phase = (globalPhase + chainPhaseOf(seg.chainId)) % 1;
 
-      // 链端点格启用单元蒙版，pointer 从传送带边界出现/消失，不溢出到传送带之外：
-      //  - head（链首）：裁起点侧（背向 direction），pointer 从起点边界出现。
-      //  - tail（链尾）：裁终点侧（朝向 direction），pointer 在终点边界消失（不走出末端）。
-      //  - single（单格链 head+tail 同格）：两端都是尽头，完整格蒙版（两端都裁）。
-      // 中间格不蒙版，pointer 跨格衔接（N 格出口边 = N+1 格入口边，globalPhase 复位时下一格
-      // 接管同一世界位置）→ 自动扶梯连贯流动。选中格不额外蒙版——白色靠 whiteSprite 叠层
-      // 实现（黄色底层始终在，保证衔接不断层；蒙版对 sprite/whiteSprite 一视同仁地裁剪）。
-      // isTail 可能在延长时由 true 翻 false（见 BeltCreationSystem.commitCells），
-      // 故每帧按当前 seg 重新判定，不缓存端点状态。
-      const isHead = seg.incomingDirection !== undefined;
-      const isTail = seg.isTail;
-      const maskKind: MaskKind = (isHead && isTail) ? 'single' : isHead ? 'head' : isTail ? 'tail' : 'none';
-      if (maskKind === 'none') {
-        // 中间格/链尾格：不蒙版。必须把 cellMask 的 renderable 关掉，否则那个白色填充正方形会
-        // 当作普通子节点直接画出来。
-        entry.cellMask.renderable = false;
-        entry.cellWrap.mask = null;
-      } else {
-        // head：重画蒙版形状。缓存 key 含 direction（延长转弯时 head 方向变也要重画）。
-        const maskKey = `${maskKind}:${seg.direction}`;
-        if (entry.lastMaskKey !== maskKey) {
-          this.drawEndpointMask(entry.cellMask, seg, maskKind);
-          entry.lastMaskKey = maskKey;
-          // PixiJS v8 regression（github #10290）：Graphics 作为 StencilMask，clear()+redraw
-          // 后模板缓冲不更新（仍按旧 geometry 裁剪）→ 越界 pointer 不被裁，表现为起点 pointer
-          // 从传送带外面飘入。workaround：重画后先把 mask 置 null 再绑回，强制重新采集新 geometry。
-          entry.cellWrap.mask = null;
-        }
-        entry.cellMask.renderable = true;
-        entry.cellWrap.mask = entry.cellMask;
-      }
-
       // sprite 用格中心为原点的偏移；再换算到 cellWrap 本地坐标（减去半格）。
       const { x, y, rotation } = this.computePointerTransform(seg, phase);
       const px = CELL_SIZE / 2 + x;
       const py = CELL_SIZE / 2 + y;
 
-      // 一格一物品（A9 §5.2.2；v6 按段 → v7/v7b 像素级，2026-08-27 用户两轮反馈定案）:
-      // 该格显示**指针或物品二选一**，硬切无过渡、无任何渐隐/缓动/半径特效。三层判定
-      // 收口在 beltItemGeom.pointerExcludedByItems（纯函数、单测覆盖）:
-      //   ① self: 本段 items 非空（含 entering 行走中）→ 隐藏；
-      //   ② cell: 邻段物品圆压到本格矩形 → 隐藏（v7: 物品跨格瞬态伸进空格 ~16px）;
-      //   ③ tip : 指针渲染中心与邻近物品圆相触 → 隐藏（v7b: 指针自身画出格子——中格
-      //      扫掠 ±0.5 格中心停在边界、端点格还有 HALF_PTR 扩程，尖端伸进邻格 ~8px+。
-      //      第二轮用户反馈"完全没解决"的正是这条反向路径: 邻格空段的箭头尖压在
-      //      有物品的格上）。
-      // 三层均二值硬切；物品离开即恢复（restore）。显隐跳变写入环形日志供实测覆盘。
+      // 一格一物品（A9 §5.2.2；v8 终稿 2026-08-27 用户澄清"我要的就是队列前的箭头，
+      // 不要闪动"）: 判定回归唯一规则——**本段 items 非空（含 entering 行走中）→ 隐藏，
+      // 空格 → 箭头常驻稳定**，物品进格瞬间硬切（"物品替换箭头"）。v7/v7b 的邻接接近
+      // 隐藏（物品压线/指针尖触邻物品即隐）会让箭头提前 0.6~0.9s 消失 = 闪动根源，已撤销；
+      // 像素互斥改由整格蒙版几何保证: 箭头贴图永不出自己的格，物品过线时两者在格界两侧
+      // 交接，既无像素共存也无提前消失。显隐跳变写入环形日志供实测覆盘。
       const gx = Math.round(pos.x / CELL_SIZE);
       const gy = Math.round(pos.y / CELL_SIZE);
-      const neighborPts: Array<{ x: number; y: number }> = [];
-      for (let d = 0; d < 4; d++) {
-        const nx = gx + (d === 0 ? 1 : d === 1 ? -1 : 0);
-        const ny = gy + (d === 2 ? 1 : d === 3 ? -1 : 0);
-        const pts = itemPtsByCell.get(`${nx},${ny}`);
-        if (pts) neighborPts.push(...pts);
-      }
-      const exclInput: PointerExclusionInput = {
-        selfItemCount: (seg.items ?? []).length,
-        cx: pos.x + px,
-        cy: pos.y + py,
-        rectX: pos.x,
-        rectY: pos.y,
-        neighborItemPts: neighborPts,
-        nextCellIsDevice: this.doorProbe
-          ? this.doorProbe(gx + directionVector(seg.direction).x, gy + directionVector(seg.direction).y)
-          : false,
-      };
-      const excl = pointerExcludedByItems(exclInput);
-      const ptrAlpha = excl === null ? 1 : 0;
+      const selfHidden = (seg.items ?? []).length > 0;
+      const ptrAlpha = selfHidden ? 0 : 1;
+      const reason = selfHidden ? 'self' : 'restore';
       // 显隐跳变日志。lastPtrAlpha=-1 表示首次观测: 只记基线不入日志（否则每段
-      // 画出来瞬间都会灌一条"显示←restore"初始化噪声，淹没有效事件——用户实测反馈）。
+      // 画出来瞬间都会灌一条初始化噪声，淹没有效事件——用户实测反馈）。
       if (entry.lastPtrAlpha === -1) {
         entry.lastPtrAlpha = ptrAlpha;
-        entry.lastExclReason = excl ?? '';
+        entry.lastExclReason = reason;
       } else if (entry.lastPtrAlpha !== ptrAlpha) {
-        const reason = ptrAlpha === 0 ? (excl ?? '') : 'restore';
         this.pointerLogRing.push({
           t: performance.now(),
           gx, gy,
@@ -455,49 +343,6 @@ export class BeltPointerRenderer {
   }
 
   /**
-   * 画链端点格(head/tail/single)的蒙版形状到 cellMask（cellWrap 本地坐标，格左上角为原点）。
-   *
-   * 设计：端点格只在"真正是传送带尽头"的那一面裁剪，朝向链内的其余面全部敞开：
-   *  - head（链首）：裁"背向 direction"面（起点）。沿 direction 正向延伸"敞开口"，
-   *    使 pointer 越过入口边滑入时前端不被切，越界部分（滑出起点之外）才被裁掉。
-   *  - tail（链尾）：裁"朝向 direction"面（终点）。沿 -direction 敞开。
-   *  - single（单格链）：两端都是尽头，完整格蒙版（不敞开），pointer 只在格内可见。
-   *
-   * 实现为画一个覆盖"本格 + 敞开侧外延"的矩形（加法），而不是画 U 形多边形——
-   * 矩形蒙版更简单、且 StencilMask 对凸形状无歧义。
-   *
-   * 敞开量 OPEN = 半格：足够覆盖 pointer 前端越界（pointer 高度 0.25 格，moveRange 端点侧
-   * 扩展 0.125 格，前端最多越过边界 ~0.125+0.125=0.25 格 < 0.5 格敞开口）。
-   *
-   * @param kind 'head' | 'tail' | 'single'。
-   */
-  private drawEndpointMask(cellMask: Graphics, seg: BeltSegmentComp, kind: 'head' | 'tail' | 'single'): void {
-    cellMask.clear();
-    if (kind === 'single') {
-      // 单格链：两端都是尽头，完整格蒙版（pointer 只在格内可见，两端渐入/渐出）
-      cellMask.rect(0, 0, CELL_SIZE, CELL_SIZE).fill({ color: 0xffffff });
-      return;
-    }
-    const OPEN = CELL_SIZE / 2; // 敞开侧外延量（半格）
-    // 敞开方向：head 沿 direction 正向敞开（朝链内），tail 沿 direction 负向（朝链内）。
-    // 对链首 head：direction 是链内方向 → 正向敞开。
-    // 对链尾 tail：direction 是链出口方向 → 链内是 -direction → 负向敞开。
-    const sign = kind === 'head' ? 1 : -1;
-    // 在 cellWrap 本地坐标系（原点=格左上角，y 向下）里画"本格 + 敞开侧外延"矩形。
-    // direction 角度：right=0, down=π/2, left=π, up=3π/2。
-    // 外延方向向量 = (cos, sin) * sign。
-    const ang = directionAngle(seg.direction);
-    const dx = Math.cos(ang) * sign;
-    const dy = Math.sin(ang) * sign;
-    let minX = 0, minY = 0, maxX = CELL_SIZE, maxY = CELL_SIZE;
-    if (dx > 0) maxX += OPEN;       // 朝右敞开
-    else if (dx < 0) minX -= OPEN;  // 朝左敞开
-    if (dy > 0) maxY += OPEN;       // 朝下敞开
-    else if (dy < 0) minY -= OPEN;  // 朝上敞开
-    cellMask.rect(minX, minY, maxX - minX, maxY - minY).fill({ color: 0xffffff });
-  }
-
-  /**
    * 计算指针在格内的偏移与朝向。
    * 端点格（链首/链尾）的指针允许越过传送带物理边界滑动（滑入/滑出），
    * 越界部分由单元蒙版裁掉（alpha 恒为 1），实现"箭头自然走出传送带"的平滑效果。
@@ -508,8 +353,7 @@ export class BeltPointerRenderer {
     phase: number,
   ): { x: number; y: number; rotation: number } {
     if (seg.isCorner && seg.entryDir !== undefined) {
-      // 转角格：指针沿圆弧走，端点就在格子边缘上，无需额外扩展。
-      // 链首/链尾滑入/滑出的越界部分由单元蒙版裁掉。
+      // 转角格：指针沿圆弧走，端点就在格子边缘上；越界部分由整格蒙版裁掉。
       return this.computeCornerTransform(seg.entryDir, seg.direction, phase);
     }
     return this.computeStraightTransform(seg, phase);
@@ -517,33 +361,23 @@ export class BeltPointerRenderer {
 
   /**
    * 直段 pointer：沿方向轴线性移动，箭头指向 dir（与物品流向一致）。
-   * 链首/链尾格把移动范围扩展半个箭头（0.125 格），使箭头能滑出传送带边界；
-   * 越界部分由单元蒙版裁掉（不再用 alpha 渐变淡出）。
+   * v8: 移动范围统一 [-0.5, +0.5]（不再做链首/链尾的 HALF_PTR 滑出扩展）——
+   * 越界滑出与"箭头像素不出自己格"的整格蒙版矛盾，滑入/滑出由格边裁剪自然呈现。
    */
   private computeStraightTransform(
     seg: BeltSegmentComp,
     phase: number,
   ): { x: number; y: number; rotation: number } {
     const rotation = directionToIndex(seg.direction) * (Math.PI / 2);
-    // 移动范围（相对格中心，单位=格）：中间格 [-0.5, +0.5]
-    // 链首格入口端多滑出 HALF_PTR，链尾格出口端多滑出 HALF_PTR
-    const HALF_PTR = POINTER_SIZE_RATIO / 2; // 0.125
-    const isHead = seg.incomingDirection !== undefined;
-    const isTail = seg.isTail;
-    let minMove = -0.5;
-    let maxMove = 0.5;
-    if (isHead) minMove -= HALF_PTR;
-    if (isTail) maxMove += HALF_PTR;
-    const moveRatio = minMove + phase * (maxMove - minMove);
+    // 移动范围（相对格中心，单位=格）：[-0.5, +0.5]
+    const moveRatio = phase - 0.5;
     const moveDist = moveRatio * CELL_SIZE;
-    const dirRad = directionAngle(seg.direction);
-    const dvx = Math.cos(dirRad);
-    const dvy = Math.sin(dirRad);
-    return {
-      x: dvx * moveDist,
-      y: dvy * moveDist,
-      rotation,
-    };
+    switch (seg.direction) {
+      case 0:   return { x: moveDist, y: 0, rotation };
+      case 90:  return { x: 0, y: moveDist, rotation };
+      case 180: return { x: -moveDist, y: 0, rotation };
+      case 270: return { x: 0, y: -moveDist, rotation };
+    }
   }
 
   /**
