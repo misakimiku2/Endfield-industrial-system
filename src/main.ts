@@ -819,24 +819,6 @@ async function main() {
       .join('\n');
   };
 
-  // pointerLog(max=40) → 指针显隐变化日志（v7b 调试）: 打印**最近 max 条**（防长链刷屏），
-  // 每行 "[+1.234s] (31,34) 隐藏←tip"。首帧基线不入日志（无初始化噪声）。
-  // reason: self=本段有物品 / cell=物品压入本格 / tip=指针尖端触到邻格物品 / restore=物品离开恢复。
-  const pointerLog = (max = 40): string => {
-    const all = game.renderSystem.getPointerLog();
-    if (all.length === 0) return '指针显隐日志: 空（还没有 hide/show 跳变，观察几秒再调用）';
-    const t0 = all[0].t;
-    const tail = all.slice(-max);
-    const counts = all.reduce<Record<string, number>>((acc, e) => {
-      const key = `${e.ev}:${e.reason}`;
-      acc[key] = (acc[key] ?? 0) + 1;
-      return acc;
-    }, {});
-    return `指针显隐变化 共${all.length} 条，显示最近 ${tail.length} 条（时间相对首条）:\n` + tail.map((e) =>
-      `[+${((e.t - t0) / 1000).toFixed(3)}s] (${e.gx},${e.gy}) ${e.ev === 'hide' ? '隐藏' : '显示'}←${e.reason}`,
-    ).join('\n') + `\n全量统计: ${JSON.stringify(counts)}`;
-  };
-
   // ── T2.3 验收钩子: 配方数据加载（启动时从 CSV 构建，控制台查询）──
   // listRecipes('refining_unit') → "精炼炉配方：晶体外壳(源矿×1, 2秒)、蓝铁块(蓝铁矿×1, 2秒)、..."
   const equipmentNameToId = new Map<string, string>();
@@ -1659,11 +1641,6 @@ async function main() {
     consumeBeltTailItem,
     injectBeltItem,
     beltStatus,
-    pointerLog, // v7b 调试: 指针显隐变化日志（hide/show + 原因 self/cell/tip/restore）
-    pointerState: () => game.renderSystem.getPointerState(), // v7b 调试: 当前每格指针 alpha 快照
-    // 用法: 造一条带让取货口供料，物品跨格时控制台跑 __game.pointerLog()——
-    // 正常应看到成对的 hide(cell/tip)→show(restore)；若出现 show 状态下肉眼仍见重叠，
-    // 把该时刻的 (gx,gy)+reason 反馈给开发定位。
     itemTable,
     recipeTable,
     recipeIndex,
