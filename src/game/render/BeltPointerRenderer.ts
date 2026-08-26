@@ -46,7 +46,7 @@ import type { Direction } from '../components/BuildingComp';
 import type { TextureLookup } from '../systems/RenderSystem';
 import type { BeltSelection } from '../systems/belt/BeltSelection';
 import { CELL_SIZE } from './constants';
-import { turnInfoFromDirections } from '../systems/belt/BeltPathGeometry';
+import { turnInfoFromDirections, directionVector } from '../systems/belt/BeltPathGeometry';
 import { BeltSystem } from '../systems/BeltSystem';
 import { lerpColor, BLOCKED_BLEND_MS } from './BeltVectorGeometry';
 import {
@@ -70,6 +70,7 @@ const POINTER_DEBUG_CONSOLE = true;
 /** 显隐原因的控制台中文表述。 */
 const EXCL_REASON_CN: Record<string, string> = {
   self: '本格有物品',
+  door: '门口格(正喂设备), 恒不显示箭头',
   cell: '物品压入本格',
   tip: '指针尖触到邻格物品',
   restore: '物品离开, 恢复显示',
@@ -174,6 +175,8 @@ export class BeltPointerRenderer {
   private beltSelection: BeltSelection | null = null;
   /** 指针显隐变化环形日志（__game.pointerLog() 读取，最近 POINTER_LOG_MAX 条）。 */
   private pointerLogRing: PointerLogEntry[] = [];
+  /** 门口格探测（"该格出口紧邻格是否为设备"），由 main 注入 occupancy 查询。null = 未接线（视为否）。 */
+  private doorProbe: ((gx: number, gy: number) => boolean) | null = null;
 
   constructor(world: World, layer: Container, getTexture: TextureLookup) {
     this.world = world;
@@ -189,6 +192,24 @@ export class BeltPointerRenderer {
   /** 指针显隐变化日志（最近 POINTER_LOG_MAX 条，供 __game.pointerLog() 覆盘）。 */
   getPointerLog(): PointerLogEntry[] {
     return this.pointerLogRing;
+  }
+
+  /** 注入门口格探测（出口紧邻格是否为设备）。 */
+  setDoorCellProbe(probe: ((gx: number, gy: number) => boolean) | null): void {
+    this.doorProbe = probe;
+  }
+
+  /** 当前每格指针状态快照（alpha + 卡住的原因）——专抓"隐藏后不恢复"的格。 */
+  getPointerState(world: World): string {
+    const lines: string[] = [];
+    for (const [handle, entry] of this.entries) {
+      const pos = world.getComponent<Position>(handle, 'Position');
+      if (!pos) continue;
+      const gx = Math.round(pos.x / CELL_SIZE);
+      const gy = Math.round(pos.y / CELL_SIZE);
+      lines.push(`(${gx},${gy}) alpha=${entry.sprite.alpha}${entry.lastExclReason ? ` ←${entry.lastExclReason}` : ''}`);
+    }
+    return lines.length > 0 ? lines.join('\n') : '（无指针）';
   }
 
   /**
@@ -372,6 +393,9 @@ export class BeltPointerRenderer {
         rectX: pos.x,
         rectY: pos.y,
         neighborItemPts: neighborPts,
+        nextCellIsDevice: this.doorProbe
+          ? this.doorProbe(gx + directionVector(seg.direction).x, gy + directionVector(seg.direction).y)
+          : false,
       };
       const excl = pointerExcludedByItems(exclInput);
       const ptrAlpha = excl === null ? 1 : 0;

@@ -129,6 +129,13 @@ async function main() {
   const placement = game.placement;
   const occupancy = game.occupancy;
 
+  // 指针 v7b 门口格探测: 出口紧邻格被**设备**（非传送带）占用 → 该格恒不显示箭头
+  // （根治存货口/机器门口的吸收间隙箭头闪动；物品走进设备的格子不表达"流动"）。
+  game.renderSystem.setDoorCellProbe((gx, gy) => {
+    const occ = occupancy.getOccupant(gx, gy);
+    return occ !== null && occ !== 'transport_belt';
+  });
+
   // ── T1.10 性能基准: FPS + 内存（JS 堆 + GPU 纹理估算）──
   const perf = new PerfMonitor(app, game.world, game.renderSystem, occupancy);
 
@@ -1660,6 +1667,7 @@ async function main() {
     injectBeltItem,
     beltStatus,
     pointerLog, // v7b 调试: 指针显隐变化日志（hide/show + 原因 self/cell/tip/restore）
+    pointerState: () => game.renderSystem.getPointerState(), // v7b 调试: 当前每格指针 alpha 快照
     // 用法: 造一条带让取货口供料，物品跨格时控制台跑 __game.pointerLog()——
     // 正常应看到成对的 hide(cell/tip)→show(restore)；若出现 show 状态下肉眼仍见重叠，
     // 把该时刻的 (gx,gy)+reason 反馈给开发定位。

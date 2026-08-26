@@ -125,18 +125,24 @@ export interface PointerExclusionInput {
   rectY: number;
   /** 邻接格（含本格外 4 向段）的全部物品渲染坐标（已带插值）。 */
   neighborItemPts: Array<{ x: number; y: number }>;
+  /** 出口方向紧邻格是否为设备（存货口/机器输入口等"门口格"）。
+   *  门口格恒不显示箭头：贯穿流下门口格每吸收一件物品会短暂空出 ~0.4s，
+   *  箭头会以 2s 周期闪现/消失（2026-08-27 用户确认的"门口箭头闪动"）；
+   *  物品走进设备的格子不表达"流动"，恒隐最符合"每格二选一 + 无闪动"。 */
+  nextCellIsDevice: boolean;
 }
 
 /**
- * 指针是否因物品而隐藏。返回原因（供运行日志），不隐藏返回 null:
+ * 指针是否因物品/拓扑而隐藏。返回原因（供运行日志），不隐藏返回 null:
  *  - 'self': 本段 items 非空（v6 按段判定，最高优先级）；
- *  - 'cell': 物品圆压到本格矩形（v7 格级占据——物品在自己格内但本格仍空着显示指针？不可能；
- *            实际触发形态是物品跨格瞬态压线）;
+ *  - 'door': 门口格（出口紧邻设备输入侧），恒隐（与物品有无无关——闪动根治）；
+ *  - 'cell': 物品圆压到本格矩形（v7 格级占据——物品跨格瞬态压线）;
  *  - 'tip' : 指针贴图（保守外接圆）与邻近物品圆相接触（v7b 出格尖端避让）。
- * 三条均为二值硬切，无渐变。
+ * 均为二值硬切，无渐变。
  */
-export function pointerExcludedByItems(input: PointerExclusionInput): 'self' | 'cell' | 'tip' | null {
+export function pointerExcludedByItems(input: PointerExclusionInput): 'self' | 'door' | 'cell' | 'tip' | null {
   if (input.selfItemCount > 0) return 'self';
+  if (input.nextCellIsDevice) return 'door';
   for (const q of input.neighborItemPts) {
     if (circleIntersectsRect(q.x, q.y, ITEM_PROBE_RADIUS, input.rectX, input.rectY, CELL_SIZE, CELL_SIZE)) {
       return 'cell';

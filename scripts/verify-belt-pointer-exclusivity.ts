@@ -130,7 +130,7 @@ const CC = CELL_SIZE / 2;
   const ptAt = (p: number) => itemWorldPosOnSegment(up, pHead, p);
   const cellTL = pos(31, 33);
   const cellCenter = { x: cellTL.x + CC, y: cellTL.y + CC };
-  const call = (self: number, pt: { x: number; y: number } | null, cxOff = 0, cyOff = 0) =>
+  const call = (self: number, pt: { x: number; y: number } | null, cxOff = 0, cyOff = 0, door = false) =>
     pointerExcludedByItems({
       selfItemCount: self,
       cx: cellCenter.x + cxOff,
@@ -138,6 +138,7 @@ const CC = CELL_SIZE / 2;
       rectX: cellTL.x,
       rectY: cellTL.y,
       neighborItemPts: pt ? [pt] : [],
+      nextCellIsDevice: door,
     });
   assert(call(2, null) === 'self', 'D1 本段有物品 → self（最高优先级）');
   // tip 纯场景: 物品圆距本格矩形 2px（cell 规则不触发），指针中心停在本格远端边界线上
@@ -153,6 +154,10 @@ const CC = CELL_SIZE / 2;
   // 端点格扩程: 链尾指针中心可越出格 HALF_PTR=8px，仍按同一 tip 圆判定
   const tailOff = CC + CELL_SIZE * 0.125;
   assert(call(0, far, 0, tailOff) === 'tip', 'D6 端点扩程相位(中心已出格8px) → tip 隐藏');
+  // door 门口格（2026-08-27 用户确认的"吸收间隙箭头闪动"根治）:
+  assert(call(0, null, 0, 0, true) === 'door', 'D7 门口格空置 → door 恒隐（不闪现）');
+  assert(call(0, null, 0, 0, true) !== null, 'D7b 门口格空置绝不返回 null');
+  assert(call(2, null, 0, 0, true) === 'self', 'D8 self 优先级仍高于 door');
 }
 
 console.log(`\n结果: ${passed} 通过 / ${failed} 失败`);
