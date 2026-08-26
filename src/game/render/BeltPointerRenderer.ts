@@ -364,7 +364,12 @@ export class BeltPointerRenderer {
       };
       const excl = pointerExcludedByItems(exclInput);
       const ptrAlpha = excl === null ? 1 : 0;
-      if (entry.lastPtrAlpha !== ptrAlpha) {
+      // 显隐跳变日志。lastPtrAlpha=-1 表示首次观测: 只记基线不入日志（否则每段
+      // 画出来瞬间都会灌一条"显示←restore"初始化噪声，淹没有效事件——用户实测反馈）。
+      if (entry.lastPtrAlpha === -1) {
+        entry.lastPtrAlpha = ptrAlpha;
+        entry.lastExclReason = excl ?? '';
+      } else if (entry.lastPtrAlpha !== ptrAlpha) {
         this.pointerLogRing.push({
           t: performance.now(),
           gx, gy,
