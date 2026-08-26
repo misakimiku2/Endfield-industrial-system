@@ -133,7 +133,6 @@ console.log('[findReceiverBelt 连接判定]');
 
 console.log('[tryEmitToBelt 出货判定]');
 {
-  BeltSystem.beltPhase = 0.2; // 注入窗口内（≤ STOP_MAX）
   const comp: BuildingComp = {
     definitionId: 'refining_unit', direction: 0, state: 'idle',
     bufferInput: createBufferSlots(1), bufferOutput: createBufferSlots(1),
@@ -147,15 +146,13 @@ console.log('[tryEmitToBelt 出货判定]');
   });
   assertEq(tryEmitToBelt(mk([]), comp), null, '3a. 输出槽空 → null');
   comp.bufferOutput[0] = { itemId: 'origocrust', count: 2 };
-  BeltSystem.beltPhase = 0.7; // > STOP_MAX 窗口外
-  assertEq(tryEmitToBelt(mk([]), comp), null, '3b. beltPhase=0.7 > STOP_MAX → null（等 pointer 回到靠端口半格）');
-  BeltSystem.beltPhase = 0.2;
+  BeltSystem.beltPhase = 0.7; // 旧版窗口外相位——2026-08-25 窗口退役，注入不再受相位限制
   const s3 = mk([]);
-  assertEq(tryEmitToBelt(s3, comp), 'origocrust', '3c. 空带+窗口内 → 放出晶体外壳');
-  assertEq(s3.items, [{ itemId: 'origocrust', progress: 0.2, delta: 0 }],
-    '3c2. 物品注入段首 progress=beltPhase（物品=实体 pointer，T2.1 约定）');
+  assertEq(tryEmitToBelt(s3, comp), 'origocrust', '3b. 空带 → 放出晶体外壳（beltPhase=0.7 也可注入: 相位窗口退役）');
+  assertEq(s3.items, [{ itemId: 'origocrust', progress: 0, delta: 0 }],
+    '3b2. 物品注入段首 progress=0（2026-08-25 退役"物品=实体 pointer"，进度独立推进）');
   assertEq(comp.bufferOutput[0], { itemId: 'origocrust', count: 1 },
-    '3c3. 输出槽 count-1（未到 0 保持锁定）');
+    '3c. 输出槽 count-1（未到 0 保持锁定）');
   // 入口间距（一格一物品）: 段上已有物品 → 无论位置如何都不再接收
   assertEq(tryEmitToBelt(mk([['origocrust', 0.5]]), comp), null,
     '3d. 段上已有物品@0.5 → null（一格一物品，只往空段注入）');

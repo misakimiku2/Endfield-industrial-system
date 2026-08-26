@@ -115,17 +115,15 @@ assertEq(DEPOT_SOURCE_ITEM, 'originium_ore', '4a. 简化版源物品 = 源矿 or
     segmentIndex: 0, phaseOffset: 0,
     items: items.map(([itemId, progress, entering]) => ({ itemId, progress, delta: 0, entering })),
   });
-  BeltSystem.beltPhase = 0.7;
-  assertEq(emitSourceToBelt(mk([]), 'originium_ore'), null,
-    '5a. beltPhase=0.7 > STOP_MAX → null（等 pointer 回到靠端口半格，与 T2.7 同律）');
-  BeltSystem.beltPhase = 0.2;
+  BeltSystem.beltPhase = 0.7; // 旧版窗口外相位——2026-08-25 窗口退役，注入不再受相位限制
+  const s5 = mk([]);
+  assertEq(emitSourceToBelt(s5, 'originium_ore'), 'originium_ore',
+    '5a. 空段 → 放出源矿（beltPhase=0.7 也可注入: 相位窗口退役，2026-08-25 解绑）');
+  assertEq(s5.items, [{ itemId: 'originium_ore', progress: 0, delta: 0 }],
+    '5a2. 注入段首 progress=0（2026-08-25 退役"物品=实体 pointer"，进度独立推进）');
   assertEq(emitSourceToBelt(mk([['originium_ore', 0.5]]), 'originium_ore'), null,
     '5b. 段上已有物品 → null（一格一物品，只往空段注入）');
-  const s5 = mk([]);
-  assertEq(emitSourceToBelt(s5, 'originium_ore'), 'originium_ore', '5c. 空段+窗口内 → 放出源矿');
-  assertEq(s5.items, [{ itemId: 'originium_ore', progress: 0.2, delta: 0 }],
-    '5c2. 注入 progress=beltPhase（物品=实体 pointer，T2.1 约定）');
-  assertEq(emitSourceToBelt(s5, 'originium_ore'), null, '5c3. 同段再放 → null（已占用）');
+  assertEq(emitSourceToBelt(s5, 'originium_ore'), null, '5c. 同段再放 → null（已占用）');
 
   assertEq(tryAbsorbHeadItemSink(mk([])), null, '6a. 空段 → null');
   assertEq(tryAbsorbHeadItemSink(mk([['origocrust', 0.3]])), null, '6b. 队首 0.3 未到门口 → null');
@@ -247,8 +245,10 @@ console.log('[全链路: 取货口 → 4 段带 → 存货口]');
   tick(600); // 30 秒
   const outN = depotEventCount(machineSys, 'depot-output');
   const inN = depotEventCount(machineSys, 'depot-input');
-  assert(outN >= 10, `13a. 取货口持续输出 ≥ 10 件（实际 ${outN}）`);
-  assert(inN >= 8, `13b. 存货口持续接收 ≥ 8 件（实际 ${inN}，链上最多滞留 4 件）`);
+  // 2026-08-25 排队停格中心修订后，饱和门节拍 4 秒/件（吸入行走 2s + 中心出发跨段 1s
+  // + 到门口中心 1s；旧版爬到段尾边界候场是 3 秒/件——用户实测指出边界停车不符规范）
+  assert(outN >= 8, `13a. 取货口持续输出 ≥ 8 件（实际 ${outN}）`);
+  assert(inN >= 5, `13b. 存货口持续接收 ≥ 5 件（实际 ${inN}，链上最多滞留 4 件）`);
   assert(chain.every((s) => s.items.length <= 1), '13c. 一格一物品不变量');
   const onBelt = chain.reduce((n, s) => n + s.items.length, 0);
   assert(onBelt <= 4, `13d. 带上流动滞留 ≤ 4 件（实际 ${onBelt}，其余已进入存货口消失）`);

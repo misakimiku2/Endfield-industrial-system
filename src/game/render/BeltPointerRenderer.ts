@@ -7,13 +7,24 @@
 //     链首格(head)裁起点侧、链尾格(tail)裁终点侧、单格链(single)两端都裁——
 //     pointer 从传送带边界出现/消失，不溢出到传送带之外（起点不外飘，终点不走出）；
 //     中间格不蒙版，pointer 可自然跨越格边界，使整链箭头像传送带一样连贯流动、无断层。
-//   - 每段共享同一个 globalPhase（2 秒一格）：N 格出口边 = N+1 格入口边，
-//     相位复位时下一格的 pointer 接管同一世界位置 → 视觉无缝衔接（自动扶梯效果）。
+//   - 每链共享一个相位（2 秒一格）：N 格出口边 = N+1 格入口边，相位复位时下一格的
+//     pointer 接管同一世界位置 → 视觉无缝衔接（链内自动扶梯效果）。相位 = 全局时钟
+//     + **按 chainId 确定性派生的偏移**（2026-08-25 用户实测修订: 不同时间创建的传送带
+//     指针动画不应全局锁步，并行带互相独立；同链保持扶梯连续）。物品已与指针解耦
+//     （T2.7 起注入段首独立推进），指针相位只影响箭头动画本身。
 //   - 直段：沿方向轴线性移动；链首/链尾格移动范围在端点侧各扩展半个箭头（滑入/滑出），
 //     越界部分由端点蒙版裁掉（pointer 从边界渐入/渐出，而非硬切或外飘）。
 //   - 转角段：沿四分之一圆弧移动。
-//   - T2.1 起：段上有物品时 pointer 距最近物品渐变淡出/淡入（A9 §5.2.2 仅空载显示的优雅版，
-//     见 update 中 ptrAlpha；物品=实体 pointer 同相位，指针间距与物品节奏一致）。
+//   - T2.1 起：段上有物品时指针隐藏（A9 §5.2.2 一格一物品: 该格显示指针或物品二选一，
+//     物品替换箭头为硬切）。2026-08-25 相位解耦后曾迭代的变体（相位差渐隐、世界距离
+//     渐隐、占据半径、显隐缓动）均被用户实测否决——队列前方箭头出现各种形式的
+//     alpha 渐变闪动。定稿: **无任何特殊效果**，段上 items 非空即隐藏、空段常显流动，
+//     与其他指针行为完全一致。
+//   - 2026-08-27 v7 补丁（用户重申不变量"每一格画面上只允许指针或物品其一"）: 物品与
+//     指针贴图都会越界（物品前半身伸入邻格 ~16px、指针尖端 ~8px），按段判定下物品跨格
+//     瞬态会与邻格空段指针像素共存。新增**格级像素占据判定**: 邻段任一物品的渲染位置
+//     （圆包络 r=20px）压到本格矩形 → 本格指针让位隐藏；离开即恢复。仍是二值硬切，
+//     无任何 alpha 渐变/缓动（v5 教训）；占据几何与物品渲染坐标逐字同源（beltItemGeom.ts）。
 //
 // PixiJS v8 注意：Graphics 作为 StencilMask，clear()+redraw 后模板缓冲不更新（github #10290）。
 //   drawEndpointMask 重画后必须 cellWrap.mask=null 再绑回，否则蒙版形同虚设——曾导致起点
@@ -33,11 +44,10 @@ import { CELL_SIZE } from './constants';
 import { turnInfoFromDirections } from '../systems/belt/BeltPathGeometry';
 import { BeltSystem } from '../systems/BeltSystem';
 import { lerpColor, BLOCKED_BLEND_MS } from './BeltVectorGeometry';
+import { itemWorldPosOnSegment, circleIntersectsRect, ITEM_PROBE_RADIUS } from './beltItemGeom.ts';
 
 /** pointer 在格内的视觉尺寸（相对 CELL_SIZE）。与旧项目 cellSize*0.25 一致（按 pointer 高度）。 */
 const POINTER_SIZE_RATIO = 0.25;
-/** pointer 接近物品时 alpha 渐变淡出的相位范围（格单位，0.15 ≈ 10px）。避免硬切突兀消失。 */
-const POINTER_FADE = 0.15;
 /** 常态箭头 tint（黄 #DFB615）。 */
 const POINTER_TINT_NORMAL = 0xdfb615;
 /** 堵塞时箭头 tint（用户指定 #E6956F）。 */
@@ -51,6 +61,19 @@ function directionToIndex(dir: Direction): number {
     case 90:  return 2; // down
     case 180: return 3; // left
   }
+}
+
+/**
+ * 链相位偏移（[0,1)）——从 chainId 确定性派生（无状态、每帧一致）。
+ * 同链各段同偏移（扶梯连续）；不同链偏移不同（并行带指针互相独立）。
+ * 传送带编辑（链合并/拆分重建 chainId）时相位会变，指针跳一次——低频可接受。
+ */
+function chainPhaseOf(chainId: string): number {
+  let h = 0;
+  for (let i = 0; i < chainId.length; i++) {
+    h = (h * 31 + chainId.charCodeAt(i)) % 997;
+  }
+  return h / 997;
 }
 
 /** 方向对应的角度（弧度），right=0, down=π/2, left=π, up=3π/2。 */
@@ -162,12 +185,33 @@ export class BeltPointerRenderer {
     // 懒解析纹理：assets 在 Game 构造之后才加载完，首次有传送带段时取真实纹理。
     if (!this.resolveTexture()) return;
 
-    // 2. 全局相位（与物品同源 BeltSystem.beltPhase + 帧间 alpha 插值，消除漂移/闪烁）
+    // 2. 全局相位（指针动画时间源）+ 帧间 alpha 插值。2026-08-25 起**按链加相位偏移**
+    //    （见下方 chainPhaseOf）: 不同链的指针不同步——传送带创建时间不同，全局锁步
+    //    不符实际玩法（用户实测反馈）。物品已与指针解耦（注入段首独立推进）。
     const globalPhase = BeltSystem.beltPhase + alpha * BeltSystem.beltPhaseDelta;
     // 堵塞渐变步长（线性插值，固定时长；deltaMS=0 时瞬间到位，兼容旧调用）
     const blendStep = deltaMS > 0 ? deltaMS / BLOCKED_BLEND_MS : 1;
 
-    // 3. 新增 + 同步
+    // 3. v7 格级像素互斥数据准备: 全部可见段的 (seg,pos) 格索引 + 各段物品的渲染世界
+    //    坐标（与 BeltItemRenderer 同帧同 alpha 插值）。只对有物品的段算坐标（空段零开销）。
+    const cellByXY = new Map<string, { seg: BeltSegmentComp; pos: Position }>();
+    for (const handle of visible) {
+      const seg = this.world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp');
+      const pos = this.world.getComponent<Position>(handle, 'Position');
+      if (!seg || !pos) continue;
+      cellByXY.set(`${Math.round(pos.x / CELL_SIZE)},${Math.round(pos.y / CELL_SIZE)}`, { seg, pos });
+    }
+    const itemPtsByCell = new Map<string, Array<{ x: number; y: number }>>();
+    for (const [key, ref] of cellByXY) {
+      const items = ref.seg.items ?? [];
+      if (items.length === 0) continue;
+      itemPtsByCell.set(
+        key,
+        items.map((it) => itemWorldPosOnSegment(ref.seg, ref.pos, it.progress + alpha * (it.delta || 0))),
+      );
+    }
+
+    // 4. 新增 + 同步
     for (const handle of visible) {
       let entry = this.entries.get(handle);
       if (!entry) {
@@ -213,24 +257,11 @@ export class BeltPointerRenderer {
       // 蒙版容器对齐到格左上角世界坐标（蒙版正方形覆盖整个传送带单元）
       entry.cellWrap.position.set(pos.x, pos.y);
 
-      // pointer alpha：段上有物品时，pointer 距最近物品渐变淡出/淡入（A9 §5.2.2 的优雅版，
-      // 替代旧版硬切 visible=false）。物品渲染 progress（progress+alpha*delta）与 pointer
-      // （beltPhase+alpha*delta_phase）同源对比。
-      // 对称淡入淡出（2026-08-14 修复）: pointer 接近物品淡出、从物品下方穿过后淡入。
-      // 旧版单向逻辑（越过段内最后物品后保持隐藏）在相位回绕瞬间 alpha 从 0 硬跳回 1——
-      // 停住/被堵的物品（T2.6 门口堵停、T2.2 堵塞）会被流动的 pointer 周期性超过，
-      // 每 2 秒一次硬跳 = 用户实测的"物品前方的指针闪动"。对称版在任何相位连续无跳变。
-      const items = seg.items ?? [];
-      let ptrAlpha = 1;
-      if (items.length > 0) {
-        let dist = Infinity;
-        for (const it of items) {
-          const d = Math.abs(it.progress + alpha * (it.delta || 0) - globalPhase);
-          if (d < dist) dist = d;
-        }
-        ptrAlpha = Math.max(0, Math.min(1, dist / POINTER_FADE));
-      }
-      entry.cellWrap.visible = true;
+      // 每链独立相位: 同一链（chainId 相同）的段共享相位 → 链内 pointer 像自动扶梯
+      // 一样均匀分布、跨格衔接连续（无重叠/跳变）；不同链相位不同（chainId 确定性
+      // 派生）→ 并行传送带的指针动画互相独立，不再全局锁步（2026-08-25 用户实测:
+      // 传送带创建时间不同，全局同步不符实际玩法）。
+      const phase = (globalPhase + chainPhaseOf(seg.chainId)) % 1;
 
       // 链端点格启用单元蒙版，pointer 从传送带边界出现/消失，不溢出到传送带之外：
       //  - head（链首）：裁起点侧（背向 direction），pointer 从起点边界出现。
@@ -264,12 +295,38 @@ export class BeltPointerRenderer {
         entry.cellWrap.mask = entry.cellMask;
       }
 
-      // 全段统一相位：与旧项目一致，同一时刻所有段用相同的 arrowProgress，
-      // 使 pointer 像自动扶梯一样均匀分布、连续流动（无重叠/跳变）。
       // sprite 用格中心为原点的偏移；再换算到 cellWrap 本地坐标（减去半格）。
-      const { x, y, rotation } = this.computePointerTransform(seg, globalPhase);
+      const { x, y, rotation } = this.computePointerTransform(seg, phase);
       const px = CELL_SIZE / 2 + x;
       const py = CELL_SIZE / 2 + y;
+
+      // 一格一物品（A9 §5.2.2；2026-08-25 v6 定稿 + 2026-08-27 v7 像素级扩展）:
+      // 该格显示**指针或物品二选一**，硬切无过渡、无任何渐隐/缓动/半径特效（渐变系
+      // 变体均经用户实测否决——"跟其他的指针一样"）。判定两层:
+      //   ① 按段: 本段 items 非空（含 entering 行走中）→ 指针立即隐藏；
+      //   ② 按格(v7): 物品与指针贴图都会越过段边界（物品前半身 ~16px、指针尖 ~8px，
+      //      相位独立），仅①时物品跨格瞬态会与邻格空段的流动指针像素共存——用户直线带
+      //      实拍复现并重申不变量。故邻段（4 向）任一物品渲染位置（圆 r=ITEM_PROBE_RADIUS）
+      //      压到本格矩形 → 本格指针让位隐藏，物品离开即恢复。转角弧与端口预约延伸
+      //      （progress>1）由 beltItemGeom 的同源坐标统一覆盖。
+      let ptrAlpha = (seg.items ?? []).length > 0 ? 0 : 1;
+      if (ptrAlpha === 1) {
+        const gx = Math.round(pos.x / CELL_SIZE);
+        const gy = Math.round(pos.y / CELL_SIZE);
+        neighborLoop:
+        for (let d = 0; d < 4; d++) {
+          const nx = gx + (d === 0 ? 1 : d === 1 ? -1 : 0);
+          const ny = gy + (d === 2 ? 1 : d === 3 ? -1 : 0);
+          const nbPts = itemPtsByCell.get(`${nx},${ny}`);
+          if (!nbPts) continue;
+          for (const p of nbPts) {
+            if (circleIntersectsRect(p.x, p.y, ITEM_PROBE_RADIUS, pos.x, pos.y, CELL_SIZE, CELL_SIZE)) {
+              ptrAlpha = 0;
+              break neighborLoop;
+            }
+          }
+        }
+      }
       // 黄色 pointer（底层，始终显示，保证自动扶梯跨格衔接不断层）
       entry.sprite.position.set(px, py);
       entry.sprite.rotation = rotation;
@@ -284,16 +341,16 @@ export class BeltPointerRenderer {
         entry.whiteSprite.position.set(px, py);
         entry.whiteSprite.rotation = rotation;
         // 白色 pointer 在格内大部分全白，仅入口/出口附近窄区渐变（贴近 Transport_2.svg：
-        // pointer 一进入选中格就变白、即将离开时才褪回黄）。globalPhase∈[0,FADE] 入口渐入，
+        // pointer 一进入选中格就变白、即将离开时才褪回黄）。phase∈[0,FADE] 入口渐入，
         // [FADE,1-FADE] 格内全白，[1-FADE,1] 出口渐出。黄色底层始终在 → 跨格衔接不断层。
         const FADE = 0.18;
-        const gp = globalPhase;
+        const gp = phase;
         const selAlpha = gp < FADE
           ? gp / FADE
           : gp > 1 - FADE
             ? (1 - gp) / FADE
             : 1;
-        entry.whiteSprite.alpha = selAlpha * ptrAlpha; // 选中白色也受物品淡出影响
+        entry.whiteSprite.alpha = selAlpha * ptrAlpha; // 选中白色同受一格一物品隐藏影响
         entry.whiteSprite.visible = true;
       } else {
         entry.whiteSprite.visible = false;

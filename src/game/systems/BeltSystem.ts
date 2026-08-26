@@ -9,8 +9,13 @@
 //   - 跨段传输 (A9 §2.2/§3, T2.2): 队首 progress≥1.0 且**下游段为空** → 进入下游段首
 //     progress=0（重新走）；下游占用 → 本段队首推进不得越过下游最近物品的 progress
 //     （世界间距 ≥ 1 格，反向遍历读到下游本 Tick 最新位置 → 整链 lockstep 流动）。
-//   - 堵塞逆流 (A9 §3.4, T2.2): 下游占用 → 本段队首停在下游最近物品的 progress（≤0.5）
-//     → 本段视为满 → 上游跨段失败 → 逆流向源头传播。下游疏通（腾空）→ 上游恢复流动。
+//     下游最近物品是 entering（正被吸入设备）时钳到 STOP_MAX——排队物品停自己格
+//     中心而非段尾边界（2026-08-25 用户实测: 停在两格中间不符规范）。
+//   - 堵塞逆流 (A9 §3.4, T2.2): 下游占用 → 本段队首停在下游最近物品的 progress
+//     → 上游跨段失败 → 逆流向源头传播。下游疏通（腾空）→ 上游恢复流动。
+//   - 链级堵塞标志 (2026-08-25 用户实测修订): **链内任一物品停走（delta=0）→ 整链
+//     blocked=true**（红色覆盖完整条传送带，含门口格吸入行走期间——端口前一格无需
+//     特殊处理），取代旧"队首停走 + 下游逆流传播"的逐段判定。
 //
 // 不在本系统（留给后续）:
 //   - 端口吸入设备输入槽（T2.6 已实现，由 MachineSystem/machine/IntakeOps 处理）:
@@ -18,7 +23,8 @@
 //     本系统放行 entering 物品推进到 PORT_ENTER_DONE=1.5（端口格中心），MachineSystem
 //     同 Tick releaseArrivedItems 移除（视觉消失走进设备半格深处）。未预约物品钳 0.5 停在门口。
 //   - 设备输出物品注入传送带（T2.7 已实现，由 MachineSystem/machine/OutputOps 处理:
-//     输出槽物品在 beltPhase 相位注入**空段**首，本系统下一 Tick 起正常推进）
+//     输出槽物品注入**空段**首 progress=0（2026-08-25 退役 beltPhase 相位窗口），
+//     本系统下一 Tick 起正常推进）
 //
 // 执行顺序 (A5 §5/DD-010): BeltSystem 先于 MachineSystem，保证物品先到达。
 //   dt 恒为 50ms，progress 增量用固定常量 ITEM_PROGRESS_PER_TICK。
@@ -93,28 +99,38 @@ export class BeltSystem implements SimulationSystem {
       const pos = world.getComponent<Position>(handle, 'Position');
       if (!seg || !pos) continue;
       const items = seg.items;
-      // 堵塞态每 Tick 重算：先复位 false（自身队首堵停 + 下游逆流传播共同决定）
-      seg.blocked = false;
-      // 有物品的段推进物品并判定自身队首是否堵停；空段仅参与下游传播
-      let downstream: EntityHandle | null;
+      // 有物品的段推进物品（跨段/钳制/夹紧）；空段无动作
       if (items && items.length > 0) {
-        downstream = this.processSegment(world, handle, seg, pos, items);
-      } else {
-        downstream = this.findDownstream(world, handle, pos, seg);
-      }
-      // 堵塞逆流传播（整链变红）: 下游段已堵 → 本段也堵（即使本段空或物品还在流动）。
-      // 反向遍历保证下游先处理、本段读到下游本 Tick 最新状态 → 一次遍历完成整链传播。
-      if (downstream !== null) {
-        const downSeg = world.getComponent<BeltSegmentComp>(downstream, 'BeltSegmentComp');
-        if (downSeg?.blocked === true) seg.blocked = true;
+        this.processSegment(world, handle, seg, pos, items);
       }
     }
-    // 推进全局流动相位（pointer/物品同源同步用）。放物品移动之后，使 pointer 与物品同 tick 推进。
-    // delta 始终=流动量（含重置 tick）。旧版重置时 delta=0 会导致 globalPhase 整 tick 固定 → pointer/物品顿一下。
-    // 重置 tick beltPhase=0、delta=0.025 → globalPhase=0→0.025 平滑递增，无停滞。
+    // 推进全局流动相位（指针动画时间源）。2026-08-25 起物品与指针相位解耦
+    // （注入段首独立推进），beltPhase 仅驱动 pointer 箭头动画。
     const np = BeltSystem.beltPhase + ITEM_PROGRESS_PER_TICK;
     BeltSystem.beltPhase = np >= 1.0 ? np - 1.0 : np;
     BeltSystem.beltPhaseDelta = ITEM_PROGRESS_PER_TICK;
+
+    // ── 链级堵塞判定（2026-08-25 用户实测修订: 红色堵塞要覆盖**完整条**传送带，
+    // 端口前一格无需特殊处理）──
+    // 旧规则「本段队首停走才算堵 + 下游逆流传播」会把门口格留成黄色（其物品正被
+    // 吸入、entering 行走中 delta>0），红色只覆盖后方排队格。改为链级: **链内任一
+    // 物品本 Tick 停走（delta=0）→ 整链 blocked**。锁步模型下二者一致——堵塞时链内
+    // 物品全部停走、自由流动时全部 delta>0；门口格吸入期间后方排队停走 → 门口格
+    // 也随整链变红。跨链拥堵自动成立: 上游链尾被下游链停走物品钳住时，上游链内
+    // 同样有 delta=0 的物品。（注入物品 delta=0 只存在到下一 Tick——DD-010 顺序下
+    // BeltSystem 先于注入方运行，下一 Tick 该物品即推进，不产生假红。）
+    const chainBlocked = new Map<string, boolean>();
+    for (const handle of entities) {
+      const seg = world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp');
+      if (!seg) continue;
+      if ((seg.items ?? []).some((it) => it.delta === 0)) {
+        chainBlocked.set(seg.chainId, true);
+      }
+    }
+    for (const handle of entities) {
+      const seg = world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp');
+      if (seg) seg.blocked = chainBlocked.get(seg.chainId) ?? false;
+    }
   }
 
   /**
@@ -136,7 +152,7 @@ export class BeltSystem implements SimulationSystem {
     seg: BeltSegmentComp,
     pos: Position,
     items: BeltItem[],
-  ): EntityHandle | null {
+  ): void {
     // 按 progress 降序（队首在前），不改原数组顺序
     const ordered = items.slice().sort((a, b) => b.progress - a.progress);
 
@@ -149,14 +165,23 @@ export class BeltSystem implements SimulationSystem {
 
     const downstream = this.findDownstream(world, handle, pos, seg);
     // 下游段最近入口物品的 progress（空段 = Infinity = 可自由前进/跨段）
+    // + 该物品是否 entering（正被吸入设备、即将消失——2026-08-25 用户实测:
+    // entering 物品行进 0.5→1.5 时 downMin 随之涨到 1.5，旧钳制 min(downMin,1.0)
+    // 会让本段队首爬到 1.0=段尾边界=「两个格中间」并停留 ~1 秒；改为停在
+    // 自己格中心(0.5)，entering 移除后再正常跨段补位，符合精炼炉说明
+    // 「物品停在格中心」与先到先得依次补位的队列形态）
     let downMin = Infinity;
+    let downEntering = false;
     let downSeg: BeltSegmentComp | null | undefined = null;
     if (downstream !== null) {
       downSeg = world.getComponent<BeltSegmentComp>(downstream, 'BeltSegmentComp');
       const downItems = downSeg?.items;
       if (downItems && downItems.length > 0) {
         for (const it of downItems) {
-          if (it.progress < downMin) downMin = it.progress;
+          if (it.progress < downMin) {
+            downMin = it.progress;
+            downEntering = it.entering === true;
+          }
         }
       }
     }
@@ -191,10 +216,13 @@ export class BeltSystem implements SimulationSystem {
     } else {
       // 下游占用（或未到段尾）: 推进不得越过下游最近物品的 progress（一格一物品）。
       // 下游本 Tick 已处理（反向遍历）→ downMin 为最新值: 流动时队首正常 +0.025 前进
-      // （下游物品同 Tick 也前进了），堵塞时停在下游物品位置后方。
+      // （下游物品同 Tick 也前进了），堵塞时队首停在下游物品位置后方。
       // cap 1.0: 下游 entering 物品（预约走进端口格）progress 可达 1.5 > 段尾——
-      // 非 entering 物品仍不得越过本段段尾 1.0（>1.0 仅预约物品合法，其走 entering 分支）。
-      const stopAt = Math.min(headAdvanced, Math.min(downMin, 1.0));
+      // 非 entering 物品不得越过本段段尾 1.0（>1.0 仅预约物品合法，其走 entering 分支）；
+      // 下游最近物品是 entering 时进一步钳到 STOP_MAX: 停在自己格中心而非段尾边界
+      // （entering 物品即将消失，爬到边界=「停在两格中间」，见上方 downEntering 注）。
+      const tailCap = downEntering ? STOP_MAX : 1.0;
+      const stopAt = Math.min(headAdvanced, Math.min(downMin, tailCap));
       head.progress = Math.max(oldHead, stopAt); // 不后退（防御异常重叠注入）
       head.delta = head.progress - oldHead; // 被夹住不动时 delta=0（渲染静止，不插值）
       leaderProgress = head.progress;
@@ -212,16 +240,8 @@ export class BeltSystem implements SimulationSystem {
       item.delta = next - old; // 被夹住不动时 delta=0（渲染静止，不插值）
       leaderProgress = next;
     }
-
-    // 堵塞判定 (自身队首堵停；整链逆流传播在 update 里做): 队首非 entering 物品本 Tick
-    // 未前进（delta=0）→ 堵停（断头/满槽/下游占用；entering 物品正被吸入不算堵）。
-    let headItem: BeltItem | null = null;
-    for (const it of items) {
-      if (it.entering) continue;
-      if (headItem === null || it.progress > headItem.progress) headItem = it;
-    }
-    seg.blocked = headItem !== null && headItem.delta === 0;
-    return downstream;
+    // 堵塞判定已上移为 update() 末尾的**链级**扫描（任一物品停走 → 整链 blocked，
+    // 2026-08-25 修订），本方法只负责物品推进。
   }
 
   /**

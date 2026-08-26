@@ -10,11 +10,10 @@
 // 连接判定 (A9 §6.7): 传送带段的 Cell 与设备某 Output Port 的 Cell 相邻，
 //   且传送带方向"背离"设备——段的入口侧（段格 − 入口朝向向量）恰为端口格。
 //   直段入口朝向 = direction；转角段 = entryDir（物品从 entryDir 侧进入转角）。
-// 注入相位 (T2.1"物品=实体 pointer"约定，T2.6 修复定型): progress = BeltSystem.beltPhase，
-//   物品出现在 pointer 当前位置、此后与 pointer 同速推进（间距/节奏与指针动画一致）。
-//   且仅在 beltPhase ≤ STOP_MAX 时注入: 断头段的物品被 BeltSystem 钳制在 STOP_MAX(0.5)，
-//   若在更高相位注入，下一 Tick 会被钳回 0.5（物品视觉后跳）。beltPhase 每 40 Tick
-//   循环一次，≤0.5 的窗口每秒一次 → 空带吞吐 1 件/2 秒，恰与全部已定义配方节拍一致。
+// 注入相位（2026-08-25 退役"物品=实体 pointer"约定，用户实测: 不同时间创建的
+//   传送带物品/指针全局锁步不符实际玩法）: 旧版注入在全局 beltPhase 相位且仅
+//   ≤STOP_MAX 窗口注入；改为**段首 progress=0** 注入——物品进度独立推进，断头
+//   钳制 0→0.5 只进不退无后跳，相位窗口退役；指针动画按链独立相位（渲染层）。
 // 满带判定 (一格一物品): 只往**空段**注入——段上已有物品即满，物品留在输出槽，
 //   每 Tick 重试（带腾位即恢复，对称 T2.6 疏通）。吞吐 1 件/格 × 0.5 格/秒 = 每 2 秒 1 件。
 // 节流 (A8 §4.2): 每个输出端口每 Tick 至多放出 1 件。多端口轮询（活跃队列轮转/
@@ -25,7 +24,6 @@ import type { World, EntityHandle } from '../../ECS.ts';
 import type { BeltSegmentComp } from '../../components/BeltSegmentComp.ts';
 import type { BuildingComp, Direction } from '../../components/BuildingComp.ts';
 import type { BuildingDefinition } from '../../data/buildings.ts';
-import { STOP_MAX, BeltSystem } from '../BeltSystem.ts';
 import { directionVector } from '../belt/BeltPathGeometry.ts';
 import { rotatePort } from '../PortGeometry.ts';
 import { consumeFromSlot } from './BufferOps.ts';
@@ -76,10 +74,16 @@ export function findReceiverBelt(
 
 /**
  * 尝试从输出槽放出一件物品到传送带段首。
- * 取第一个非空输出槽（一槽一物，A8 §2.2），在 beltPhase 相位注入段 items[]
- * （物品=实体 pointer），扣减输出槽 count（到 0 解锁）。
- * @returns 放出的 itemId；null = 输出槽空 / pointer 相位 > STOP_MAX（本 Tick 窗口外）/
- *          段上已有物品（一格一物品 → 满带，物品留在输出槽，下 Tick 重试）。
+ * 取第一个非空输出槽（一槽一物，A8 §2.2），注入段 items[] **段首 progress=0**
+ * （紧邻设备的入口边界，视觉"从机器里出来"），扣减输出槽 count（到 0 解锁）。
+ *
+ * 注入相位沿革（2026-08-25 退役"物品=实体 pointer"约定）: 旧版注入在全局
+ * beltPhase 相位且仅 ≤STOP_MAX 窗口注入——物品与指针动画全局锁步，不同时间
+ * 创建的传送带看起来同步流动（用户实测指出不符实际玩法）。改为段首注入后
+ * 物品进度独立推进（断头钳制 0→0.5 只进不退，无视觉后跳，相位窗口不再需要），
+ * 指针动画改为按链独立相位（BeltPointerRenderer）。
+ * @returns 放出的 itemId；null = 输出槽空 / 段上已有物品（一格一物品 → 满带，
+ *          物品留在输出槽，下 Tick 重试）。
  */
 export function tryEmitToBelt(
   seg: BeltSegmentComp,
@@ -93,16 +97,12 @@ export function tryEmitToBelt(
   if (slot === null || slot.itemId === null) return null;
   const itemId = slot.itemId; // consumeFromSlot 扣到 0 会置 null，先取
 
-  // 2. 注入相位窗口: 仅 pointer 位于靠端口半格（≤ STOP_MAX）时注入
-  const p = BeltSystem.beltPhase;
-  if (p > STOP_MAX) return null;
-
-  // 3. 一格一物品: 只往空段注入（段上已有物品 → 满带，物品留在输出槽）
+  // 2. 一格一物品: 只往空段注入（段上已有物品 → 满带，物品留在输出槽）
   const items = seg.items ?? (seg.items = []);
   if (items.length > 0) return null;
 
-  // 4. 注入（delta=0: 出现即静止，下一 Tick 起 BeltSystem 推进并插值）
-  items.push({ itemId, progress: p, delta: 0 });
+  // 3. 注入段首 progress=0（delta=0: 出现即静止，下一 Tick 起 BeltSystem 推进并插值）
+  items.push({ itemId, progress: 0, delta: 0 });
   consumeFromSlot(slot, 1);
   return itemId;
 }

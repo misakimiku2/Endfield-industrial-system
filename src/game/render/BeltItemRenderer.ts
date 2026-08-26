@@ -152,6 +152,9 @@ export class BeltItemRenderer {
    * 计算物品在世界坐标的位置（A9 §5.3.2 / §5.4.2）。
    * @param progress 渲染插值后的 progress（progress + alpha*delta）
    * @returns 世界像素坐标（已居中于传送带表面中心线）。
+   * ⚠️ 本方法与 beltItemGeom.ts itemWorldPosOnSegment **逐字同源**（指针 v7 格级
+   * 像素互斥依赖它复刻本坐标）。改动任何一侧的约定（progress 起算边/转角延伸），
+   * 必须同步另一侧并由 scripts/verify-belt-pointer-exclusivity.ts 一致性断言兜底。
    */
   private itemTransform(
     seg: BeltSegmentComp,

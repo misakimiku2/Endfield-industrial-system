@@ -17,7 +17,7 @@
 //
 // 截图输出: gui-test-screenshots/t212-*.png
 const PW_URL = 'file:///C:/Users/Misaki/AppData/Roaming/npm/node_modules/@playwright/cli/node_modules/playwright/index.mjs';
-const BASE_URL = process.env.BASE_URL ?? 'http://localhost:5175/';
+const BASE_URL = process.env.BASE_URL ?? 'http://localhost:5173/';
 const OUT_DIR = 'gui-test-screenshots';
 
 const { chromium } = await import(PW_URL);
@@ -98,9 +98,11 @@ const out6 = await depotCount('depot-output');
 ok(out6 >= 2, `C1. 取货口 6 秒内持续输出 ≥ 2 件（实际 ${out6}，1件/2秒/口）`);
 await page.waitForTimeout(6000);
 await shot('t212-c2-items-flow2');
+// 2026-08-25 注入段首修订: 首件到存货口多走 ~半格行程，观察窗 +4s 保证 ≥3 件接收
+await page.waitForTimeout(4000);
 const out12 = await depotCount('depot-output');
 const in12 = await depotCount('depot-input');
-ok(out12 >= 5, `C2. 无限源持续输出 ≥ 5 件（实际 ${out12}）`);
+ok(out12 >= 6, `C2. 无限源持续输出 ≥ 6 件（实际 ${out12}）`);
 ok(in12 >= 3, `C3. 存货口持续接收 ≥ 3 件（实际 ${in12}，物品进端口格中心消失）`);
 const beltMid = await game(() => window.__game.beltStatus());
 ok(!beltMid.includes('[堵]'), 'C4. 全链无堵塞（无限汇永不回压）');
