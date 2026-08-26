@@ -86,8 +86,10 @@ export interface ProductionEvent {
   message: string;
 }
 
-/** recentEvents 环形缓冲上限。 */
-const MAX_RECENT_EVENTS = 100;
+/** recentEvents 环形缓冲上限。T2.10 一键测试为连续生产实战场景（~2 分钟，settle/
+ *  吸入/出货事件每 2 秒持续产生，总事件 ~120+），100 会中途淘汰最早事件、导致
+ *  productionLog() 覆盘与 demo 绝对下标采样漂移——提到 400 覆盖全场景覆盘。 */
+const MAX_RECENT_EVENTS = 400;
 
 /**
  * 生产系统。处理所有带 BuildingComp 设备的生产计时、原子结算与状态机。

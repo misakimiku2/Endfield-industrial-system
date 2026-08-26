@@ -10,9 +10,9 @@
 // 语义 (T2.8 需求3，视觉母本 3x3_unit.svg 的 ports_top 组):
 //   connected = A9 §6.7 连接判定成立——输入端口有指向它的供给带（findFeederBelt），
 //               输出端口有入口朝向它的接收带（findReceiverBelt）。未连接不显示高亮。
-//   blocked   = 已连接且连接该端口的传送带段堵塞（seg.blocked，BeltSystem 整链逆流传播，
-//               与传送带带身/箭头同源）: 输入=供给带堵、输出=接收带堵。
-//   paused   = 玩家手动暂停时物流视同离线（T2.8 需求2），门口停着的物品是暂停所致
+//   blocked   = 已连接且连接该端口的传送带段堵塞（seg.blocked，BeltSystem **链级**判定
+//               2026-08-25: 链内任一物品停走 → 整链红，与传送带带身/箭头同源）。
+//   paused    = 玩家手动暂停时物流视同离线（T2.8 需求2），门口停着的物品是暂停所致
 //               而非真堵 → 不显示红（连接黄保留，物理连接关系不变；全局暂停由 LOGO 指示）。
 
 import type { World, EntityHandle } from '../../ECS.ts';
@@ -71,7 +71,7 @@ export function inputPortStatuses(
     }
     const seg = world.getComponent<BeltSegmentComp>(feeder, 'BeltSegmentComp');
     // paused: 物流视同离线，门口停车不算堵（暂停由 LOGO 指示，连接黄保留）。
-    // 堵塞与传送带整链堵塞(seg.blocked)同源同步：队首停稳 → 整链红 → 端口红。
+    // 堵塞与传送带整链堵塞(seg.blocked)同源（链级判定，2026-08-25）。
     const blocked = !comp.paused && seg !== undefined && seg.blocked === true;
     out.push({ port: cell.port, x: cell.x, y: cell.y, connected: true, blocked });
   }
@@ -99,7 +99,7 @@ export function outputPortStatuses(
       continue;
     }
     const seg = world.getComponent<BeltSegmentComp>(receiver, 'BeltSegmentComp');
-    // 堵塞与接收带整链堵塞(seg.blocked)同源同步：接收带堵 → 端口红（与输出槽是否有货无关）。
+    // 堵塞与接收带整链堵塞(seg.blocked)同源（链级判定，2026-08-25）。
     const blocked = !comp.paused && seg !== undefined && seg.blocked === true;
     out.push({ port: cell.port, x: cell.x, y: cell.y, connected: true, blocked });
   }

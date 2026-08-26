@@ -16,7 +16,7 @@
 //
 // 截图输出: gui-test-screenshots/t210-*.png
 const PW_URL = 'file:///C:/Users/Misaki/AppData/Roaming/npm/node_modules/@playwright/cli/node_modules/playwright/index.mjs';
-const BASE_URL = process.env.BASE_URL ?? 'http://localhost:5175/';
+const BASE_URL = process.env.BASE_URL ?? 'http://localhost:5173/';
 const OUT_DIR = 'gui-test-screenshots';
 
 const { chromium } = await import(PW_URL);
@@ -66,13 +66,22 @@ console.log(`  input 全史: ${JSON.stringify(seq.input)}\n  output 全史: ${JS
 if (!seq.messages.every((m) => m.includes('输入口'))) {
   console.log('  ⚠ input 消息缺少端口序号:', seq.messages.slice(-8));
 }
+// 场景A 现在是连续供给实战形态（取货口喂料 + 生产结算），吸入起点随过渡期浮动——
+// 尾 6 次吸入必须是 [a,b,c,a,b,c] 循环且 {a,b,c} 恰为 左/中/右（起点不限）
 const inTail = seq.input.slice(-6);
-ok(JSON.stringify(inTail) === JSON.stringify([0, 1, 2, 0, 1, 2]),
-  `B1. input 事件尾 6 位 = [0,1,2,0,1,2]（实际 ${JSON.stringify(inTail)}）——补货顺序左→中→右轮转`);
-// 场景B（连续生产）: 前 6 条 output = 1→2→3 循环；场景C 恢复段: 尾 3 条 = [0,2,1]（中口追加队尾）
-const outHead6 = seq.output.slice(0, 6);
-ok(JSON.stringify(outHead6) === JSON.stringify([0, 1, 2, 0, 1, 2]),
-  `B2. output 前 6 位 = [0,1,2,0,1,2]（实际 ${JSON.stringify(outHead6)}）——连续生产下逐件轮转`);
+const inCycle = inTail.length === 6 && new Set(inTail).size === 3
+  && inTail.every((p, i) => p === (inTail[0] + i) % 3);
+ok(inCycle,
+  `B1. input 尾 6 位 = ${JSON.stringify(inTail)} 循环轮转（左→中→右 交替，起点随过渡浮动）`);
+// 场景A 的排水口会持续产生 idx1 输出事件——场景B 的轮转段用结构化扫描定位:
+// 第一处"连续 6 件构成三口循环"的窗口（排水事件全为 1，不构成循环）
+let rotWin = null;
+for (let i = 0; i + 6 <= seq.output.length; i++) {
+  const w = seq.output.slice(i, i + 6);
+  if (new Set(w).size === 3 && w.every((p, j) => w[j % 3] === p)) { rotWin = w; break; }
+}
+ok(rotWin !== null,
+  `B2. 存在连续 6 件三口循环的轮转窗口（首个: ${JSON.stringify(rotWin)}）——连续生产下逐件轮转`);
 const outTail = seq.output.slice(-3);
 ok(JSON.stringify(outTail) === JSON.stringify([0, 2, 1]),
   `B3. output 尾 3 位 = [0,2,1]（实际 ${JSON.stringify(outTail)}）——中口恢复排在左右之后（追加队尾）`);
