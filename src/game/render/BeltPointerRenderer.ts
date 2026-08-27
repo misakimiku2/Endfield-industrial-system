@@ -21,8 +21,15 @@
 //     alpha 渐变闪动。定稿: **无任何特殊效果**，段上 items 非空即隐藏、空段常显流动，
 //     与其他指针行为完全一致。
 //   - 2026-08-27: v7~v10 五轮重写（邻接隐藏/门口恒隐/全格裁剪/恒显遮挡/带面纹理化）
-//     均被用户实测否决，本文件已回退到 v6 定稿状态；旧项目参考结论见
-//     implementation-phase-2.md 第 12 条。
+//     均被用户实测否决，已回退 v6；随后对齐旧项目 transport_belt_renderer.dart 的
+//     真正机制（v11）。
+//   - 2026-08-27 v11 终稿（旧项目对齐）: 读旧项目源码确认其指针/物品**共用同一个
+//     全局 arrowProgress**——物品在该格内的位置就是箭头相位位置，锁步前进/停止，
+//     "物品替换箭头"天衣无缝。本项目物品是独立逐格进度（T2.7/T2.10，排队/端口轮询
+//     需要），指针自由时钟与队列错位 = 历次视觉问题总根源。v11 修复: **箭头相位跟随
+//     本链领头物品**（相位 = max(段序号+进度+alpha*delta)，本格偏移 = (相位−段序号)
+//     mod 1，领头换位按整格平移无跳变）；链上无物品回退自由时钟（空带继续流动）。
+//     队列停 → 箭头停（真实传送带观感）；队列进 → 箭头随行。
 //
 // PixiJS v8 注意：Graphics 作为 StencilMask，clear()+redraw 后模板缓冲不更新（github #10290）。
 //   drawEndpointMask 重画后必须 cellWrap.mask=null 再绑回，否则蒙版形同虚设——曾导致起点
@@ -182,12 +189,30 @@ export class BeltPointerRenderer {
     // 懒解析纹理：assets 在 Game 构造之后才加载完，首次有传送带段时取真实纹理。
     if (!this.resolveTexture()) return;
 
-    // 2. 全局相位（指针动画时间源）+ 帧间 alpha 插值。2026-08-25 起**按链加相位偏移**
-    //    （见下方 chainPhaseOf）: 不同链的指针不同步——传送带创建时间不同，全局锁步
-    //    不符实际玩法（用户实测反馈）。物品已与指针解耦（注入段首独立推进）。
+    // 2. 全局相位（空链回退时钟源）+ 帧间 alpha 插值。有物品的链改用领头物品相位
+    //    （见下方 v11 注释）；链上无物品时回退: 全局时钟 + chainId 派生偏移（空带
+    //    箭头继续流动，且并行空带互相独立）。
     const globalPhase = BeltSystem.beltPhase + alpha * BeltSystem.beltPhaseDelta;
     // 堵塞渐变步长（线性插值，固定时长；deltaMS=0 时瞬间到位，兼容旧调用）
     const blendStep = deltaMS > 0 ? deltaMS / BLOCKED_BLEND_MS : 1;
+
+    // 2.5 v11: 每链领头物品的连续位置 = max(段序号 + 进度 + alpha*delta)。
+    //     含 entering 行走中（p 可到 1.5）——领头走进设备时相位继续前移，队列
+    //     "跟进去"的观感自然。物品离开链（被吸收）后领头按整格回退，mod 1 后
+    //     箭头无跳变。
+    const leaderByChain = new Map<string, number>();
+    for (const handle of visible) {
+      const seg = this.world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp');
+      if (!seg) continue;
+      const items = seg.items ?? [];
+      if (items.length === 0) continue;
+      const idx = seg.segmentIndex ?? 0;
+      for (const it of items) {
+        const total = idx + it.progress + alpha * (it.delta || 0);
+        const cur = leaderByChain.get(seg.chainId);
+        if (cur === undefined || total > cur) leaderByChain.set(seg.chainId, total);
+      }
+    }
 
     // 3. 新增 + 同步
     for (const handle of visible) {
@@ -235,11 +260,21 @@ export class BeltPointerRenderer {
       // 蒙版容器对齐到格左上角世界坐标（蒙版正方形覆盖整个传送带单元）
       entry.cellWrap.position.set(pos.x, pos.y);
 
-      // 每链独立相位: 同一链（chainId 相同）的段共享相位 → 链内 pointer 像自动扶梯
-      // 一样均匀分布、跨格衔接连续（无重叠/跳变）；不同链相位不同（chainId 确定性
-      // 派生）→ 并行传送带的指针动画互相独立，不再全局锁步（2026-08-25 用户实测:
-      // 传送带创建时间不同，全局同步不符实际玩法）。
-      const phase = (globalPhase + chainPhaseOf(seg.chainId)) % 1;
+      // v11 箭头相位跟随本链领头物品（2026-08-27 旧项目 transport_belt_renderer.dart
+      // 对齐）: 旧项目里指针与物品共用同一个全局 arrowProgress——物品在该格内的位置
+      // 就是箭头相位的位置，二者锁步前进/停止，因此"物品替换箭头"天衣无缝（无相邻
+      // 贴边、无闪动、无错位）。本项目 T2.7/T2.10 起物品改为独立逐格进度（排队/端口
+      // 轮询需要），指针若仍跑自由时钟就会与队列错位——本轮全部视觉问题（相邻贴边、
+      // 提前消失闪动）的总根源就是这两个时钟。
+      // 对齐方式: 相位 = 领头物品的连续位置 (段序号 + 进度)（取 items 中 max，含
+      // entering 行走中的 p>1——领头走进设备时相位继续前移，队列"跟进去"的观感自然）；
+      // 本格箭头相对偏移 = (领头总位置 − 本段序号) mod 1（mod 1 保证领头换位时按整格
+      // 平移，视觉无跳变）。链上无物品 → 回退自由时钟（空带箭头继续流动，同旧项目）。
+      const segIdx = seg.segmentIndex ?? 0;
+      const leaderTotal = leaderByChain.get(seg.chainId);
+      const phase = leaderTotal !== undefined
+        ? (((leaderTotal - segIdx) % 1) + 1) % 1
+        : (globalPhase + chainPhaseOf(seg.chainId)) % 1;
 
       // 链端点格启用单元蒙版，pointer 从传送带边界出现/消失，不溢出到传送带之外：
       //  - head（链首）：裁起点侧（背向 direction），pointer 从起点边界出现。
