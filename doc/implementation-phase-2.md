@@ -5,6 +5,12 @@
 > **起点**: Phase 1 已完成（ECS+渲染+设备放置+相机控制+速度调节）
 > **设计依赖**: A5（仿真规范）、A8（生产系统规范）、A9（物流系统规范）
 
+> **📝 实现笔记已归档（2026-08-27）**: 各已完成任务的「实现笔记」抽出至 [实现笔记/](实现笔记/) 目录
+> （T2.1~T2.10、T2.12 共 11 份，原文逐字保留）。计划文档仅保留任务目标/需求/验收标准与归档链接——
+> 把本文档发给 AI 做其中某个任务时，不再携带无关任务的历史实现细节。注意: 部分早期笔记结论已被
+> 后续任务修订（如 T2.1 的"物品=实体 pointer"约定、指针显隐方案最终定稿为 v11），按任务时间线以
+> 新修订为准。
+
 ---
 
 ## Phase 2 的核心链路
@@ -254,14 +260,9 @@ interface BeltLinkComp {
 ### 预估工时
 1 次会话
 
-### 实现笔记（2026-08-13 完成 ✅）
-- **GameLoop 双时钟**（A5 §2）：新增 `src/game/GameLoop.ts`，20TPS 仿真 + 60FPS 渲染 accumulator，BeltSystem 作 SimulationSystem 注册。这是 T2.1 的关键前置（之前主循环只有渲染）。
-- **beltPhase 全局相位**：pointer 和物品共用 `BeltSystem.beltPhase`（logical tick 推进），消除两者（pointer 旧用 elapsedMS、物品用 logical tick）不同源导致的相位漂移与跨段闪烁。物品注入时 `progress = beltPhase` 对齐（"物品=实体 pointer"，间距/节奏完全一致）。
-- **delta 帧间插值**：`BeltItem.delta`（本 tick 增量），渲染 `renderProgress = progress + alpha*delta`（alpha=accumulator/SIM_STEP，0~1）。流动物品 delta=0.025 平滑滑动、停止/被夹住 delta=0 静止，消除 20TPS 阶跃在 60FPS 下的卡顿。
-- **物品旋转**：直段朝流向（`directionToIndex×π/2`）、转角沿弧切线（复用 pointer `computeCornerTransform` 数学），与 pointer 朝向一致。
-- **停止居中**：`STOP_MAX=0.5`（格中心），物品停在最后一格正中（完全在格内、视觉居中）；跨段时 progress 仍到 1.0（边缘世界坐标连续，多格链流动无缝）。
-- **pointer 接近物品渐变**（ptrAlpha）：物品所在格的 pointer 接近前方物品时 alpha 渐变淡出（`POINTER_FADE=0.15`），替代旧版硬切 `visible=false`；物品后方无前方物品时 alpha=0 隐藏。
-- 验证：`scripts/verify-t21-item-move.mjs`（8/8）、`verify-t22-anim.mjs`（3/3 居中/同步/转角）、`verify-pointer-fade.mjs`（4/4）。
+### 实现笔记
+
+→ 📝 已归档: [实现笔记/T2.1-BeltSystem基础-单段物品移动.md](实现笔记/T2.1-BeltSystem基础-单段物品移动.md)（2026-08-13 完成 ✅）
 
 ---
 
@@ -285,15 +286,9 @@ interface BeltLinkComp {
 ### 预估工时
 1 次会话
 
-### 实现笔记（2026-08-13 完成 ✅）
-- **跨段传输**（A9 §2.2/§3）：队首 `progress≥1.0` + 出口方向相邻 Cell 有下游段且入口有空位（`hasSpaceAtEntry`：min progress ≥ MIN_ITEM_GAP）→ 物品移到下游段 `progress=0`。无下游/下游满 → 钳制 STOP_MAX 等待。
-- **堵塞逆流**（A9 §3.4）：下游满 → 本段队首停段尾 → 后方被最小间距夹住 → 本段塞满 → 更上游跨段失败 → 逆流向源头传播。
-- **疏通**（A9 §3.5）：下游消耗/腾位 → `hasSpace` 恢复 → 上游恢复跨段流动。
-- **反向遍历**（消除跨段顿）：`BeltSystem.update` 从链尾→链头遍历。跨段物品 push 到下游时下游已处理 → 本 tick 不推进新物品（progress 保持 0），renderProgress 跨段边界连续（消除 50ms 停滞"顿一下"）。query 顺序=段创建顺序=链头→链尾，反向即物流逆序，堵塞时上游看到下游最新状态。
-- **delta 连续**：跨段 push `delta=0.025`、beltPhase 重置 `beltPhaseDelta=0.025`（不再为 0），消除重置/跨段 tick 内 renderProgress 固定导致的停滞。
-- **测试钩子修复**：`clearAllPlaced` 清传送带（原只清设备，导致"一堆物品"累积）、`spawnBelt` 占用检查、`spawnBeltWithItem` 清场、`consumeBeltTailItem` 模拟设备消费（测堵塞→疏通）。
-- 验证：`scripts/verify-t22-cross-segment.mjs`（跨段+堵塞+疏通）、`diag-item-stutter.mjs`（跨段 renderProgress 连续性）。
-- **已知遗留**：堵塞多物品场景间距 bug（"不后退"逻辑导致后方物品卡在 0.5，间距违规）——**已于 T2.7 一格一物品模型重构中消除**（2026-08-17，多物品同格状态不复存在，见 T2.7 实现笔记）。
+### 实现笔记
+
+→ 📝 已归档: [实现笔记/T2.2-跨段传输与堵塞.md](实现笔记/T2.2-跨段传输与堵塞.md)（2026-08-13 完成 ✅）
 
 ---
 
@@ -314,12 +309,9 @@ interface BeltLinkComp {
 ### 预估工时
 1 次会话
 
-### 实现笔记（2026-08-14 完成 ✅）
-- **物品注册表**（`src/game/data/items.ts`）：自然资源.csv（12 物品）+ recipe.csv 产物行（含未定义设备的产物，如反应池的赫铜块）+ 副产物补充表（污水 sewage——CSV 副产物列只有中文名，英文 ID 在代码补）。itemId = 英文 ID 的 snake_case（与 items 图集 textureKey 同约定，Originium Ore → originium_ore）。tags 按类别列派生：类别 slug + 语义别名（ore/liquid/processed）。
-- **配方解析**（`src/game/data/recipes.ts`）：92 数据行 → **46 条入索引**（6 个已定义设备：精炼炉 10/粉碎机 12/配件机 6/塑形机 6/采种机 6/种植机 6），**46 条因设备未定义跳过**（反应池/研磨机/灌装机等尚无 BuildingDefinition，warn 不报错，后续加设备自动出现）。或/和语义（A4 §6.1.1）：`+` 拆多个 RecipeInput（和），`/` 拆组内 alternatives（或）；`（任意Plant类别的物品）` → tag atom。副产物列 → outputs[1:]（赤铜块 → 污水×1）。id 格式 `recipe_{equipmentId}_{主产物}_{序号}`。
-- **原料匹配**：`itemSatisfiesInput(itemId, input, registry)`——item 原子比 itemId、tag 原子比 tags（T2.5 配方匹配直接复用）。
-- **数据接入**：CSV 经 vite `?raw` 内联进 main.ts（单一数据源 doc/csv/，不做拷贝）。
-- 验证：`scripts/verify-t23-recipes.ts`（40/40 单测）+ `scripts/verify-t23-t24.mjs` 浏览器验收（`__game.listRecipes('refining_unit')` 输出"精炼炉配方：晶体外壳(源矿×1/晶体外壳粉末×1, 2秒)、蓝铁块(蓝铁矿×1, 2秒)..."——晶体外壳含或分支全量展示）。
+### 实现笔记
+
+→ 📝 已归档: [实现笔记/T2.3-配方数据加载.md](实现笔记/T2.3-配方数据加载.md)（2026-08-14 完成 ✅）
 
 ---
 
@@ -337,11 +329,9 @@ interface BeltLinkComp {
 ### 预估工时
 1 次会话
 
-### 实现笔记（2026-08-14 完成 ✅）
-- **BuildingComp 扩展**：新增 `bufferInput: BufferSlot[]`（`BufferSlot { itemId, count }`，A3 §3/A8 §2.1）。放置设备时按 `definition.inputSlotCount` 初始化全空槽（PlacementSystem 与 main.ts placeAt 两处创建点都接）。
-- **BufferOps 纯函数**（`src/game/systems/machine/BufferOps.ts`，按 belt/BeltChainOps 先例独立 ops 模块）：`tryAcceptItem`（空槽锁类型 / 已锁槽只进同类 / 槽满拒绝；**同类型优先并入已锁定槽**——A8 未规定多槽偏好，合堆避免拆堆）、`consumeFromSlot`（扣到 0 解锁，A8 §2.1）、`formatBufferSlots`（验收格式）。
-- **调试钩子**：`__game.injectInput(itemId, n)` 模拟物品传入、`__game.consumeInput(n, itemId?)` 扣减、`__game.inputBuffer()` 查看（默认取第一个已放置设备）。
-- 验证：`scripts/verify-t24-buffer.ts`（21/21 单测）+ CDP 浏览器验收（放置→空槽→注入源矿×3 锁定→蓝铁矿被拒→注满 50→扣空解锁，9/9 中 T2.4 部分）。
+### 实现笔记
+
+→ 📝 已归档: [实现笔记/T2.4-输入缓冲区管理.md](实现笔记/T2.4-输入缓冲区管理.md)（2026-08-14 完成 ✅）
 
 ---
 
@@ -360,17 +350,9 @@ interface BeltLinkComp {
 ### 预估工时
 1 次会话
 
-### 实现笔记（2026-08-14 完成 ✅）
-- **BuildingComp 扩展**（A3 §3/A8 §3.1）：`state` 扩为完整状态机 `'idle' | 'working' | 'blocked'`（A8 §6）；新增 `bufferOutput`（输出槽一槽一物，放置时按 `outputSlotCount` 初始化）与计时字段 `currentRecipeId/progress/elapsed`（totalTime 不存 Component，从 `Recipe.time` 读）。PlacementSystem 与 main.ts placeAt 两处创建点都接。
-- **ProductionOps 纯函数**（`src/game/systems/machine/ProductionOps.ts`，BufferOps 先例）：`planRecipeInputs`（配方匹配→扣料计划：和关系逐组分配、或关系组内按序取首个可满足备选、跨组同槽剩余量递减防超扣）、`findMatchingRecipe`（设备配方列表序首个匹配，确定性）、`planOutputs`（产物落地：同类未满槽合堆优先→空槽锁定；满 → null 暂缓）、`settleProduction`（原子结算：扣输入+加输出+清计时同一调用完成）。**启动与结算各规划一次**——生产期间输入槽只进不出（物流补货、仅结算扣），启动可行的计划结算时必然仍可行，故 Component 只存 currentRecipeId。
-- **液体规则**（A8 §2.2 注）：液体物品（tags 含 `liquid`，如清水/污水）走 liquid 端口不占固体槽——匹配时槽内液体不满足任何原料组（纯液体组 → 配方不可启动，如赤铜块需清水，液体系统 Phase 2+）；结算时液体副产物（赤铜块→污水）跳过不占输出槽。
-- **MachineSystem**（A8 §7 步骤 1"设备内部状态"，每 Tick）：1a 计时推进（elapsed += 50ms，progress = elapsed/totalTime）→ 1b progress≥1.0 原子结算（输出满 → blocked 暂缓**不扣原料**，之后每 Tick 重试，疏通即完成暂缓结算，A8 §2.2/§6.2）→ 1c 无计时则匹配配方启动（**不扣原料**；结算成功同 Tick 立即续启下一次）。输入/输出物流（§7 步骤 2/3）留 T2.6/T2.7。全空槽早退跳过配方遍历（性能基准 100 台空炉零开销）。注册顺序 BeltSystem 之后（DD-010）。
-- **事件与调试钩子**：MachineSystem 产生 start/settle/blocked/cancel 事件（仅状态转换，低频），main.ts 转发 console + `recentEvents` 环形缓冲（`__game.productionLog()`）；`__game.productionStatus()` 监控（"精炼炉: working | 配方: 晶体外壳(...) | 进度: 45.0% (900/2000ms)" + 双槽明细）、`injectOutput/consumeOutput`（测 blocked→疏通，后者模拟 T2.7 取货）、`outputBuffer()`。
-- **接线**：`Game.initProduction(recipeIndex, itemTable)` 在 main.ts CSV 加载后注入并注册 MachineSystem（幂等）；`formatRecipeSummary` 移入 recipes.ts（listRecipes 与事件日志共用格式）；`formatBufferSlots` 加 label 参数（"输出槽"）。
-- **计时语义**：启动 Tick elapsed=0、推进从下一 Tick 开始；2 秒配方在启动后第 40 次推进（第 41 次更新）时 elapsed=2000 → 结算——即 T=0 启动、T=2s 整原子结算。
-- **一键测试 `__game.test("t25")`**（用户实测反馈迭代）：控制台帮助行是**文档**（含 `→` 等符号），整行粘贴会 SyntaxError → 封装单命令自动跑验收全流程；**phase 状态机防自动重发**（用户实测：内置浏览器控制台会在执行后**自动重发**上一条命令，每秒 2~4 次、每轮结束立即再触发 → 无限循环重跑。`idle→running→done|cooldown`：运行中/已完成/失败冷却 30s 内重复调用全部忽略，第 2 次忽略时打印一次调用来源栈确诊，之后静默；**每次页面加载只完整运行一次**，重跑=刷新页面）；日志加 **HH:MM:SS 时间戳前缀**（`[${ts()}]`，按时间线读日志）；步骤2 idle 诊断提示（仿真时钟未推进时给出原因与建议）。
-- **后台标签页仿真保活**（用户实测：后台标签页跑测试设备永远 idle、进度 0%，整份日志无任何 `[T2.5 生产]` 事件——仿真时钟冻结）：Pixi ticker(rAF) 在隐藏/被遮挡标签页停转。main.ts 定时器兜底：`document.hidden` 时按**实际流逝时间**喂 `tickSimulation`（浏览器后台节流 ~1Hz 也能实时追上）；`SIM_ACCUMULATOR_MAX_MS` 250→1000（≥ 单次喂入间隔才能后台实时，单次最多追 20 Tick 仍有界防追赶崩溃）。渲染仍由 rAF 驱动，回前台自动恢复双时钟。
-- 验证：`scripts/verify-t25-production.ts`（45/45 单测：纯函数匹配/落地/结算 + 真实 World 集成含 blocked 疏通全流程）+ `scripts/verify-t25-production.mjs` CDP 浏览器验收（18/18：计时期间原料不变、结算消息、续启、blocked/疏通、液体配方不启动）；一键测试/并发保护/后台保活 CDP 复验（6/6）；T2.3/T2.4 单测（40/40、21/21）与浏览器回归（9/9）无破坏。
+### 实现笔记
+
+→ 📝 已归档: [实现笔记/T2.5-生产计时与生产循环.md](实现笔记/T2.5-生产计时与生产循环.md)（2026-08-14 完成 ✅）
 
 ---
 
@@ -393,25 +375,9 @@ interface BeltLinkComp {
 ### 预估工时
 1 次会话
 
-### 实现笔记（2026-08-14 完成 ✅）
-- **PortGeometry 共享模块**（`src/game/systems/PortGeometry.ts`）：rotatePort/portOutwardBase/rotateDirection 从 BeltCreationSystem **原样抽出**（A3 §2.2 端口旋转数学）。单一事实来源——传送带创建的端口高亮与 MachineSystem 的端口吸入必须算出**相同的端口格**，两处各持拷贝一旦发散，连接判定就与实际端口错位。BeltSystem 的 import 补 `.ts` 扩展名（node --experimental-strip-types 直跑单测要求，vite/tsc 兼容）。
-- **IntakeOps**（`src/game/systems/machine/IntakeOps.ts`，BufferOps/ProductionOps 先例）：`inputPortCells`（输入端口世界格 = 左上角格 + rotatePort，按定义序即"左→中→右"连接序；只含 type='input'，output/liquid 不在内）、`buildBeltCellIndex`（每 Tick 一份 `"gx,gy"→段实体` 索引，各端口 O(1) 查相邻供给带，替代逐段全量扫描）、`findFeederBelt`（A9 §6.7 连接判定：**段格 + directionVector(direction) === 端口格**，即传送带方向指向设备；四方向各查一格）、`tryAbsorbHeadItem`（队首 progress ≥ PORT_ENTER_PROGRESS → tryAcceptItem → 从段 items[] 移除，A9 §3.6 三件套中"空槽锁定/count+1"由 tryAcceptItem 完成）。
-- **触发点与停点同源**：`PORT_ENTER_PROGRESS = BeltSystem.STOP_MAX = 0.5`（导出复用，A9 §3.3 格中心触发）。BeltSystem 对无下游带的段尾物品钳制在同一位置——物品"停在设备门口"与"触发吸入判定"是同一点：槽满时物品停住，槽腾出后**停在门口的物品下 Tick 立即被吸入**（堵塞→疏通 A9 §3.5），无需额外状态。BeltSystem 本体零改动（设备格无下游带→自然钳制 0.5），符合其文件头"端口吸入由 MachineSystem 处理"的设计分工。
-- **MachineSystem 输入物流**（A8 §7 步骤 2）：update 拆为 `updateInternal`（T2.5 逻辑原样搬移）+ `absorbBeltInputs`（每输入端口找供给带 → 吸入队首；DD-010 顺序 BeltSystem 先钳制、本系统同 Tick 吸入，"本 Tick 到达本 Tick 进入"）。**内部状态与配方解耦**（原 `!recipeList → continue` 跳过整台设备，现只挡内部生产部分）——吸入不依赖配方，仓库类设备（T2.12 取/存货口）同走此路径。每端口每 Tick 至多 1 件（A8 §4.1）；多端口轮询指针 inputPollIndex 属 T2.10，本版按端口定义序遍历（当前全部设备单输入槽，行为等价）。
-- **事件**：ProductionEvent 新增 `input` 类型（recipeId 改可选），消息 `精炼炉: 吸入 源矿 ×1（传送带 → 输入槽）`；main.ts 转发按类型分前缀（input → `[T2.6 物流]`，其余 → `[T2.5 生产]`）。
-- **调试钩子**：`injectBeltItem(itemId, progress?, segmentIndex?)`（往指定段注入物品，**不清场**、可与 placeAt 共存——spawnBeltWithItem 会清场不适用于 T2.6 场景）、`beltStatus()`（每段一行 `段0 (6,10) 270° [尾]: 源矿@0.35`，验收"停在门口"用）。一键测试 `__game.test("t26")`：runTest 泛化为多测试注册表 + 按测试名独立的 phase 状态机（t25 跑完不影响 t26，防自动重发逻辑不变）。
-- **t26 场景确定性**：搭建后先 `injectOutput` 注满输出槽使设备 blocked（T2.5 语义：结算暂缓**不消耗输入槽**）——验收全程只观察输入对接，避免生产消耗导致"满槽堵停"步骤的时序不确定。场景：精炼炉(5,5) + 上行传送带×3 喂底中输入端口(6,7)。
-- **验证**：`scripts/verify-t26-input-port.ts`（39/39：端口旋转四朝向/连接方向判定/类型锁定拒绝/满槽堵停/疏通恢复/输出与液体端口不吸入/多端口同 Tick 各吸 1 件/两段链跨段到门口）+ `verify-t26-input-port.mjs` CDP 浏览器验收（14/14：物品到门口消失+输入槽+1+吸入消息/满槽停 0.50 静止/疏通吸入/方向背离永不吸入）+ 一键测试 CDP 复验（完成、二次调用忽略、未知测试提示可用列表）。
-- **回归**：t23/t24/t25 单测 40/21/45 无破坏；t23-t24/t25 浏览器 9/18 无破坏。**历史遗留修复**：`verify-t21-item-move.mjs`（5 处断言）/`verify-t22-cross-segment.mjs`（2 处）仍期望旧版 0.99 段尾停点，与 T2.2 起 STOP_MAX=0.5 格中心行为不符（git stash 验证在本任务改动前即失败，非本次引入）；按现行为重写断言后 7/7、7/7。
-- **物品/pointer 相位对齐 + 指针闪动修复（2026-08-14 用户实测反馈）**：用户报告 t26 一键测试中①物品与指针间距每次运行不同、②第二件物品明显错位、③停住物品前方指针闪动。根因 1：`injectBeltItem` 曾默认 progress=0 注入，违反 T2.1"物品=实体 pointer"约定（注入时 progress=beltPhase）——物品落后指针一个随机相位差（每次不同），且注入瞬间悬在带首边缘外。修复：默认 `progress=BeltSystem.beltPhase`（与 spawnBeltWithItem 同约定），demoT26/验收脚本全部改对齐注入；逐帧验证 578 帧跨 3 段 maxDiff=0.022（仅注入后首 tick 插值瞬态），此后与 pointer 晶格完全同步。根因 2：pointer 单向淡出（越过段内最后物品后保持隐藏）在 beltPhase 回绕瞬间 alpha 0→1 **硬跳**——停住/被堵的物品（门口堵停、T2.2 堵塞）被流动 pointer 周期性超过，每 2 秒一次硬跳即闪动。修复：`BeltPointerRenderer` 改**对称淡入淡出**（alpha = clamp(|物品渲染progress − g| / POINTER_FADE)）：接近淡出、穿过淡入，任何相位连续。`verify-pointer-fade.mjs` 重写为页内 rAF 逐帧采样渲染器**真实 sprite alpha**（复刻公式测不出渲染层回归；606 帧 maxJump=0.024 vs 旧版 1.0），新增"无硬跳变"断言；`diag-t26-align.mjs` 目视截图（gui-test-screenshots/t26-fix/：对齐流动/门口停住/淡出中间态）。
-- **吸入点=端口格中心（2026-08-17 用户拍板 → 同日预约制实现闭环 ✅）**：目标行为（以 `精炼炉设备说明.md` 为准）——物品走到**设备输入端口格的中心**（走进设备半格深处）才消失进入输入槽，堵塞时停在**供给格**（不进设备）。原实现是供给格中心 0.5 即吸入消失（比目标少走约 1 格）。修正采用**预约制两阶段**，决策点不变（0.5）、消失点后移（1.5）：
-  - **预约（0.5 供给格中心）**：`tryAbsorbHeadItem` 重写——队首到 0.5 且槽可接受 → tryAcceptItem（槽 count+1 即占用）+ 物品标记 `entering=true` **保留在段上**（不再立即移除）；吸入事件消息在预约时刻发。槽满/类型不符 → 照旧停在 0.5（STOP_MAX 堵塞语义不变，与精炼炉说明"堵塞停留在 0,3 这一格"一致）。
-  - **放行（1.5 端口格中心）**：`releaseArrivedItems`（IntakeOps 新增，`PORT_RELEASE_PROGRESS`）——entering 且 progress ≥ 1.5 的物品从段 items[] 移除（视觉消失）。MachineSystem.absorbBeltInputs 每 Tick **先放行完成品再预约**——同 Tick 到达即同 Tick 进槽计数，"预约即 +1"语义不变。
-  - **BeltSystem**：新增导出 `PORT_ENTER_DONE = STOP_MAX + 1.0 = 1.5`；断头段队首推进中 entering 物品**放行至 1.5**（穿过门口继续前进），非 entering 仍钳制 0.5。一格一物品模型不变——entering 物品仍占用供给格（上游物品照常在其后方排队）。
-  - **渲染**：`BeltItemRenderer.itemTransform` 对 progress > 1 的物品沿出口方向直线延伸（直段+转角段统一：转角取 min(progress,1) 的弧线位置再沿出口方向延长 (progress−1)×CELL_SIZE）——物品平滑走进设备内部无跳变。
-  - **连带修正（OutputOps 注入相位窗口）**：输出注入若相位 > STOP_MAX，下一 Tick 被断头钳制回 0.5 会造成视觉后跳 → 注入窗口限制在 beltPhase ≤ STOP_MAX（详见 T2.7 实现笔记"T2.6 修复定型"）。
-  - **验证**：`verify-t26-input-port.ts` 断言重写 48/48（新增预约保留段上/entering 标记/1.4 不放行 1.5 放行/非 entering 不放行/预约后走进设备等；place() 注满输出槽使设备 blocked，隔离生产消耗对输入槽的干扰）+ `verify-t26-input-port.mjs` 15/15（预约后物品继续前进——beltStatus 显示"进设备中"→ 1.5 消失；满槽停 0.50 静止；疏通吸入；方向背离永不吸入）+ demoT26 断言更新（预约即 +1、走进设备 2 秒后消失）。
-  - **回归**：t21~t27 全量绿——单测 t23 40 / t24 21 / t25 45 / t26 48 / t27 42，浏览器 t21 7 / t22-cross 7 / t23-t24 9 / t25 18 / t26 15 / t27 15。A9 §3.3 修订注、`精炼炉设备说明.md` 吸入点注记已同步为已实现。
+### 实现笔记
+
+→ 📝 已归档: [实现笔记/T2.6-传送带到设备输入对接.md](实现笔记/T2.6-传送带到设备输入对接.md)（2026-08-14 完成 ✅）
 
 ---
 
@@ -428,16 +394,9 @@ interface BeltLinkComp {
 ### 预估工时
 1 次会话
 
-### 实现笔记（2026-08-15 完成 ✅）
-- **OutputOps**（`src/game/systems/machine/OutputOps.ts`，IntakeOps 先例）：`outputPortCells`（输出端口世界格，按定义序=连接序）、`findReceiverBelt`（A9 §6.7"设备输出→传送带"：段格 = 端口格 + dv(k) 且段**入口朝向** = k——直段入口朝向=direction，转角段=entryDir（物品从 entryDir 侧进入转角），即"传送带方向背离设备"）、`tryEmitToBelt`（第一个非空输出槽放 1 件到段首 + consumeFromSlot 扣减/解锁）。
-- **注入相位 = beltPhase，且仅在 ≤ STOP_MAX 时注入**（T2.1"物品=实体 pointer"约定，T2.6 修复定型）：物品出现在 pointer 当前位置（靠端口半格）并从此与 pointer 同速推进。窗口门限的根因：断头段物品被 BeltSystem 钳制在 STOP_MAX=0.5，若在 >0.5 相位注入，下一 Tick 会被钳回 0.5（物品视觉后跳）。beltPhase 40 Tick 一循环，≤0.5 窗口每秒一次 → 空带吞吐 1 件/2 秒，与全部已定义配方节拍（2 秒）一致。
-- **满带判定**：注入点与入口最近物品的间距标准与跨段传输同源（BeltSystem 导出 `MIN_ITEM_GAP`）。2026-08-17 一格一物品修订后简化为**只往空段注入**——段上已有物品即满带，物品留在输出槽（返回 null 留槽，每 Tick 重试，带腾位即恢复，对称 T2.6 疏通）。
-- **MachineSystem 输出物流**（A8 §7 步骤 3，紧随输入物流）：每输出端口找接收带放 1 件，每端口每 Tick 至多 1 件（A8 §4.2）；多端口轮询指针 outputPollIndex 属 T2.10，本版按端口定义序遍历。全空输出槽早退（100 台空炉零开销）。同一 Tick 内"结算进输出槽→步骤 3 立即上带"成立（内部状态优先于物流，A8 §7.1）。ProductionEvent 新增 `output` 类型，消息 `精炼炉: 输出 晶体外壳 ×1（输出槽 → 传送带）`。
-- **验证**：`scripts/verify-t27-output-port.ts`（41/41：端口旋转四朝向/连接判定含转角 entryDir 与平行带拒绝/beltPhase 相位注入/满带留槽/等号边界/疏通恢复/旋转设备/每端口每 Tick 1 件×3 端口/**全链路 A 注矿→生产→上带→跨段→B 吸入**）+ `verify-t27-output-port.mjs` CDP 浏览器验收（14/14：产物出现在带首沿带前进停链尾 0.50/输出消息/1 格断头带堆 2 件留 3 件/疏通恢复/平行带永不接收/一键测试 t27 跑通+二次调用忽略）。
-- **一键测试 `__game.test("t27")`**：场景A 精炼炉+上行带×3+输出槽预注 5 件（不依赖生产计时，时序确定）→ 观察逐件上带流动；场景B 1 格断头带 → 满带堆 2 件留 3 件 → consumeBeltTailItem 疏通继续出货。
-- **一格一物品模型（2026-08-17 用户实测反馈，修订 A9 §2.3 间距 0.25）**：用户澄清视觉规则——**一格传送带只承载一个物品（"箭头"或"物品"二选一）**，原 0.25 格间距（一格可挤 4 件）不成立。BeltSystem 间距模型重构：`MIN_ITEM_GAP 0.25→1.0`；队首推进改为**三态**——无下游段（断头/设备门口）钳 STOP_MAX=0.5（T2.6 吸入触发点不变）、下游段空则自由前进（≥1.0 跨段，跨段条件从"入口间距足"改为"下游空"）、**下游段占用则推进不得越过下游最近物品的 progress**（世界间距恒 ≥1 格；反向遍历读到下游本 Tick 已推进位置 → 流动时整链 lockstep、堵塞时每格一件全停 0.5）；移除 `hasSpaceAtEntry`（被队首推进钳制取代）。OutputOps 满带判定同步简化为**只往空段注入**。吞吐换算：1 件/格 × 0.5 格/秒 = 每 2 秒 1 件，与全部已定义配方节拍一致。**顺带消除 T2.2 已知遗留**（堵塞多物品间距 bug——多物品同格状态不复存在）。连带更新：t26 单测 13（两件物品改两段链）、t22 堵塞脚本（逐格注入 1 件）、t27 验收（断头 1 件即满）。
-- **一键测试节奏（2026-08-17 用户实测反馈）**：用户报告场景 A（3 格带流动）约 2 秒就切到场景 B，没看清。demoT27 重写：步骤 4 固定**观察 8 秒**、步骤 5 等带满后打印状态、步骤 6 **预告"5 秒后切换场景"**再清场重建，两场景合计约 20 秒。
-- **回归**：t23/t24/t25/t26 单测（40/21/45/39）与浏览器验收（t21 7/7、t22 7/7+t22-anim 3/3、t25 18/18、t26 14/14、t23-t24 9/9、pointer-fade 6/6）无破坏。
+### 实现笔记
+
+→ 📝 已归档: [实现笔记/T2.7-设备到传送带输出对接.md](实现笔记/T2.7-设备到传送带输出对接.md)（2026-08-15 完成 ✅）
 
 ---
 
@@ -487,22 +446,9 @@ interface BeltLinkComp {
 ### 预估工时
 1.5 次会话（paused 状态机扩展 + 交互 0.5 / LOGO 状态切换 0.5 / 端口高亮 0.5）
 
-### 实现笔记（2026-08-18 完成 ✅；同日两轮用户反馈修订：LOGO 双层/端口面板染色 + 图层顺序/图集缓存排查）
-- **素材**（`src/assets/svg/LOGO/`，2026-08-18 用户自行调整样式）：`Pause_Logo.svg`（暂停图标）、`Blocked_Logo.svg`（红 X）。画布与 refining_unit.svg 同尺寸（50.8×50.8 viewBox / 192×192）——logo 子 Sprite scale=1 继承父缩放，帧尺寸与主帧一致 → 显示大小与原 LOGO 对齐。注册进 asset-manifest DEVICE_FILES + keyOverrides（`pause_logo`/`blocked_logo`，随 devices 图集 4× 光栅化匹配 zoom）。**新 SVG 必须重跑 `npm run pack-assets`** 才会进图集。
-- **LOGO 双层结构（用户修订：只替换上层不透明主体，半透明 glow 保留）**：refining_unit.svg 的 layer-logo 原含两组——`refining-logo-glow`（opacity 0.3 半透明底层）+ `refining-logo-normal`（不透明上层）。改造：glow 组拆出为独立 `layer-logo-glow`（display:none 不进主帧），layer-logo 只留 normal → 图集生成 `refining_unit/logo-glow` + `refining_unit/logo`（纯上层）两帧。RenderSystem：`logo` Sprite = glow 层（**永不换纹理**，同时是 billboard 旋转锚点容器）+ 子 Sprite `logoMain` = 主体层（normal/pause_logo/blocked_logo **仅状态切换时换纹理**）；fallback Graphics 挂 logoMain。glow 帧缺失的设备 logo 层置空、主体照常（`logoTextureKey` 语义=normal 帧，glow key 约定 `${logoTextureKey}-glow`）。
-- **paused 状态机**（`BuildingComp.paused: boolean`，两处创建点 PlacementSystem/main.ts placeAt 均初始化 false）：MachineSystem.update 循环开头 paused 时**早退**——不推进计时（elapsed/progress 冻结保留，恢复从暂停处继续）、不预约吸入（门口物品被 BeltSystem 钳制停 0.5）、不输出（槽内保留）；唯一动作 `releaseEnteringItems`（absorbBeltInputs 的"只放行不预约"变体）——已预约(entering)物品仍放行到 1.5 移除，否则物品永远卡在设备半格深处。paused 与 blocked 独立共存（blocked 是输出满被动暂缓，paused 是玩家主动关停）；暂停期间 state 保持不变。`resolveLogoState(paused, state)` 纯函数（BuildingComp.ts，paused 优先于 blocked）。
-- **端口面板染色（用户修订：染 ports_top 面板本身，非整格半透明）**：refining_unit.svg 新增 6 个隐藏层 `layer-port-in/out-{0,1,2}`（rect_top 端口面板几何的**白色**复制品，各带原 ports-pos-* 组 transform，display:none 不进主帧）→ 图集生成单端口帧 `refining_unit/port-in-*` 等（全画布 192×192、仅该端口面板矩形可见）。`PortHighlightRenderer` 重写：每设备一个 Container（layer3Item、position=设备中心、rotation=direction 弧度——与设备 Sprite 同旋转数学），每端口一个 Sprite（帧与主帧同画布 → anchor 0.5 + position 0 面板矩形自动落位；scale=设备尺寸/纹理尺寸）。**白色纹理 × tint = 纯色不透明**：连接 #FFEF00 / 堵塞 #B10000（用户指定色值）；未连接 visible=false。状态判定 `PortStatusOps.ts`（DD-011 纯函数，渲染与 `__game.portStatus` 同源）：connected = A9 §6.7（findFeederBelt/findReceiverBelt）；输入堵 = 队首停门口（≥0.5 非 entering）；输出堵 = 输出槽有货 && 接收带被占；paused 不算堵（连接黄保留）。
-- **图层顺序（第二轮用户反馈修订，从下到上: 物品(进设备)→设备→端口高亮→端口箭头）**：
-  - 箭头层：PortHighlightRenderer 容器内新增 `arrowsSprite`（`refining_unit/arrows` 帧原色 #828080，zIndex 10 > 面板 0）——设备主帧的箭头被染色面板盖住，容器内补画一份在面板之上；仅任一端口已连接（有面板显示）时可见（无面板时设备主帧箭头裸露，无需补画）。
-  - 物品进设备下层：BeltItemRenderer 双层化——`renderProgress > 1.0`（预约制 entering 物品越过段尾边缘走进端口格，T2.6 视觉行程）的物品 Sprite 移挂 `belowItems` 容器（layer2Building 内 zIndex=-1，设备 Sprite 默认 0 之下）→ 物品被设备纹理遮挡 = "走进设备内部"；≤1.0 照旧挂 layer3Item（带身之上）。仅跨越分界时移动父节点（addChild=移动，无每帧开销）。
-- **第三轮用户反馈修订（glow 堵塞变红 + 堵塞箭头变白）**：
-  - glow 层改**白色源 + 运行时 tint**：refining_unit.svg 的 layer-logo-glow 内 path fill #494848 → #ffffff，RenderSystem.applyLogoVisual 给 glow Sprite 设 tint——正常/暂停 0x494848（与原灰 glow 视觉一致）、blocked 0xB10000（第二层 logo 堵塞时变红，与端口堵塞色同值）。
-  - **逐端口箭头帧**：SVG 新增 6 个 `layer-arrow-in/out-{0,1,2}` 隐藏层（arrows-pos-* 组的箭头 path，stroke #828080 → #ffffff，与端口组同 transform）→ 图集 `refining_unit/arrow-in-*` 等 6 帧（白色源）。PortHighlightRenderer 弃整体 arrowsSprite 改逐端口箭头 Sprite（zIndex 10 面板之上，与面板同显隐）：常态 tint 0x828080（原色）、**堵塞 tint 0xffffff 白色**（方向由容器随设备旋转自然保持）；箭头帧缺失的设备自动回退无箭头。
-  - **图集扩容**：+6 箭头帧后 devices 达 37 块，4096² 装不下（shelfPack 需 4096×8192）→ MAX_ATLAS_SIZE 4096 → 8192（WebGL2 现代 GPU MAX_TEXTURE_SIZE 普遍 ≥8192）。
-- **"blocked 时 glow 变红"排查结论（图集缓存）**：逐层排查（图集源帧采样/Sprite 树 tint 检查/隐藏 glow 对照实验）确认磁盘图集与运行时状态全部正常——根因是**浏览器缓存了旧版 devices.png**（其中 logo-glow 帧是历史红色版本、blocked_logo 是旧尺寸），`npm run pack-assets` 后普通刷新仍命中缓存。处置：URL 加查询参数（`localhost:5174/?v=xxx`）或 Ctrl+Shift+R 硬刷新。**改 SVG + 重打包后若画面异常，先硬刷新再排查代码**。
-- **调试钩子**：`__game.setPaused(bool, handle?)`（T2.8 阶段驱动入口，正式入口 T2.15 电源开关）、`__game.portStatus()`（"输入: (6,7) ●红(堵塞)"格式，与画面高亮同源）；productionStatus 头部加 "(已暂停)" 标记（与 LOGO 视觉对照）。一键测试 `__game.test("t28")`：working(原LOGO) → paused(暂停图标+glow 保留+进度冻结采样断言) → 恢复(从暂停处继续) → blocked(红X) → 双端口红(输入满槽停门口+输出满带留槽) → 疏通(LOGO 复原+输入回黄；输出端口疏通后仍红属正常——断头带容量有限)。时序确定性：输入堵停演示放在 blocked 期间（结算暂缓不消耗输入槽，免生产竞争）。
-- **验证**：`scripts/verify-t28-state-visual.ts`（41/41：resolveLogoState 优先级/端口判定含 paused 排除与 90° 对齐/真实 World 暂停冻结·不吸入·entering 放行·不输出·恢复续走·paused+blocked 共存）+ trae 浏览器（chrome-devtools MCP）手动验收（新帧加载/端口面板纯黄 #FFEF00 仅面板区域不透明/暂停图标+glow 保留/红X+双端口 #B10000/疏通回黄/一键测试全过+二次忽略）。CDP 脚本 `verify-t28-state-visual.mjs` 已备（需 9222 独立 Chrome）。
-- **回归**：t23/t24/t25/t26/t27 单测 40/21/45/48/42 全绿，tsc 无错。
+### 实现笔记
+
+→ 📝 已归档: [实现笔记/T2.8-设备状态机与状态视觉.md](实现笔记/T2.8-设备状态机与状态视觉.md)（2026-08-18 完成 ✅；同日两轮用户反馈修订：LOGO 双层/端口面板染色 + 图层顺序/图集缓存排查）
 
 ---
 
@@ -529,10 +475,9 @@ interface BeltLinkComp {
 ### 预估工时
 0.5 次会话（9b 是唯一新代码；9a 只验收）
 
-### 实现笔记（2026-08-24 完成 ✅）
-- **9a 物品区分（零新代码，验收确认）**: BeltItemRenderer 早已按 itemId 绑定 items 图集各自纹理（源矿/晶体外壳等均为独立 PNG）。浏览器截图（t212-c1）确认源矿图标与带身箭头肉眼易区分。
-- **9b 最小读数**: `src/game/ui/DeviceReadout.ts` 纯函数 `deviceReadoutText(comp, def)`——各槽 count 求和 → `输入: x/cap　输出: y/cap` 单行；**def 无任何槽位（仓库口）→ null**（2026-08-24 用户澄清：非生产设备不显示数据）。main.ts 挂屏幕空间单个 Pixi Text（y=52、蓝色 0x1a5fb4、不随 Ctrl+R 旋转），随 HUD 的 4Hz 节流块更新（T1.10 先例）。**临时件移除路径**: T2.15 弹窗落地时删 Text 节点 + import + HUD 块内 10 行即可，数据格式化函数可被弹窗复用。
-- **验证**: `scripts/verify-t29-readout.ts` 5/5（格式化/空缓冲/多槽求和/双仓库口 null）+ 浏览器截图人工核验（t212-d1 精炼炉选中读数出现 / t212-d2 仓库口选中读数消失）。
+### 实现笔记
+
+→ 📝 已归档: [实现笔记/T2.9-产线观察层.md](实现笔记/T2.9-产线观察层.md)（2026-08-24 完成 ✅）
 
 ---
 
@@ -551,39 +496,9 @@ interface BeltLinkComp {
 ### 预估工时
 1 次会话
 
-### 实现笔记（2026-08-25 完成 ✅）
-- **组件字段**（A3 §3.2/A8 §4，DD-002/DD-011）: `BuildingComp` 新增 `inputPollIndex`（输入轮询指针）与 `outputPollQueue`（**输出活跃队列**，按轮询序排列的输出端口下标）。输出侧不用 A3 原案的单一 `outputPollIndex` 指针——"堵塞移出/恢复追加队尾"（A8 §4.2）需要显式队列；**堵塞集 = 全部输出端口 − 队列**（派生值不落盘，DD-012 存档只存队列）。两处创建点（PlacementSystem/main.ts placeAt）初始化: 指针 0、队列 = 全部输出端口按定义序（buildings.ts 新增 `outputPortCount`/`createOutputPollQueue`）。
-- **输入轮询**（`MachineSystem.absorbBeltInputs` 重写）: 两段式——① **放行扫描全部输入口**（`releaseArrivedItems` 移除走到 1.5 的预约物品，视觉行程与指针解耦：指针跳过的端口也要放行，否则物品滞留设备半格深处占住供给格）；② **预约轮询**从 `inputPollIndex` 起循环走访一圈，对每口 `tryAbsorbHeadItem` 预约门口物品，成功/跳过（无供给带/类型不符/未到门口）指针都 +1（mod n）；**全部输入槽满 → 冻结**（走访前早退 + 补满即 break），指针保持不动不重置（A8 §4.1，精炼炉说明"A 补完…再降到 49 时 B 开始补货"）。端口序 = `inputPortCells` 过滤序 = 定义序"左→中→右"，与设备朝向无关（旋转只改端口世界位置不改定义序）。
-- **输出轮询**（`MachineSystem.emitBeltOutputs` 重写）: 全空输出槽早退（队列零维护——无货可分时"失败"不是端口堵塞）；**相位窗口 `beltPhase ≤ STOP_MAX` 为全局闸门**，窗口外整步跳过且**不动队列**（相位关闭是全局节奏而非端口故障，若按端口失败处理会把队列每秒两次清空重建、丢失轮询序记忆）；窗口内活跃队列轮转——成功 `splice+push` 移队尾、失败（无接收带/满带一格一物品）移出，**恰好走访初始队列一轮**（`visited` 计数终止；初版 qi 指针写法会重访刚轮转/刚判堵的端口、把队列误掏空，被单测 O2-b/O3-d 抓出后修正）；**堵塞恢复探测**: 堵塞端口每 Tick 按下标序尝试真实出货，成功追加到当前轮询队尾（A8 §4.2"不插回原位"）。
-- **事件**: `ProductionEvent` 新增 `portIndex`（input/output 事件带定义序端口下标），消息带"输入口N/输出口N"序号（验收从控制台/`productionLog()` 读顺序）；`productionLog()` 透传 portIndex。
-- **仓库口不轮询**: `def.depot` 分支保持定义序遍历——无限源/汇没有共享资源竞争，无公平性诉求（A8 §4 轮询针对生产设备的共享缓冲区）。
-- **调试/演示**: `portStatus()` 新增"输入轮询指针（下一个=输入口N）/ 输出轮询队列（输出口a→b→c，未列=堵塞等待恢复）"展示行，与端口黄/红高亮同屏对照。一键测试 `__game.test('t210')`: 场景A 三条供给带喂三个输入口、**晶体外壳作原料**（无配方匹配 → 设备恒 idle 零结算干扰；初版用源矿，生产每 2 秒结算插入额外补货，input 全史 `[0,1,2]×4` 完美轮转暴露了这一点——轮询本身正确，是场景不干净），满槽逐位腾出 → 补货 1→2→3→1→2→3；场景B 三条断头接收带 + 预填中带模拟堵塞 → 出货跳过中口（1→3），依次清左/中带 → 恢复探测出货（→1→2），完整序 1→3→1→2。全程条件等待（门口无 entering 残留 / 事件计数）替代固定 sleep，免疫真实仿真节奏抖动。
-- **验证**: `scripts/verify-t210-polling.ts` 31/31（I1 左中右轮转且未轮到端口物品原位不动 / I2 满载冻结+指针不重置 / I3 无供给带跳过 / I4 类型不符跳过 / O1 成功移队尾+货尽不误标堵塞 / O2 堵塞移出队列 / O3 相位闸门外不动队列 / O4 恢复出货且排在既有活跃口之后）+ `scripts/verify-t210-browser.mjs`（Playwright）4/4（一键测试全流程 + recentEvents 日志复核 + portStatus 展示）。
-- **回归**: t23 40 / t24 21 / t25 45 / t26 48 / t27 42 / t28 41 / t212 全过 / belt-blocked 8 / t29 / t1.7 230 / t1.8 37 / t1.9 40 全绿，tsc 干净，t212-browser 8/8。**t1.10 存在 1 处改动前遗留失败**（"每个设备渲染根=三子树"结构断言，git stash 验证与本任务无关，T1.11/T1.12 时期遗留，待单独排修）。组件字面量补形: 10 个 verify 脚本的 BuildingComp 字面量补 `inputPollIndex`/`outputPollQueue`（strip-types 不做类型检查，但 MachineSystem 运行时读取队列字段，缺省 undefined 会崩）。
-- **一键测试重做（2026-08-25 用户实测反馈）**: 用户跑 t210 后反馈"输出端没看到轮询——两个端口一起输出了"。诊断: 节流是**每端口每 Tick 1 件**而非每设备 1 件（T2.7 语义），旧场景B 三条 1 格断头带全空时轮询按 1→3 顺序在同一 Tick 齐出两件，顺序只存在于事件日志、肉眼不可见；且断头带出货即满带冻结，没有流动动画。重做: **场景B 连续生产版**——预注 30 源矿（1件/2秒稳定产出），三个输出口各接 **3 格传送带**汇入顶部存货口，每次只有 1 件待出货 → 轮询严格逐件轮转，产物每 2 秒出现在**下一条**带首（1→2→3 循环）并沿带流动 3 格消失；**场景C 可见跳过+恢复版**——中带截短 2 格断头并预置满（永久堵塞）→ 产物只在左/右带交替出现，等左右带首腾空后注 3 件 → 左→右→中（恢复探测追加队尾的可见形态）。验证: `verify-t210-browser.mjs` 6/6（output 全史 `[0,1,2]×3 + [2,0,0,2,0,2] + [0,2,1]`——轮转/跳过/恢复三段结构化断言）。
-- **输入端同步升级 3 格带（2026-08-25 用户反馈续）**: 场景A 三条供给带也从 1 格改 **3 格链**（链头 (x,10) 注入 → 门口格 (x,8)），行进动画对齐输出端。因 3 格行进需 ~5 秒，节奏改为**波次车队**: 每波三件同时从三链头注入（同 beltPhase 同步行进）、同时抵达门口，随后按指针顺序依次吸入——第一件等行进到达（~5 秒），后两件吃门口停车（2 秒节奏停顿），未轮到的两件**可见地停在门口等待**（正是"指针选择补货端口"的画面形态）；两波验证轮转+回绕。验证: `verify-t210-browser.mjs` 6/6（input 全史 `[0,1,2,0,1,2]`）。
-- **场景A 再改为连续供给实战形态（2026-08-25 用户反馈三）**: 用户指出实战中输入带是**源源不断来料**的，车队模式每条带只有一件在跑不像真实玩法。重做: **取货口(5,11) 三个输出口各接一条 3 格供给带**喂精炼炉（真实玩家路径，源矿实战物品），输入槽注 47 近满 → 生产每 2 秒结算腾 1 位 → 三条带持续满载流动，每 2 秒轮到哪个口、哪个口的门口件被吸入，其余门口件排队等待；顶部存货口排产物防 blocked。断言同步改为**轮转不变式**（连续 6 次吸入构成 `[a,b,c,a,b,c]` 循环且 {a,b,c}=左中右——起点随过渡期指针位置浮动是合法行为，场景B 同改）。
-- **recentEvents 环形缓冲 100→400（连续供给场景暴露）**: 连续生产 demo 每 2 秒产生 settle/吸入/出货事件，2 分钟总事件数破百 → 环形缓冲开始淘汰最早事件，demo 的**绝对下标采样窗**随之漂移（表现为场景B 轮转起点"异常"、采样窗错位——数据本身仍是完美循环，是观测窗口被淘汰推歪了）。修复: ① `MAX_RECENT_EVENTS` 100→400（覆盖全场景覆盘，productionLog() 调试价值同步提升）；② demo 三处采样全部改**尾部采样** `slice(-N)`（淘汰免疫）。验证: `verify-t210-browser.mjs` 6/6，input 全史 18 事件 `[0,1,2]×6` 完整保留无淘汰，场景B 从口1 干净起步。
-- **传送带视觉/相位三修（2026-08-25 用户实测第二轮，附截图）**:
-  1. **排队物品停"两格中间"修复（BeltSystem 钳制）**: 门口件被吸入后 entering 行走 0.5→1.5，下游最近物品 progress 随之涨到 1.5，旧钳制 `min(downMin, 1.0)` 让本段排队物品爬到 **1.0=段尾边界=两格中间**并停留 ~1 秒——不符精炼炉说明"物品停在格中心"。修复: 下游最近物品是 entering 时钳制上限改 `STOP_MAX`——排队物品停在**自己格中心**，entering 移除后正常跨段补位（先到先得依次前进，每格都停中心）。
-  2. **"物品=实体 pointer"全局相位约定退役（T2.1 约定，2026-08-17 定型）**: 旧版设备/取货口注入在全局 `beltPhase` 相位（且仅 ≤STOP_MAX 窗口注入）+ 指针动画全段统一相位 → 不同时间创建的传送带，其上物品与指针**全局锁步**（三条并行带物品位置完全相同，用户截图实证）。退役: ① 注入改**段首 progress=0**（紧邻设备入口边界，视觉"从机器里出来"；断头钳制 0→0.5 只进不退无后跳，相位窗口不再需要——`OutputOps.tryEmitToBelt`/`DepotOps.emitSourceToBelt` 同改）；② 指针动画改**按链派生相位**（`BeltPointerRenderer`: `(globalPhase + chainPhaseOf(chainId)) % 1`，chainId 哈希确定性派生——同链各段共享相位保持链内自动扶梯连续，不同链互相独立）；③ `spawnBeltWithItem`/`injectBeltItem` 钩子默认 progress 0。吞吐不变: 注入后链首被占 2 秒 → 1 件/2 秒/口。
-  3. **饱和门节拍 3秒→4秒/件（停格中心的预期代价）**: 排队物品停自己格中心后，饱和单门周期 = 吸入行走 2s + 中心出发跨段 1s + 到门口中心 1s = 4s（旧边界候场 3s）。三带轮询下每带 6s 一轮，4s 周期无影响；单带饱和喂料场景吞吐降为 1/4s（`verify-t212-depot.ts` 13a/13b 阈值同步校准）。
-  - **红色堵塞分布说明**: 门口格在吸入行走期间不算堵（正在进设备，黄），后方排队格红——语义正确，停格中心修复后视觉自洽。
-  - **场景C 恢复演示改确定性重置**: 连续供给下链条临界负载，"等左右带首自然同时腾空"不可靠；改为清空三条带头 + 中带 2 格、重置轮询队列 [左,右]、注 3 件 → 恢复序严格 [左→右→中]。
-  - **验证**: 全量单测 t210 31 / t23 40 / t24 21 / t25 45 / t26 48 / t27 41（3b/3c2/3c3 相位断言改退役后行为）/ t28 41 / t212 全过（5a/5a2 同改、13a/13b 阈值校准）/ 堵塞 8 / t29 / t1.7 230 / t1.8 37 / t1.9 40 全绿，tsc 干净；浏览器 `verify-t210-browser.mjs` 6/6、`verify-t212-browser.mjs` 8/8（C2/C3 观察窗 +4s 适配段首注入的首件行程）。
-- **指针同格并存 + 红色覆盖范围两修（2026-08-25 用户实测第四轮，附截图）**:
-  1. **一格一物品·指针可见性最终方案 = 格占据判定（BeltPointerRenderer）**: 相位解耦后旧的"指针接近物品渐隐"基于 `|物品progress − 指针phase|` 距离——两者相位无关时渐隐失效，**物品与指针同格并存**（用户截图: 黄色流动带上物品+指针同时可见）。定稿: **物品渲染中心距某格中心 < 0.75 格宽 → 该格被物品占据、指针隐藏**（物品贴图直径约 0.7 格: 物品在格中心只隐藏本格；物品压在两格边界时两格同隐——物品露出的任何部分都不叠加指针，严格的"该格二选一"）。三步收敛史（全部经用户实测否决）: 相位差渐隐（解耦后失效）→ 按段硬隐藏（漏跨界压线）→ 世界距离渐隐（见下条，坐标错+内径小于贴图半径，指针从物品背后露出）。
-  2. **物品世界坐标公式修正（连三轮修复失效的真正根源）**: 指针渲染器收集物品世界坐标时写成 `pos + directionVector×progress×格宽`——而 `BeltItemRenderer.straightWorldPos` 的真实公式是**从入口边起算**（dir 0/90 沿正向: `pos + progress×格宽`；dir 180/270 沿负向: `pos + 格宽 − progress×格宽`）。上行/左行物品的坐标**整偏一格**（幽灵坐标）: 占据/淡出判定一直在和偏移后的位置比距离，真实物品压到指针上时判定毫不知情。已改为与 itemTransform 完全同式（直段 switch + entering 沿出口方向延伸 + 转角入口边→出口边中点弦近似，误差 ~7% 格宽在占据半径内）。**教训: 渲染器之间复用位置计算时必须逐字对照既有实现，"等价的向量公式"在 progress 从哪条边起算这种约定上并不等价。**
-  3. **堵塞改链级判定（BeltSystem.update）**: 用户要求**红色覆盖完整条传送带、端口前一格无需特殊处理**。旧规则"本段队首停走才算堵 + 下游逆流传播"会把门口格留黄（其物品 entering 行走中 delta>0）。修复: 链内**任一物品停走（delta=0）→ 整链 blocked**——锁步模型下堵塞时链内全停走、自由流动时全前进，判定与链状态一致；门口格吸入期间后方排队停走 → 门口格随整链变红。跨链拥堵自动成立（上游链尾被下游链钳住时上游链内也有停走物品）。注入物品 delta=0 只存在到下一 Tick（DD-010 顺序 BeltSystem 先于注入方运行），不产生假红。
-  4. **验证**: `verify-belt-blocked.ts` 重写 9/9（原 4 场景 + 新增场景 5"门口格 entering 行走 + 后方排队停走 → 整链红（含门口格）"；场景 3 fixture 改行走中 delta=0.025）；全量单测绿（t210 31 / t23 40 / t24 21 / t25 45 / t26 48 / t27 41 / t28 41 / t212 / 堵塞 9 / t29 / t1.7 230 / t1.8 37 / t1.9 40）；tsc 干净；浏览器 t210 6/6 + t212 8/8；**页面实拍验证**: 取货口→3格带→存货口场景截图，三格各一个物品、无任何指针并存（修复前同场景中格指针与物品叠加）。
-  5. **队列前方箭头"闪动"最终定稿 = 无任何特殊效果（2026-08-25 用户实测第五、六轮，control-browser 实测）**: 用户先后否决硬切闪动（第四轮）与 alpha 渐变呼吸（第五轮）——队列前方空格的箭头在步进波中轮流空/占，任何 alpha 动画（渐隐/渐变/缓动）都被读作"闪动"。定稿: **指针与其他指针完全一致——alpha 恒为 0 或 1（段上 items 非空即隐藏、空段常显并随链相位流动），无渐隐、无缓动、无占据半径**；占据/淡出的世界坐标收集代码一并移除。queue 前方的步进节律（空 2s 显示 → 物品进入硬切隐藏）是"物品替换箭头"的正常表现。页面连拍 6 帧（每 1.5s，覆盖一个完整门口周期）+ control-browser 录屏验证: 空格箭头正常显示、物品格/entering 占据格无指针、alpha 严格二值。
-  6. **v7 格级像素互斥（2026-08-27 用户第七轮，直线带实拍复现 + 重申不变量）**: 用户澄清此前残留与转角无关——**直线带**上物品与指针重叠同格（附截图），并重申硬性不变量"传送带每格画面上只允许显示指针或物品其一"。复测定位: v6 按段判定本身零失效（饱和/自由流稳态连拍全净），重叠是**贴图双向越界**的乘积事件——物品中心行进到段边界时前半身伸入邻格 ~16px（`ITEM_VISUAL_SIZE=0.5 格`，`straightWorldPos` 进度从入口边起算至边界），指针中格扫掠 ±0.5 格尖端越界 ~8px，两者相位独立 → 跨格瞬态窗口 ~0.4–0.8s 与邻格空段流动指针像素共存。修复 = **按段判定外叠加格级像素占据判定**（BeltPointerRenderer 每帧构建 4 向邻接索引）: 邻段任一物品渲染位置（圆包络 r=`ITEM_PROBE_RADIUS`=20px=半贴图+4px 余量，余量吸收转角弧弦近似误差且保证停格中心排队不误伤）压到本格矩形 → 本格指针让位隐藏（仍二值硬切），离开即恢复；转角弧与端口预约延伸（progress>1）由同一套几何覆盖。坐标复刻抽到纯几何模块 **beltItemGeom.ts**（无 Pixi 依赖），与 `BeltItemRenderer.itemTransform` **逐字同源**并在两侧互加同步警示注释——沿用第四轮教训防公式漂移。验证: 新增 `scripts/verify-belt-pointer-exclusivity.ts` **30/30**（圆矩形基元 / 四方向坐标一致性 / 转角端点连续性+延伸 / 接近边界 0.95 占据・停中心不误伤・快出弯・预约延伸进门格・翻转后两格短暂同显"物品"仍满足不变量的连续性语义）；回归 belt-blocked 9 / t210 31 / t27 41 / t28 41 / t212-depot 48 全绿，tsc 干净；浏览器断头直带复现场景无缝连拍复验——物品前缘压线瞬间邻格指针即时让位，零像素共存帧。
-  7. **v7b 反向补丁 + 指针显隐运行日志（2026-08-27 用户第八轮反馈"问题完全没能解决"）**: v7 只挡了"物品伸进空格"，漏了反向——**指针 Sprite 自身画出自己的格子**（中格扫掠 ±0.5 格中心停在边界线、端点格还有 HALF_PTR=8px 扩程，尖端伸入邻格）。三层判定收口为纯函数 `beltItemGeom.pointerExcludedByItems`（self→cell→tip 优先级；tip = 指针渲染中心外接圆 r=`POINTER_TIP_RADIUS`≈10px 与邻物品圆 r=20px 相触即让位）。同时按用户要求新增**指针显隐变化运行日志**: BeltPointerRenderer 环形 300 条（`PointerLogEntry{t,gx,gy,ev,reason}`），`__game.pointerLog()` 控制台覆盘（每行 时间/格/隐藏或显示/原因 self·cell·tip·restore + 计数统计），供"取货口供料+手工画带"实测场景肉眼对照定位——正常节奏为每格一次 `显示←restore → 隐藏←cell/self/tip`。验证: 单测 **37/37**（新增 D1~D6: self 优先级 / tip 纯触发（物品圆距格 2px 未进格、指针中心停边界线）/ 格中央不误伤 / restore / v7 结论在纯函数下等价 / 端点扩程相位）；tsc 干净、belt-blocked 9 / t210 31 回归绿；浏览器三格断头链无缝连拍 10 帧覆盖此前必出重叠的全部窗口（含链尾），每次跨格对应格箭头即时让位、零像素共存帧；`pointerLog()` 实读 `显示←restore →(+1.1s) 隐藏←cell` 标准节奏。注: 轴向汇入时 cell（20px 探测）恒先于 tip（30px 和半径）触发，tip 主要兜底端点扩程与转角弧相位。**日志噪声修（同日用户回传日志复盘）**: 用户首份 pointerLog 前 13 条全是同一时刻"显示←restore"——每段首次渲染的基线被当成事件入环，淹没有效跳变。修: 首次观测只记基线不入日志；`pointerLog(max=40)` 默认只打尾部防长链刷屏。9 格直链+取货口 2s 节奏复现: 日志精确呈现堵塞波逐格推进 `hide←cell ×8 + hide←self ×1`（每格恰一次、间隔 2s），连拍帧全程零像素共存。**应用户要求弃用脚本提取方案**: 改为显隐跳变实时 `console.log` 直出浏览器控制台（`POINTER_DEBUG_CONSOLE` 开关，问题定位后关闭/删除）；Playwright 一次性诊断脚本未入库即删。
-  8. **门口箭头闪动根治 = door 门口格恒隐（2026-08-27 用户第九轮，控制台日志+截图定位）**: 用户回传日志（14 条全 hide、27s 零 show）+ 贯穿流截图。程序化 1:1 复现其布局（取货口转180°→左行8格→转角→上行7格→存货口）确认: 饱和贯穿流本身完全正确（15 格全部有物品、间距恰 1 格、锁步移动、黄带不堵——每格显示物品、无箭头、无重叠）；真正的异常是**存货口门口格的吸收间隙闪动**——每吸收一件物品该格空 ~0.37s，箭头以 2s 周期"闪现→消失"循环（复现日志 `显示←restore → 0.37s → 隐藏` 循环实锤），正是第五、六轮否决的"闪动"在门口的复发。修复 = **door 门口格恒隐**: `PointerExclusionInput` 新增 `nextCellIsDevice`（出口紧邻格被设备占用，main 用 `occupancy.getOccupant` 注入探测、排除 `'transport_belt'`），判定优先级 self→door→cell→tip；物品走进设备的格子不表达"流动"，恒隐后闪动从根上消失（贯穿流复验: 门口格全程稳定 `alpha=0←door` 零跳变）。同时新增 `__game.pointerState()`（每格当前 alpha+原因快照，专抓"隐藏后不恢复"）。验证: 单测 **40/40**（新增 D7/D7b/D8 门口格恒隐、绝不返回 null、self 优先级）；tsc 干净、belt-blocked 9 / t210 31 回归绿；贯穿流 40s 复验零闪动。
-  9. **v8 终稿 = 撤销全部邻接隐藏，全格蒙版裁剪（2026-08-27 用户第十轮澄清定案）**: 用户对 v7c 截图+日志反馈"完全不对……**我要的其实就是（队列前的）这个箭头，不要闪动**"——v7/v7b 的邻接接近隐藏让队列前方箭头在物品**进格前 0.6~0.9s** 就消失（cell 规则 p≥0.69 即触发/tip 更早），每次队列推进都"箭头先没、物品后到"= 闪动本源；v7c 门口恒隐则把用户要的箭头整个删掉。全部撤销（cell/tip/door 三规则删除，`beltItemGeom.ts` 与 `verify-belt-pointer-exclusivity.ts` 一并退役），像素互斥改由**几何保证**: **每一格箭头（含原来不蒙版的中间格）都挂整格 StencilMask，贴图像素永不出自己的格**（链首/链尾的 HALF_PTR 滑出扩展与 drawEndpointMask 敞开侧一并移除，computeStraightTransform 统一 [-0.5,+0.5]）。效果三角同时成立: ①空格箭头**常驻稳定**（直到物品真正进格才硬切为物品，v6 语义回归）；②零像素共存（箭头不过线，物品过线时两者在格界两侧交接）；③零闪动（无任何接近驱动的 toggling）。扶梯衔接由链相位自动接力保留（相位 wrap 瞬间下一格箭头接管同一世界位置；64px 重复图案的连续观感不变，代价仅是相位极值处箭头鼻/尾被格边平切一瞬，被 64px 外的重复图案视觉掩盖）。判定回归唯一规则 self；日志原因只剩 self/restore；`__game.pointerLog()/pointerState()` 调试钩子与 `POINTER_DEBUG_CONSOLE` 控制台直出保留（问题确认后关）。验证: 浏览器贯穿流（取货口180°→左8→转角→上7→存货口）——装填期队列前箭头稳定显示、每格仅一条 `隐藏←本格有物品`（恰在物品进格瞬间），饱和期 15 格全物品零箭头零重叠，吸收间隙恢复为慢节律（~1s 显/3s 隐，占用驱动非接近驱动）；tsc 干净、belt-blocked 9 / t210 31 / t27 41 回归绿。**教训**: "每格二选一"的像素互斥应当靠裁剪（几何不变量）实现，而不是靠"临近就躲"（时间行为）实现——后者天然制造闪动。
-  10. **v9 真终稿 = 箭头恒显 + 层级遮挡（2026-08-27 用户第十一轮，v8 两处回归被否）**: 用户实测 v8 后反馈"闪动没解决 + **所有箭头走到下一格时都出现截断**（图1：扫掠相位下箭头被格边蒙版平切，肉眼可见残缺）+ 物品队列与指针位置不对、看似同格（图2）"。至此 v6/v7/v7b/v7c/v8 五种"按格判定显隐/裁剪"方案全部被实拍否决，复盘得出定论: **闪动的根源就是"显隐切换"这个动作本身**——只要箭头 alpha 还会变，任何占格状态交替（门口吸收间隙、队列步进、跨格瞬态）都会表现为闪烁。v9 定稿（终末地/Factorio 式传送带标准做法）: ① **箭头 alpha 恒为 1，永不切换任何显隐状态**（闪烁在结构上不可能发生）；② **渲染层级反转: 物品盖在箭头上**——pointer 从 layer3Item 移入 layer2Building zIndex 0.25（带身 0 < 指针 0.25 < 物品 0.5），箭头从物品底下穿过被自然遮住，"一格显示箭头还是物品"由遮挡关系自动成立，无任何判定逻辑；③ 蒙版机制回退 v6 原版（仅链端点格启用、中间格不裁），HALF_PTR 滑出扩展恢复——箭头跨格连续流动，截断消失。`beltItemGeom.ts`/`verify-belt-pointer-exclusivity.ts` 保持删除；`__game.pointerLog()/pointerState()` 调试钩子随显隐逻辑一并移除（无状态可记）。验证: 浏览器贯穿流装填/饱和双态截图——空格箭头连续跨格流动无截断，饱和期 15 格物品把箭头全部盖住（仅物品边缘偶露箭头尖，为带面纹理自然观感），门口无任何闪动；tsc 干净、belt-blocked 9 / t210 31 / t27 41 / t212-depot 48 回归绿。**终极教训**: 传送带箭头的正确定位是"带面的流动纹理"（背景），不是"按格占位的实体"（前景）——用渲染层级表达主从，判定逻辑为零。
-  11. **v11 真终稿 = 箭头相位跟随本链领头物品（2026-08-27 用户第十三轮，回退 v7~v10 + 对齐旧项目源码后定案）**: 用户实测 v10 后反馈"指针动画完全错误、样式也改掉了、卡卡的——撤销修改，去看旧项目 C:\Users\Misaki\Desktop\git\Endfield 怎么实现的"。读旧项目 `lib/AIC/Logistics Units/transport_belt_renderer.dart` 找到总根源: **旧项目指针与物品共用同一个全局 `arrowProgress` 时钟**——每格前景 `drawItemAt(arrowProgress)`，物品在该格内的位置就是指针相位的位置，物品推进逻辑（fillCount/drainCount）也由该时钟跨零驱动，堵塞时冻结状态机把 arrowProgress 整体冻结——**指针与物品锁步前进/停止，"物品替换箭头"天衣无缝，不可能错位**。本项目 T2.7/T2.10 起物品改为独立逐格进度（排队/端口轮询/进设备都需要），指针跑自由时钟——**两个时钟**是历次全部视觉问题（相邻贴边、提前消失闪动、盖不住、转角浮空）的总根源，v7~v10 的按格判定/裁剪/恒显/纹理化全是在给这个解耦打补丁。v10 回退后实施 **v11: 箭头相位跟随本链领头物品**——`相位 = max(段序号 + 物品进度 + alpha×delta)`（领头含 entering 行走中 p>1），本格箭头相对偏移 = `(领头总位置 − 段序号) mod 1`（领头换位按整格平移，mod 1 后视觉无跳变）；链上无物品回退自由时钟 + chainId 偏移（空带继续流动，并行空带独立）。效果: 箭头与队列严格锁步——队列进则箭头进、队列停则箭头停（真实传送带观感）；物品进格瞬间箭头恰在其身后交接；门口吸收间隙的箭头随队列前移而非原地闪烁。调试钩子 pointerLog/pointerState 与控制台直出已随显隐逻辑移除（v11 无显隐切换，无状态可记）。验证: 浏览器贯穿流快连拍（装填期队列前箭头贴着队首同步推进、拐角切线连续、门口干净）+ 用户实测确认修复；tsc 干净、belt-blocked 9 / t210 31 / t27 41 / t212-depot 48 回归绿。**终极教训**: 旧项目的"每格二选一"成立的前提是物品与指针共享同一动画时钟；新项目物品独立化之后，正确的对齐方向是把指针时钟绑定到队列（渲染跟随仿真），而不是反过来给物品套上锁步约束，更不是发明按格判定。
-  11. **v10 真终稿 = 带面纹理化（2026-08-27 用户第十二轮，转角+门口截图否决 v9）**: 用户实测 v9 后反馈"跟'每格只能显示一种状态'相悖——物品速率与指针速率是两回事，物品盖不住指针；有转角时就会出现（截图: 转角箭头戳到设备门口的浮空垃圾）"。至此按格 Sprite 路线（v6 显隐/v7 邻接/v7b 双向/v7c 门口/v8 裁剪/v9 恒显遮挡）**六种方案全部被实拍否决**，不可能三角定案: ①严格逐格像素互斥 ②箭头跨格连续不截断 ③零闪动——三者互斥，任何"按格判定/裁剪"的组合必违反其一。v10 换架构: **箭头 = 带面本身的流动纹理（背景材质）**，BeltPointerRenderer 整体重写——每条链一个 Graphics（layer2Building zIndex 0.25，带身之上物品之下），沿整链路径（直线 64px + 转角 1/4 圆弧 ≈100.5px，按**弧长**）以间距 64px 均匀布置**矢量箭头**（多边形填充，不再用 pointer.png 贴图），随 beltPhase 整体前移（相位 = 全局时钟 + chainId 派生偏移不变）。性质: 跨格/跨转角连续无截断（同一条路径采样）；路径尽头自然终结（设备门口/链首尾永不浮空）；无任何显隐状态（零闪动在结构上成立）；物品(0.5)盖在箭头(0.25)上，遮挡即"每格二选一"的自然呈现（物品盖不住的边缘露出的是带面纹理，非第二实体——与终末地/Factorio 观感一致）；转角切线对齐（旋转 = 弧切线 + π/2，与旧 Sprite 约定同源）。选中段箭头画白色；链级 blocked 黄→橙渐变保留。`directionToIndex×π/2` 为箭头旋转约定（directionAngle 是位移角，混用会整体差 90°——曾致直线箭头倒向，已修正并注释）。验证: 浏览器贯穿流三态截图——空带纹理连续、装填期物品与箭头各行其道、饱和期物品盖住同相位的箭头；tsc 干净、belt-blocked 9 / t210 31 / t27 41 / t212-depot 48 回归绿。
+### 实现笔记
+
+→ 📝 已归档: [实现笔记/T2.10-端口轮询系统.md](实现笔记/T2.10-端口轮询系统.md)（2026-08-25 完成 ✅）
 
 ---
 
@@ -638,16 +553,9 @@ interface BeltLinkComp {
 ### 预估工时
 1 次会话
 
-### 实现笔记（2026-08-24 完成 ✅）
-- **DepotOps**（`src/game/systems/machine/DepotOps.ts`，IntakeOps/OutputOps 先例）: `DEPOT_SOURCE_ITEM='originium_ore'`（简化版固定源矿，T2.15 弹窗时改 def 字段驱动）、`emitSourceToBelt`（T2.7 tryEmitToBelt 的**无槽位变体**——凭空生成，注入纪律完全同律: 空段 + beltPhase ≤ STOP_MAX 窗口 + 每口每 Tick 1 件）、`tryAbsorbHeadItemSink`（T2.6 tryAbsorbHeadItem 的**无条件变体**——无槽位/类型/容量判定，entering 预约 + releaseArrivedItems 复用放行 1.5）。
-- **MachineSystem `def.depot` 分支**: `updateDepot`——unload 走输出端口放源、load 走预约制吸入；`BuildingDefinition` 新增 `depot?: 'unload'|'load'`。事件新增 `depot-output`/`depot-input`，**只进 recentEvents 不转发控制台**（无限源/汇按 1件/2秒/口持续产生，转发必刷屏；`__game.productionLog()` 可覆盘）。paused 语义对齐 T2.8（视同离线，entering 仍放行）。state 恒 idle、currentRecipeId 恒 null（非生产设备无状态机）。
-- **定义与工具栏**: `depot_unloader`/`depot_loader` 3×1 logistics、四类槽位全 0、共用 `texture:'depot'` 整图、各自单层 logoTextureKey；TOOLBAR_BUILDINGS 4→6。
-- **素材**: Depot.svg 拆 `layer-base`（含 #d3d3d3 Status 面板常态外观——中格在 base path 里是镂空，由该面板填充）+ `layer-status`（**白色**版 display:none，供 tint）；`DEVICE_LAYER_WHITELIST` exact 加 `'status'`；两个 LOGO 文件进 DEVICE_FILES（basename 匹配，无需目录前缀）。打包产出 4 帧: depot / depot/status(192×208 纯白) / depot_loader_logo / depot_unloader_logo。
-- **Status 悬停高亮**: PortHighlightRenderer 新增 `statusSprite` 分支（`${texture}/status` 帧缺失 → null，普通设备零影响）——取货口创建模式**常显蓝 #80BEE9**（可连接起点提示）、悬停淡蓝 #A8D4F5；存货口仅悬停输入格时淡蓝。配套 `BeltCreationSystem.getHoveredAnyPortCell()`（任意端口格悬停，含输入口）经 RenderSystem 第三回调传入。
-- **朝向策略**: `src/game/systems/RotationPolicy.ts` `nextScreenAngle`——正方形 90° 四档 / 非正方形 **180° 两档**（A3 §6 旋转不换占地，90° 会把端口旋出占地）；PlacementSystem R 键接入。
-- **验证**: `scripts/verify-t212-depot.ts` 49/49（定义/端口几何/纯逻辑/三段集成/全链路/朝向策略）+ `scripts/verify-t212-browser.mjs`（Playwright 驱动系统 Chrome，**全程真实键鼠**: 工具栏点击放置→E 模式画带→物流观察→选中读数→R 两档→存货口悬停，8 断言全过 + 9 张截图人工核验）+ `__game.test('t212')` 一键测试（含暂停停供/恢复续供演示）。回归: t1.7 230（更新 3 处 T1.11/12 时期遗留的过时计数断言 + 仓库口无槽位豁免）/t1.9 40/t23 40/t24 21/t25 45/t26 48/t27 42/t28 41/堵塞 8 全绿，tsc 干净。
-- **已知外观项**: 工具栏图标为整图等比缩略（3:1 设备受 80% 长边约束偏小），后续可改用 logo 帧作图标（待用户反馈）。
-- **LOGO 三修（2026-08-24 用户反馈）**: ① Status 面板从 PortHighlightRenderer（layer3Item，盖住 LOGO）**移入 RenderSystem 设备子树**——渲染顺序变为 设备纹理(常态灰面板) < Status 高亮 < LOGO；② 高亮时 LOGO **换白色变体**（新增 `Depot_*_logo_white.svg` 白色源帧；深色源无法 tint 提亮，走纹理切换同 T2.8 换图机制；⚠️ logoMain 继承 glow 父 tint #494848 会把白帧乘暗——仓库口无 glow 层，父 tint 固定提白，常态 LOGO 也由此恢复素材原色 #494848，修复前被双重压暗近黑）；③ LOGO 缩小 20%（`LOGO_WHOLE_SCALE=0.8`，whole 路径 logoMain 与 PlacementSystem 预览同步）。像素级验证: 高亮态白色 255px/#494848 归零、常态 #494848 312px。
+### 实现笔记
+
+→ 📝 已归档: [实现笔记/T2.12-仓库取货口与存货口.md](实现笔记/T2.12-仓库取货口与存货口.md)（2026-08-24 完成 ✅）
 
 ---
 
