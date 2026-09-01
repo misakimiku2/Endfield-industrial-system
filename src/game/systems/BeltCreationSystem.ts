@@ -37,6 +37,16 @@ import {
   type IsBlocked,
   type FindPathOptions,
 } from './belt/BeltPathfinding';
+// T2.16 终点对接: 吸附几何（纯逻辑）+ 输入端口格索引（与吸入判定同源）
+import {
+  applyDockSnap,
+  applySnapToCells,
+  dockInfoOf,
+  portKey,
+  type DockInfo,
+  type DockSnap,
+} from './belt/BeltDockOps';
+import { collectInputPortCells } from './machine/IntakeOps';
 // 端口旋转数学（T2.6 起与 MachineSystem 共享，单一事实来源）
 import { rotatePort, portOutwardBase, rotateDirection } from './PortGeometry';
 
@@ -119,6 +129,10 @@ export class BeltCreationSystem {
   private previewPath: PathCell[] = [];
   /** 当前预览是否可放置。 */
   private previewValid = false;
+  /** T2.16 终点吸附: 最近一次 refreshPreview 的吸附决策（落盘时重放到末段方向）。 */
+  private pendingSnap: DockSnap | null = null;
+  /** T2.16 对接信息: 预览末格相邻的输入端口格（候选/确认），渲染层端口高亮用。 */
+  private dockInfo: DockInfo | null = null;
 
   constructor(
     world: World,
@@ -163,6 +177,8 @@ export class BeltCreationSystem {
     this.lastAnchorDirection = 0;
     this.previewPath = [];
     this.previewValid = false;
+    this.pendingSnap = null;
+    this.dockInfo = null;
     this.highlightGraphics.visible = true;
     this.previewContainer.visible = false;
   }
@@ -178,6 +194,8 @@ export class BeltCreationSystem {
     this.lastAnchorDirection = 0;
     this.previewPath = [];
     this.previewValid = false;
+    this.pendingSnap = null;
+    this.dockInfo = null;
     this.highlightGraphics.visible = false;
     this.highlightGraphics.clear();
     this.clearPreviewSprites();
@@ -356,6 +374,27 @@ export class BeltCreationSystem {
     return null;
   }
 
+  /**
+   * T2.16 终点对接信息: 预览末格相邻的输入端口格（targets=候选"够得着"，
+   * confirmed=末段方向指向的端口格"将连接"）。预览无效/无末格时 null。
+   * 消费方: RenderSystem → PortHighlightRenderer（输入端口候选紫/确认绿）。
+   */
+  getDockInfo(): DockInfo | null {
+    return this.dockInfo;
+  }
+
+  /**
+   * T2.16 起点反例: hover 态鼠标悬停的**输入端口格**（不是合法起点——起点只认
+   * 输出端口/断头末端）。消费方: PortHighlightRenderer（红色警示 + 文字提示
+   * "输入端口不能作为起点"，替代此前的静默无效）。preview 态恒 null——
+   * 预览中悬停输入端口是"终点对接"手势（见 getDockInfo），不是起点反例。
+   */
+  getStartHintCell(): { x: number; y: number } | null {
+    if (this.mode !== 'hover' || !this.mouseInside) return null;
+    const ports = collectInputPortCells(this.world);
+    return ports.get(portKey(this.mouseGrid)) ?? null;
+  }
+
   /** hover 态：尝试选中一个起点。 */
   private trySelectStart(): void {
     const hovered = this.findHoveredStart();
@@ -367,6 +406,8 @@ export class BeltCreationSystem {
     this.committedHandles.clear();
     this.committedChainId = null;
     this.lastAnchorDirection = hovered.direction;
+    this.pendingSnap = null;
+    this.dockInfo = null;
     this.previewContainer.visible = true;
     // 立即刷新一次预览
     this.refreshPreview();
@@ -444,6 +485,16 @@ export class BeltCreationSystem {
       if (!raw || raw.length < 1) raw = [lastAnchor, this.mouseGrid];
     }
 
+    // ── T2.16 终点吸附 ──
+    // mouse 在输入端口格上 → 截断到供给格（拖到设备上也能对接，不再整条染红）；
+    // mouse 在供给格上 → 末段方向覆盖为指向端口（落盘即 findFeederBelt 成立）。
+    // 吸附决策存 pendingSnap: checkPathValid 用截断后的 raw 判定合法性，
+    // 末格方向覆盖在 cells 上重放（drawPreview 转角渲染 + commitCells 落盘同源）。
+    const ports = collectInputPortCells(this.world);
+    const snapped = applyDockSnap(raw, this.mouseGrid, ports, this.startPoint.direction);
+    raw = snapped.raw;
+    this.pendingSnap = snapped.snap;
+
     // 拼上已确认路径，用于跨段转角检测（confirmed + preview）。
     // 注意：raw[0] 是寻路起点格 —— 第一段时是端口/断头起点格（不应渲染成传送带），
     // 后续段时是 lastAnchor（已含在 fullPath 末尾），两种情况都要剔除首格。
@@ -452,9 +503,14 @@ export class BeltCreationSystem {
         ? [...this.fullPath, ...raw.slice(1)]
         : raw.slice(1);
     const cells = computePathCells(combined, this.startPoint.direction);
+    applySnapToCells(cells, this.pendingSnap);
     this.previewPath = cells;
     // checkPathValid 不再依赖 isFirstSegment：起点格(startCell)和锚点格(lastAnchor)都跳过
     this.previewValid = this.checkPathValid(raw, lastAnchor);
+    // T2.16 对接信息: 预览有效且有末格时提供（红色预览不亮端口，避免误导"能接上"）
+    this.dockInfo = this.previewValid && cells.length > 0
+      ? dockInfoOf(cells[cells.length - 1], cells[cells.length - 1].direction, ports)
+      : null;
     this.drawPreview();
   }
 
@@ -536,6 +592,9 @@ export class BeltCreationSystem {
     // 完整序列（已落盘 + 新段）计算每格方向 + 转角信息
     const full = [...this.fullPath, ...newCells];
     const cells = computePathCells(full, chainIncoming);
+    // T2.16: 重放吸附决策到末段方向（computePathCells 默认尾向"沿用上一格方向"会覆盖掉
+    // 预览时的吸附方向；lastNewCell.direction 只影响后续延长，落盘段组件以此为准）
+    applySnapToCells(cells, this.pendingSnap);
     const infos = computeTurnInfos(cells, chainIncoming);
 
     // 更新已落盘的旧尾格（可能从直段变成转角段，方向/isCorner/entryDir/mirrorH 需要重算）

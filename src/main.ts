@@ -27,6 +27,12 @@ import { loadItemRegistry } from './game/data/items';
 import { parseRecipeCsv, buildRecipeIndex, formatRecipeSummary } from './game/data/recipes';
 import { createBufferSlots, tryAcceptItem, consumeFromSlot, formatBufferSlots } from './game/systems/machine/BufferOps';
 import { portStatuses, type PortStatus } from './game/systems/machine/PortStatusOps';
+import { logisticsDebug } from './game/systems/machine/LogisticsDebug';
+import {
+  inputPortCells,
+  findFeederBelt,
+  doorHeadItem,
+} from './game/systems/machine/IntakeOps';
 import recipeCsvText from '../doc/csv/recipe.csv?raw';
 import resourceCsvText from '../doc/csv/终末地资源列表 - 自然资源.csv?raw';
 import { SelectionSystem } from './game/systems/SelectionSystem';
@@ -998,6 +1004,17 @@ async function main() {
     const pollLine = nIn > 0
       ? `  输入轮询指针: 下一个=输入口${(comp.inputPollIndex % nIn) + 1}`
       : '  输入轮询指针: (无输入口)';
+    // T2.10 修订(2026-09-02): 轮询走访序 = 先到排名序（每口首次有物品到门口的时刻，
+    // 一次性戳记）——满载腾位时按此序轮流补货。未到过的口排最后（按定义序）。
+    const rank = comp.inputArrivalRank;
+    const rankLine = nIn > 0
+      ? `  输入先到排名: ${(() => {
+          const order = Array.from({ length: nIn }, (_, i) => i).sort(
+            (a, b) => ((rank?.[a] ?? Infinity) === (rank?.[b] ?? Infinity) ? a - b : (rank?.[a] ?? Infinity) - (rank?.[b] ?? Infinity)),
+          );
+          return order.map((i) => `输入口${i + 1}`).join('→');
+        })()}（先到先得；从未到货的口排末尾）`
+      : '  输入先到排名: (无输入口)';
     const queueLine = st.output.length > 0
       ? `  输出轮询队列: ${comp.outputPollQueue.length > 0
         ? comp.outputPollQueue.map((i) => `输出口${i + 1}`).join('→')
@@ -1008,8 +1025,76 @@ async function main() {
       formatPortStatus(st.input, '输入'),
       formatPortStatus(st.output, '输出'),
       pollLine,
+      rankLine,
       queueLine,
     ].join('\n');
+  };
+
+  // ── 物流调试日志（2026-09-02，定位"三带进料/轮询"问题用；定位后退役）──
+  // logisticsDebug(on) 开/关（重开时立即打印全场快照）；logisticsLog(n) 覆盘最近 n 条。
+  // 记录: 物品停止/恢复（位置+原因）、跨段、先到排名戳记、预约吸入、走进设备消失、
+  //       门口等待（槽满/类型不符）、满载冻结/腾位恢复、生产启动/结算。
+  const logisticsSnapshot = (): void => {
+    const beltAt = new Map<string, EntityHandle>();
+    for (const h of game.world.query('BeltSegmentComp', 'Position')) {
+      const p = game.world.getComponent<Position>(h, 'Position');
+      if (p) beltAt.set(`${Math.round(p.x / CELL_SIZE)},${Math.round(p.y / CELL_SIZE)}`, h);
+    }
+    for (const h of game.world.query('BuildingComp', 'Position')) {
+      const comp2 = game.world.getComponent<BuildingComp>(h, 'BuildingComp');
+      const p = game.world.getComponent<Position>(h, 'Position');
+      if (!comp2 || !p) continue;
+      const def = getBuildingDefinition(comp2.definitionId);
+      if (!def || def.depot !== undefined) continue; // 仓库口无缓冲区，快照只看生产设备
+      const gx = Math.round(p.x / CELL_SIZE);
+      const gy = Math.round(p.y / CELL_SIZE);
+      const cells = inputPortCells(gx, gy, def, comp2.direction);
+      if (cells.length === 0) continue;
+      const n = cells.length;
+      const rank = comp2.inputArrivalRank;
+      const order = rank
+        ? Array.from({ length: n }, (_, i) => i)
+          .sort((a, b) => ((rank[a] ?? Infinity) === (rank[b] ?? Infinity) ? a - b : (rank[a] ?? Infinity) - (rank[b] ?? Infinity)))
+          .map((i) => `输入口${i + 1}${rank[i] === undefined || rank[i] === Infinity ? '(未到货)' : ''}`)
+          .join('→')
+        : '(全部未到货)';
+      const slots = comp2.bufferInput
+        .map((s) => (s.itemId === null || s.count === 0 ? '空' : `${itemTable.byId.get(s.itemId)?.name ?? s.itemId}×${s.count}/${def.bufferCapacity}`))
+        .join(' | ');
+      logisticsDebug.log(
+        `📸 快照 ${def.name}(${gx},${gy}) [${comp2.state}] 槽: ${slots}｜指针=输入口${(comp2.inputPollIndex % n) + 1}｜先到排名: ${order}`,
+      );
+      for (let i = 0; i < n; i++) {
+        const feeder = findFeederBelt(game.world, beltAt, cells[i]);
+        if (feeder === null) {
+          logisticsDebug.log(`   输入口${i + 1} (${cells[i].x},${cells[i].y}): 未连接（无指向端口的供给带）`);
+          continue;
+        }
+        const fp = game.world.getComponent<Position>(feeder, 'Position');
+        const seg = game.world.getComponent<BeltSegmentComp>(feeder, 'BeltSegmentComp');
+        const door = seg ? doorHeadItem(seg) : null;
+        const doorDesc = door
+          ? `门口 ${itemTable.byId.get(door.itemId)?.name ?? door.itemId}@${door.progress.toFixed(2)}`
+          : seg && seg.items.length > 0
+            ? `段上 ${seg.items.length} 件（队首@${Math.max(...seg.items.map((it) => it.progress)).toFixed(2)}${seg.items.some((it) => it.entering) ? '，含 entering' : ''}）`
+            : '空带';
+        logisticsDebug.log(
+          `   输入口${i + 1} (${cells[i].x},${cells[i].y}): 供给带(${Math.round((fp?.x ?? 0) / CELL_SIZE)},${Math.round((fp?.y ?? 0) / CELL_SIZE)}) ${seg?.direction ?? '?'}° ${doorDesc}`,
+        );
+      }
+    }
+  };
+  const toggleLogisticsDebug = (on?: boolean): string => {
+    const next = on ?? !logisticsDebug.enabled;
+    logisticsDebug.enable(next);
+    if (next) logisticsSnapshot();
+    return next
+      ? '物流调试日志已开启（此后事件实时打印；覆盘 __game.logisticsLog()；关闭 __game.logisticsDebug(false)）'
+      : '物流调试日志已关闭';
+  };
+  const logisticsLog = (n = 80): string => {
+    console.log(logisticsDebug.dump(n));
+    return logisticsDebug.dump(n);
   };
 
   // ── 测试场景速建（implementation-phase-2.md「测试效率」章节的一键版）──
@@ -1427,7 +1512,7 @@ async function main() {
   /** T2.10 一键测试主体（并发/重复保护见 runTest 的 phase 状态机）。
    * 场景A（输入轮询·连续供给实战形态）: 取货口三口各接 3 格供给带喂精炼炉（源矿
    *   实战路径，传送带源源不断来料），输入槽注 47 近满 → 生产每 2 秒结算腾 1 位，
-   *   轮询指针决定哪条带的门口件被吸入（左→中→右 交替），其余门口件排队等待；
+   *   轮询指针按先到排名序决定哪条带的门口件被吸入（排名序随首次到货先后），其余门口件排队等待；
    *   顶部存货口排产物防 blocked。稳态下连续 6 次吸入构成循环（起点随过渡浮动）。
    * 场景B（输出轮转·可见版）: 预注源矿连续生产（1件/2秒），三个输出口各接 3 格
    *   传送带汇入顶部存货口 → 产物每 2 秒出现在下一条带首（输出口1→2→3 循环），
@@ -1445,7 +1530,7 @@ async function main() {
     // 真实玩法路径: 取货口(无限源)三个输出口各接一条 3 格供给带，喂精炼炉三个输入口
     // ——传送带源源不断来料（每口 1件/2秒，链满后取货口暂停、链上腾位即续供）。
     // 输入槽注 47 近满: 生产每 2 秒结算腾 1 位 → 轮询指针决定哪条带的门口件被吸入
-    // （左→中→右 交替），其余门口件可见地排队等待。顶部存货口排走产物防 blocked。
+    // （先到排名序交替），其余门口件可见地排队等待。顶部存货口排走产物防 blocked。
     clearAllPlaced();
     if (!placeAt('refining_unit', 5, 5)) return 'T2.10 测试失败: 精炼炉放置失败';
     if (!placeAt('depot_unloader', 5, 11)) return 'T2.10 测试失败: 取货口放置失败';
@@ -1456,7 +1541,7 @@ async function main() {
     if (spawnBelt([[6, 4], [6, 3]], 270) !== 2) return 'T2.10 测试失败: 排水带创建失败';
     injectInput('originium_ore', 47); // 近满: 几次结算后即进入"每 2 秒腾 1 位"的轮询节奏
     console.log(`[${ts()}] [步骤1] 场景A就绪: 取货口(5,11) 三口各接 3 格供给带喂精炼炉（源矿实战路径）+ 顶部存货口排产物。` +
-      `观察: 三条带源源不断来料；输入槽近满后每 2 秒有一个口"吞"掉门口件——顺序 左→中→右 交替，其余门口件排队等待`);
+      `观察: 三条带源源不断来料；输入槽近满后每 2 秒有一个口"吞"掉门口件——按先到排名序交替（portStatus() 的"输入先到排名"行），其余门口件排队等待`);
     // 稳态采样: 等过渡期结束（吸入事件 ≥10 次 且 三个门口格同时有件排队），
     // 再取**接下来**的 6 次吸入断言循环（轮转起点随过渡期指针位置浮动，不固定为左口）
     const steady = await waitFor(() => {
@@ -1470,13 +1555,18 @@ async function main() {
     const steadyBase = inputPortsOf().length;
     const sixIn = await waitFor(() => inputPortsOf().length - steadyBase >= 6, 60000);
     const seqIn = inputPortsOf().slice(-6); // 尾采样: 免疫环形缓冲淘汰导致的下标漂移
-    const cycleOk = sixIn && seqIn.length === 6 && seqIn.every((p, i) => p === (seqIn[0] + i) % 3);
+    // 2026-09-02 修订: 轮转序 = 先到排名序（单取货口同 Tick 三口齐射，排名序随首次
+    // 到货微差浮动）——断言只验"三口各两次、周期 3 循环"不变式（seqIn[i+3]==seqIn[i]），
+    // 不再钉死端口下标算术序。
+    const cycleOk = sixIn && seqIn.length === 6
+      && new Set(seqIn).size === 3
+      && seqIn.slice(0, 3).every((p, i) => seqIn[i + 3] === p);
     console.log(`[${ts()}] [步骤2] 稳态吸入序列（连续 6 次）: 输入口${seqIn.map((p) => p + 1).join('→')}`);
     if (!cycleOk) {
-      console.log(`[${ts()}] T2.10 测试失败: 稳态下应按 左→中→右 循环补货（实际 ${JSON.stringify(seqIn)}）:\n${portStatus()}`);
+      console.log(`[${ts()}] T2.10 测试失败: 稳态下应按先到排名序循环补货（实际 ${JSON.stringify(seqIn)}）:\n${portStatus()}`);
       return 'T2.10 测试失败: 输入轮询顺序异常';
     }
-    console.log(`[${ts()}] [步骤3] ✅ 输入轮询验证通过: 连续供给下按 左→中→右 循环补货（指针满载冻结、轮转不重置）`);
+    console.log(`[${ts()}] [步骤3] ✅ 输入轮询验证通过: 连续供给下按先到排名序循环补货（指针满载冻结、轮转不重置）`);
     await sleep(4000); // 再看几秒持续流动
 
     // ── 场景B: 输出轮转（连续生产·可见版）──
@@ -1566,7 +1656,7 @@ async function main() {
     }
     console.log(`[${ts()}] [步骤10] ✅ 堵塞跳过 + 恢复追加队尾验证通过。最终轮询状态:\n${portStatus()}`);
     console.log(`[${ts()}] ════ T2.10 一键测试完成 ════`);
-    return 'T2.10 一键测试完成（场景A 补货 1→2→3×2；场景B 出货 1→2→3 循环；场景C 跳过中带 + 恢复 左→右→中）';
+    return 'T2.10 一键测试完成（场景A 按先到排名序补货 3 口各两次；场景B 出货 1→2→3 循环；场景C 跳过中带 + 恢复 左→右→中）';
   };
 
   const TESTS: Record<string, () => Promise<string>> = {
@@ -1655,8 +1745,14 @@ async function main() {
     productionLog,
     setPaused, // T2.8: 玩家手动暂停（正式入口 T2.15 电源开关）
     portStatus, // T2.8: 端口连接/堵塞状态（渲染高亮同源判定）
+    logisticsDebug: toggleLogisticsDebug, // 物流调试（2026-09-02）: 开关 + 开启时全场快照
+    logisticsLog, // 物流调试: 覆盘最近日志
     test: runTest,
   };
+
+  // 物流调试日志默认开启（2026-09-02 用户报告"三带未同时进料/疑似轮询"定位期；
+  // 问题定位后随 LogisticsDebug 模块一并退役——先例: 指针期 POINTER_DEBUG_CONSOLE）
+  logisticsDebug.enable(true);
 
   console.log('[集成工业系统] T1.7 设备放置 + T1.8 基础交互 + T1.9 设备删除 + T1.10 性能基准 + T2.0 传送带创建就绪');
   console.log(`  世界: ${MAP.widthCells}×${MAP.heightCells} cells (MapInstance), CELL_SIZE=${CELL_SIZE}`);
@@ -1682,8 +1778,10 @@ async function main() {
   console.log('  T2.9 观察: 点击设备 → 屏幕左上显示"输入: x/50 输出: y/50"单行读数（临时件，T2.15 弹窗吸收）；点击仓库口不显示（非生产设备）');
   console.log('  T2.12 一键测试: __game.test("t212")  ← 复制这一条到控制台回车即可（取货口+4段带+存货口: 源矿持续上带→流动→进存货口消失+暂停/恢复演示）');
   console.log('  T2.12 手动: 工具栏选"仓库取货口"放置（R 只在水平两档旋转） → E 进创建模式悬停其上方（Status 面板蓝） → 从输出口起带上行 → 末端接"仓库存货口"底边 → 物品流进去消失');
-  console.log('  T2.10 一键测试: __game.test("t210")  ← 复制这一条到控制台回车即可（3入: 取货口持续供料实战形态，三条 3 格带满载流动、按 左→中→右 交替吞门口件；3出: 连续生产轮转 1→2→3；中带堵塞跳过+恢复 左→右→中；约 2 分钟）');
+  console.log('  T2.10 一键测试: __game.test("t210")  ← 复制这一条到控制台回车即可（3入: 取货口持续供料实战形态，三条 3 格带满载流动、按先到排名序交替吞门口件（portStatus 看排名）；3出: 连续生产轮转 1→2→3；中带堵塞跳过+恢复 左→右→中；约 2 分钟）');
   console.log('  T2.10 手动: portStatus() 查看"输入轮询指针/输出轮询队列"（与 productionLog() 的 输入口N/输出口N 序号对照）；多口接带时满槽腾位看补货顺序、堵一条带看出货跳过与疏通恢复');
+  console.log('  物流调试: 控制台实时打印 物品停止/恢复(位置+原因)/跨段/先到排名/吸入/走进设备/门口等待/满载冻结/生产事件——__game.logisticsLog() 覆盘、__game.logisticsDebug(false) 关闭（定位"三带进料"问题用，事后退役）');
+  console.log('  T2.16 终点对接: E 模式拖带 → 悬停设备输入端口格（或紧邻供给格）→ 端口亮绿"将连接"、末段自动指向端口 → 左键落盘即接通（拖到设备上也能接，不再整条染红）；悬停输入口当起点会提示"输入端口不能作为起点"');
 }
 
 main().catch((err) => {

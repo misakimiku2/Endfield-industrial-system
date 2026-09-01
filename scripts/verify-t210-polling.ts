@@ -1,7 +1,7 @@
 // T2.10 验证: 端口轮询系统（输入指针轮询 + 输出队列轮转）
 // 依据: implementation-phase-2.md T2.10、A8 §4.1(输入轮询)/§4.2(输出轮询)、
-//       A3 §3.2(轮询规则)、精炼炉设备说明.md（左→中→右连接序、满载指针不重置、
-//       堵塞端口跳过、恢复追加队尾）
+//       A3 §3.2(轮询规则)、精炼炉设备说明.md（先到先得排名序(2026-09-02 用户拍板)、
+//       满载指针不重置、堵塞端口跳过、恢复追加队尾）
 //
 // 用法: node --experimental-strip-types scripts/verify-t210-polling.ts
 //
@@ -141,7 +141,7 @@ const receiveCells = (gx: number, gy: number): Array<[number, number]> =>
 const ITEM = 'origocrust';
 
 // ═══════════════════ 输入轮询 ═══════════════════
-console.log('[I1. 补货顺序 左→中→右 轮转（满槽每次腾 1 位）]');
+console.log('[I1. 同刻到达并列定义序: 补货顺序 左→中→右 轮转（满槽每次腾 1 位）]');
 {
   const sc = makeScene();
   BeltSystem.beltPhase = 0;
@@ -168,7 +168,7 @@ console.log('[I1. 补货顺序 左→中→右 轮转（满槽每次腾 1 位）
         `I1-r${round}. 未轮到端口的物品停在门口未被预约（${waiting.length} 条带在等）`);
     }
   }
-  assertEq(seq, [0, 1, 2, 0], 'I1-a. 四轮补货端口序列 = 左→中→右→左（定义序轮转）');
+  assertEq(seq, [0, 1, 2, 0], 'I1-a. 四轮补货端口序列 = 左→中→右→左（三口同刻到货，排名并列按定义序）');
   assertEq(f.inputPollIndex, 1, 'I1-b. 指针停在下次该补的端口（中口 idx1）');
   assert(supplies[0].items.some((it) => it.entering === true),
     'I1-c. 第 4 轮补货来自左口（物品已标记 entering 走进设备）');
@@ -227,6 +227,83 @@ console.log('[I4. 中间端口类型不符 → 跳过，物品留在门口]');
   assertEq(sc.inputPortEvents(), [0, 2], 'I4-a. 补货序列 左→右（中口类型不符被跳过，A8 §4.1 失败也前进指针）');
   assert(midBelt.items.length === 1 && midBelt.items[0].entering !== true,
     'I4-b. 中带源矿留在门口未被预约（等待槽型匹配或解锁）');
+}
+
+console.log('[I5. 先到先得排名序: 中口先到 → 满载轮转 中→右→左（2026-09-02 用户拍板）]');
+{
+  const sc = makeScene();
+  BeltSystem.beltPhase = 0;
+  const f = sc.place(80, 12);
+  const cells = supplyCells(80, 12);
+  // 三条带先后来货（真实玩法 = 三带速度/进度不一/先后连接）: 只有中口先有货 →
+  // 空槽阶段见门就收并建立最早排名，右口次之，左口最晚。
+  const mid = sc.belt(cells[1][0], cells[1][1], 270, [[ITEM, 0.5]]);
+  sc.tick(1); // 中口吸入
+  const right = sc.belt(cells[2][0], cells[2][1], 270, [[ITEM, 0.5]]);
+  sc.tick(1); // 右口吸入
+  const left = sc.belt(cells[0][0], cells[0][1], 270, [[ITEM, 0.5]]);
+  sc.tick(1); // 左口吸入
+  assertEq(f.bufferInput[0].count, 3, 'I5-a. 三口先后各吸 1 件（空槽阶段见门就收，无轮询串行）');
+  const rank = f.inputArrivalRank!;
+  assert(rank[1] < rank[2] && rank[2] < rank[0],
+    `I5-b. 先到排名戳记 中→右→左（一次性: ${JSON.stringify(rank)}）`);
+  // 补满到 50: 未满载阶段每 Tick 走访全部口、同 Tick 多口齐吸（规则2 同时进料）
+  for (let i = 0; f.bufferInput[0].count < 50 && i < 40; i++) {
+    sc.clearBelts();
+    for (const s of [left, mid, right]) s.items.push({ itemId: ITEM, progress: 0.5, delta: 0 });
+    sc.tick(1);
+  }
+  assertEq(f.bufferInput[0].count, 50, 'I5-c. 输入槽补满 50（未满载阶段三口齐吸）');
+  // 满载腾位轮转: 每轮结算扣 1 + 三口都有门口件 → 按先到排名序循环补货
+  const seqPorts: number[] = [];
+  for (let round = 0; round < 4; round++) {
+    sc.clearBelts();
+    for (const s of [left, mid, right]) s.items.push({ itemId: ITEM, progress: 0.5, delta: 0 });
+    consumeFromSlot(f.bufferInput[0], 1);
+    const before = sc.inputPortEvents().length;
+    sc.tick(1);
+    seqPorts.push(...sc.inputPortEvents().slice(before));
+  }
+  // 先到排名序 [中(1), 右(2), 左(0)]；循环不变式: 每次补货沿排名序前进到下一口
+  const rankSeq = [1, 2, 0];
+  const nextOf = (p: number) => rankSeq[(rankSeq.indexOf(p) + 1) % 3];
+  assert(new Set(seqPorts).size === 3,
+    `I5-d. 4 次腾位覆盖三口（实际 ${JSON.stringify(seqPorts)}）`);
+  assert(seqPorts.slice(0, 3).every((p, i) => nextOf(p) === seqPorts[i + 1]),
+    `I5-e. 补货循环沿先到排名序 中→右→左（实际 ${JSON.stringify(seqPorts)}）`);
+}
+
+console.log('[I6. 迟到的新带追加轮询末尾]');
+{
+  const sc = makeScene();
+  BeltSystem.beltPhase = 0;
+  const f = sc.place(90, 12);
+  const cells = supplyCells(90, 12);
+  const left = sc.belt(cells[0][0], cells[0][1], 270, [[ITEM, 0.5]]);
+  sc.tick(1); // 左先到
+  const mid = sc.belt(cells[1][0], cells[1][1], 270, [[ITEM, 0.5]]);
+  sc.tick(1); // 中次到
+  for (let i = 0; f.bufferInput[0].count < 50 && i < 40; i++) {
+    sc.clearBelts();
+    for (const s of [left, mid]) s.items.push({ itemId: ITEM, progress: 0.5, delta: 0 });
+    sc.tick(1);
+  }
+  assertEq(f.bufferInput[0].count, 50, 'I6-a. 左/中两口补满 50');
+  // 右带此刻才连接来货 → 先到排名最晚，轮询序追加到末尾: 左→中→右
+  const right = sc.belt(cells[2][0], cells[2][1], 270, [[ITEM, 0.5]]);
+  const seqPorts: number[] = [];
+  for (let round = 0; round < 4; round++) {
+    sc.clearBelts();
+    for (const s of [left, mid, right]) s.items.push({ itemId: ITEM, progress: 0.5, delta: 0 });
+    consumeFromSlot(f.bufferInput[0], 1);
+    const before = sc.inputPortEvents().length;
+    sc.tick(1);
+    seqPorts.push(...sc.inputPortEvents().slice(before));
+  }
+  const nextOf = (p: number) => (p + 1) % 3;
+  assert(new Set(seqPorts).size === 3
+    && seqPorts.slice(0, 3).every((p, i) => nextOf(p) === seqPorts[i + 1]),
+    `I6-b. 迟到右口追加末尾: 补货循环 左→中→右（实际 ${JSON.stringify(seqPorts)}）`);
 }
 
 // ═══════════════════ 输出轮询 ═══════════════════

@@ -30,10 +30,14 @@ import type { World, EntityHandle } from '../../ECS.ts';
 import type { Position } from '../../components/Position.ts';
 import type { BeltSegmentComp } from '../../components/BeltSegmentComp.ts';
 import type { BuildingComp, Direction } from '../../components/BuildingComp.ts';
-import type { BuildingDefinition } from '../../data/buildings.ts';
+import { getBuildingDefinition } from '../../data/buildings.ts';
 import { STOP_MAX, PORT_ENTER_DONE } from '../BeltSystem.ts';
 import { directionVector } from '../belt/BeltPathGeometry.ts';
-import { rotatePort } from '../PortGeometry.ts';
+import { inputPortCells, type PortCell } from '../PortGeometry.ts';
+// 端口格几何已下沉 PortGeometry（T2.16 起 BeltSystem 真堵分类共用）——此处重导出，
+// 既有导入路径（MachineSystem/测试脚本）不变
+export { inputPortCells } from '../PortGeometry.ts';
+export type { PortCell } from '../PortGeometry.ts';
 import { tryAcceptItem } from './BufferOps.ts';
 import { CELL_SIZE } from '../../render/constants.ts';
 
@@ -42,32 +46,27 @@ export const PORT_ENTER_PROGRESS = STOP_MAX;
 /** 预约物品的放行/移除点（= BeltSystem.PORT_ENTER_DONE 端口格中心 1.5，两值必须同源）。 */
 export const PORT_RELEASE_PROGRESS = PORT_ENTER_DONE;
 
-/** 端口世界格（Grid 坐标）。 */
-export interface PortCell {
-  /** 端口定义（ports 数组内的原始引用）。 */
-  port: BuildingDefinition['ports'][number];
-  x: number;
-  y: number;
-}
-
 /**
- * 计算设备全部**输入**端口的世界格（按定义顺序，即"左→中→右"连接序）。
- * 输出/液体端口不在其中（output 由 T2.7 处理、liquid 由 Phase 2+ 处理）。
- * @param gx gy 建筑左上角格坐标（Position / CELL_SIZE）
+ * 全部设备**输入**端口格的世界索引（"gx,gy" → 端口格）。
+ * T2.16 终点对接: BeltCreationSystem 预览吸附/端口高亮用——与 findFeederBelt 的
+ * 吸入判定同一端口来源（inputPortCells 逐台设备），二者口径不会发散。
+ * 仓库类设备（存货口）的输入口同样收录——它们也是合法传送带终点（无限汇）。
  */
-export function inputPortCells(
-  gx: number,
-  gy: number,
-  def: BuildingDefinition,
-  direction: Direction,
-): PortCell[] {
-  const cells: PortCell[] = [];
-  for (const port of def.ports) {
-    if (port.type !== 'input') continue;
-    const o = rotatePort(port, def.footprint, direction);
-    cells.push({ port, x: gx + o.dx, y: gy + o.dy });
+export function collectInputPortCells(world: World): Map<string, PortCell> {
+  const map = new Map<string, PortCell>();
+  for (const handle of world.query('BuildingComp', 'Position')) {
+    const comp = world.getComponent<BuildingComp>(handle, 'BuildingComp');
+    const pos = world.getComponent<Position>(handle, 'Position');
+    if (!comp || !pos) continue;
+    const def = getBuildingDefinition(comp.definitionId);
+    if (!def) continue;
+    const gx = Math.round(pos.x / CELL_SIZE);
+    const gy = Math.round(pos.y / CELL_SIZE);
+    for (const cell of inputPortCells(gx, gy, def, comp.direction)) {
+      map.set(`${cell.x},${cell.y}`, cell);
+    }
   }
-  return cells;
+  return map;
 }
 
 /**
@@ -128,6 +127,23 @@ export function releaseArrivedItems(seg: BeltSegmentComp): string[] {
 }
 
 /**
+ * 段上已到达供给格中心(0.5)的队首物品（非 entering 中 progress 最大者）。
+ * tryAbsorbHeadItem 的预约前置判定 + T2.10 先到排名戳记（"物品到了设备门口"）共用。
+ * @returns 队首物品引用；null = 无非 entering 物品 / 队首未到 0.5。
+ */
+export function doorHeadItem(seg: BeltSegmentComp): BeltSegmentComp['items'][number] | null {
+  const items = seg.items;
+  if (!items || items.length === 0) return null;
+  let head = null as (typeof items)[number] | null;
+  for (const it of items) {
+    if (it.entering) continue;
+    if (head === null || it.progress > head.progress) head = it;
+  }
+  if (head === null || head.progress < PORT_ENTER_PROGRESS) return null;
+  return head;
+}
+
+/**
  * 尝试预约段上队首物品进入设备（阶段1）。
  * 队首 = 非 entering 物品中 progress 最大者（entering 物品已属设备，正在走进端口格）。
  * 队首 progress ≥ PORT_ENTER_PROGRESS(0.5 供给格中心) 时 tryAcceptItem 判定——
@@ -140,14 +156,8 @@ export function tryAbsorbHeadItem(
   comp: BuildingComp,
   capacity: number,
 ): string | null {
-  const items = seg.items;
-  if (!items || items.length === 0) return null;
-  let head = null as (typeof items)[number] | null;
-  for (const it of items) {
-    if (it.entering) continue;
-    if (head === null || it.progress > head.progress) head = it;
-  }
-  if (head === null || head.progress < PORT_ENTER_PROGRESS) return null;
+  const head = doorHeadItem(seg);
+  if (head === null) return null;
   if (!tryAcceptItem(comp.bufferInput, head.itemId, capacity)) return null;
   head.entering = true;
   return head.itemId;

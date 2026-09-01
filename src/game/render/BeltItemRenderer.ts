@@ -21,7 +21,7 @@
 import { Sprite, Texture, type Container } from 'pixi.js';
 import type { World, EntityHandle } from '../ECS';
 import type { Position } from '../components/Position';
-import type { BeltSegmentComp } from '../components/BeltSegmentComp';
+import type { BeltItem, BeltSegmentComp } from '../components/BeltSegmentComp';
 import type { Direction } from '../components/BuildingComp';
 import type { TextureLookup } from '../systems/RenderSystem';
 import { turnInfoFromDirections, directionVector } from '../systems/belt/BeltPathGeometry';
@@ -59,6 +59,16 @@ export class BeltItemRenderer {
   private entries = new Map<EntityHandle, SegmentEntry>();
   /** itemId → Texture 缓存，避免每帧每物品重复 Assets 查找。 */
   private texCache = new Map<string, Texture>();
+  /**
+   * 物品 → 帧间**内插**状态（2026-09-02 两轮修订: 先修外推过冲回弹，再修每帧覆盖
+   * 导致的 20Hz 跳变）。prevTick = 上一 Tick 的逻辑 progress（渲染在 prevTick →
+   * 本 Tick progress 之间内插，永不超过逻辑位置——零倒退零过冲）；lastSeen 用于
+   * 检测"本 Tick 是否已推进"——**只在 progress 变化的第一帧**推进 prevTick，同 Tick
+   * 的后续帧保持 prevTick 不动（否则 prev==current 物品静止在 Tick 位置，60FPS 下
+   * 呈 20Hz 步进微抖）。WeakMap: 物品移除/跨段重建（新对象）自动回收；新物品以
+   * progress−delta 起步（跨段前格 1.0 == 新格 0，世界坐标连续）。
+   */
+  private renderState = new WeakMap<BeltItem, { prevTick: number; lastSeen: number }>();
 
   constructor(world: World, _layer: Container, belowLayer: Container, getTexture: TextureLookup) {
     this.world = world;
@@ -68,9 +78,13 @@ export class BeltItemRenderer {
 
   /**
    * 每帧同步所有传送带段的物品 Sprite（数量/纹理/位置）。
-   * @param alpha 当前 Tick 周期的插值系数（accumulator/SIM_STEP，0~1）。物品位置用
-   *   `progress + alpha*delta` 做帧间插值，消除 20TPS 逻辑阶跃在 60FPS 下的卡顿
-   *   （流动物品平滑、停止/被夹住物品 delta=0 静止）。参照 BeltPointerRenderer 用 elapsedMS 平滑的思路。
+   * @param alpha 当前 Tick 周期的插值系数（accumulator/SIM_STEP，0~1）。物品位置在
+   *   **上一 Tick progress → 本 Tick progress** 之间内插（renderProgress = prev +
+   *   alpha*(progress−prev)）。2026-09-02 修订: 旧版外推 `progress + alpha*delta` 在
+   *   物品被钳制（门口 0.5 / walking 1.5）的前一窗口会画过头（~0.02 格），钳制
+   *   Tick（delta=0）瞬间回弹——用户实测"进输入端时先后退一下再前进"。内插渲染
+   *   永不超过逻辑位置: 零倒退、零过冲，代价仅一 Tick(50ms) 视觉延迟（1.6px 级，
+   *   不可感知）。停止物品 prev==progress 恒静止；恢复流动从停点平滑起步。
    */
   update(alpha: number): void {
     const visible = this.world.query('BeltSegmentComp');
@@ -117,12 +131,20 @@ export class BeltItemRenderer {
         sprites.push(s);
       }
 
-      // 2b. 逐物品同步纹理 + 位置（用 alpha 做帧间插值，消除 20TPS 逻辑阶跃卡顿）
+      // 2b. 逐物品同步纹理 + 位置（上一 Tick → 本 Tick 内插，消除 20TPS 逻辑阶跃卡顿）
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
         const sprite = sprites[i];
         this.bindTexture(sprite, item.itemId);
-        const renderProgress = item.progress + alpha * (item.delta || 0);
+        let st = this.renderState.get(item);
+        if (st === undefined) {
+          st = { prevTick: item.progress - (item.delta || 0), lastSeen: item.progress };
+          this.renderState.set(item, st);
+        } else if (st.lastSeen !== item.progress) {
+          st.prevTick = st.lastSeen; // Tick 推进的第一帧: 记住上一 Tick 位置
+          st.lastSeen = item.progress;
+        }
+        const renderProgress = st.prevTick + alpha * (item.progress - st.prevTick);
         const { x, y, rotation } = this.itemTransform(seg, renderProgress, pos);
         sprite.position.set(x, y);
         sprite.rotation = rotation; // 物品像 pointer 一样旋转（直段朝流向/转角沿切线）

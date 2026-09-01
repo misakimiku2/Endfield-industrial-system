@@ -9,8 +9,10 @@
 //   - 跨段传输 (A9 §2.2/§3, T2.2): 队首 progress≥1.0 且**下游段为空** → 进入下游段首
 //     progress=0（重新走）；下游占用 → 本段队首推进不得越过下游最近物品的 progress
 //     （世界间距 ≥ 1 格，反向遍历读到下游本 Tick 最新位置 → 整链 lockstep 流动）。
-//     下游最近物品是 entering（正被吸入设备）时钳到 STOP_MAX——排队物品停自己格
-//     中心而非段尾边界（2026-08-25 用户实测: 停在两格中间不符规范）。
+//     下游最近物品是 entering（正走进设备）时**不计入占用**（2026-09-02 修订）——
+//     预约物品是设备所有的过客，后件到段尾即跟进供给格、与前件锁步（≥1 格间距），
+//     传送带以本速 2s/件连续流入设备（旧版钳 0.5 等 walking 释放 → 4s/件，被用户
+//     日志实测否决）。真堵（非 entering 停走件）时排队物品仍停自己格中心（2026-08-25 拍板）。
 //   - 堵塞逆流 (A9 §3.4, T2.2): 下游占用 → 本段队首停在下游最近物品的 progress
 //     → 上游跨段失败 → 逆流向源头传播。下游疏通（腾空）→ 上游恢复流动。
 //   - 链级堵塞标志 (2026-08-25 用户实测修订): **链内任一物品停走（delta=0）→ 整链
@@ -33,7 +35,11 @@ import type { World, EntityHandle } from '../ECS.ts';
 import type { SimulationSystem } from '../GameLoop.ts';
 import type { BeltItem, BeltSegmentComp } from '../components/BeltSegmentComp.ts';
 import type { Position } from '../components/Position.ts';
+import type { BuildingComp } from '../components/BuildingComp.ts';
+import { getBuildingDefinition, type BuildingDefinition } from '../data/buildings.ts';
 import { directionVector } from './belt/BeltPathGeometry.ts';
+import { inputPortCells } from './PortGeometry.ts';
+import { logisticsDebug } from './machine/LogisticsDebug.ts';
 import { CELL_SIZE } from '../render/constants.ts';
 
 /**
@@ -110,26 +116,95 @@ export class BeltSystem implements SimulationSystem {
     BeltSystem.beltPhase = np >= 1.0 ? np - 1.0 : np;
     BeltSystem.beltPhaseDelta = ITEM_PROGRESS_PER_TICK;
 
-    // ── 链级堵塞判定（2026-08-25 用户实测修订: 红色堵塞要覆盖**完整条**传送带，
-    // 端口前一格无需特殊处理）──
-    // 旧规则「本段队首停走才算堵 + 下游逆流传播」会把门口格留成黄色（其物品正被
-    // 吸入、entering 行走中 delta>0），红色只覆盖后方排队格。改为链级: **链内任一
-    // 物品本 Tick 停走（delta=0）→ 整链 blocked**。锁步模型下二者一致——堵塞时链内
-    // 物品全部停走、自由流动时全部 delta>0；门口格吸入期间后方排队停走 → 门口格
-    // 也随整链变红。跨链拥堵自动成立: 上游链尾被下游链停走物品钳住时，上游链内
-    // 同样有 delta=0 的物品。（注入物品 delta=0 只存在到下一 Tick——DD-010 顺序下
-    // BeltSystem 先于注入方运行，下一 Tick 该物品即推进，不产生假红。）
-    const chainBlocked = new Map<string, boolean>();
+    // ── 链级堵塞判定 + 真堵分类（2026-09-02 用户实测修订）──
+    // raw: 链内任一物品停走（delta=0）。红色只给**真堵**，轮询等待不红（否则满载
+    // 轮流补货时各带周期性闪红，玩家以为出问题）:
+    //   ① 断头——链尾出口既无传送带也无设备输入口;
+    //   ② 类型不符——设备输入槽锁定其他类型（槽未满也不收）;
+    //   ③ 槽满且设备不再消耗（idle 无配方 / blocked 输出满）——输入只进不出。
+    // 不红的停走: 槽满但生产 working（消耗中——几秒内腾位轮到本带补货 = 轮询等待）;
+    //   未满/可收的门口停走是"本 Tick 即将被 MachineSystem 吸入"的瞬态; paused 由
+    //   LOGO 指示（T2.8 语义，同端口不红）; 存货口（无限汇）瞬态。上游链跟随下游链
+    //   的分类——下游不红则本链停走只是传导性等待（拥堵源头红、排队链不红）。
+    const segByCell = new Map<string, BeltSegmentComp>();
+    const chainSegs = new Map<string, Array<{ seg: BeltSegmentComp; exitKey: string }>>();
+    const rawStopped = new Map<string, boolean>();
     for (const handle of entities) {
       const seg = world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp');
-      if (!seg) continue;
-      if ((seg.items ?? []).some((it) => it.delta === 0)) {
-        chainBlocked.set(seg.chainId, true);
+      const pos = world.getComponent<Position>(handle, 'Position');
+      if (!seg || !pos) continue;
+      if ((seg.items ?? []).some((it) => it.delta === 0)) rawStopped.set(seg.chainId, true);
+      const gx = Math.round(pos.x / CELL_SIZE);
+      const gy = Math.round(pos.y / CELL_SIZE);
+      segByCell.set(`${gx},${gy}`, seg);
+      const dv = directionVector(seg.direction);
+      const exitKey = `${gx + dv.x},${gy + dv.y}`;
+      const list = chainSegs.get(seg.chainId) ?? [];
+      list.push({ seg, exitKey });
+      chainSegs.set(seg.chainId, list);
+    }
+    // 设备输入口索引（端口格 → 设备）——链尾出口命中即"对接设备"
+    const inputDock = new Map<string, { comp: BuildingComp; def: BuildingDefinition }>();
+    for (const handle of world.query('BuildingComp', 'Position')) {
+      const bComp = world.getComponent<BuildingComp>(handle, 'BuildingComp');
+      const bPos = world.getComponent<Position>(handle, 'Position');
+      if (!bComp || !bPos) continue;
+      const def = getBuildingDefinition(bComp.definitionId);
+      if (!def) continue;
+      const bgx = Math.round(bPos.x / CELL_SIZE);
+      const bgy = Math.round(bPos.y / CELL_SIZE);
+      for (const cell of inputPortCells(bgx, bgy, def, bComp.direction)) {
+        inputDock.set(`${cell.x},${cell.y}`, { comp: bComp, def });
       }
     }
+    const redMemo = new Map<string, boolean>();
+    const classify = (chainId: string, depth: number): boolean => {
+      if (redMemo.has(chainId)) return redMemo.get(chainId)!;
+      redMemo.set(chainId, false); // 先记 false 防环
+      if (!rawStopped.get(chainId)) return false;
+      if (depth > 16) { redMemo.set(chainId, true); return true; } // 环防御
+      let deadEnd: { seg: BeltSegmentComp; exitKey: string } | null = null;
+      let flowsInto: string | null = null;
+      for (const e of chainSegs.get(chainId) ?? []) {
+        const down = segByCell.get(e.exitKey);
+        if (down === undefined) {
+          if (deadEnd !== null) { redMemo.set(chainId, true); return true; } // 多链尾异常拓扑
+          deadEnd = e;
+        } else if (down.chainId !== chainId) {
+          flowsInto = down.chainId;
+        }
+      }
+      if (deadEnd === null) {
+        // 无链尾: 流入下游链——传导性等待，红否随下游
+        const red = flowsInto !== null ? classify(flowsInto, depth + 1) : true;
+        redMemo.set(chainId, red);
+        return red;
+      }
+      const dock = inputDock.get(deadEnd.exitKey);
+      if (dock === undefined) { redMemo.set(chainId, true); return true; } // ① 断头
+      const { comp, def } = dock;
+      if (comp.paused || def.depot === 'load') return false; // paused 由 LOGO 指示 / 无限汇瞬态
+      // 门口停走物品（非 entering 中 progress 最大者，与 doorHeadItem 同口径）
+      const items = deadEnd.seg.items ?? [];
+      let door = null as (typeof items)[number] | null;
+      for (const it of items) {
+        if (!it.entering && (door === null || it.progress > door.progress)) door = it;
+      }
+      if (door === null) { redMemo.set(chainId, true); return true; } // 防御: 停走但门口无物品
+      const cap = def.bufferCapacity;
+      const acceptable = comp.bufferInput.some((s) => s.itemId === null)
+        || comp.bufferInput.some((s) => s.itemId === door!.itemId && s.count < cap);
+      if (acceptable) return false; // 可收 = 本 Tick 即将吸入的瞬态
+      const allFull = comp.bufferInput.every((s) => s.count >= cap);
+      if (!allFull) { redMemo.set(chainId, true); return true; } // ② 类型不符
+      const red = comp.state !== 'working'; // ③ 槽满: 消耗中=轮询等待不红; 停产=红
+      redMemo.set(chainId, red);
+      return red;
+    };
+    for (const chainId of chainSegs.keys()) classify(chainId, 0);
     for (const handle of entities) {
       const seg = world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp');
-      if (seg) seg.blocked = chainBlocked.get(seg.chainId) ?? false;
+      if (seg) seg.blocked = rawStopped.get(seg.chainId) === true && redMemo.get(seg.chainId) === true;
     }
   }
 
@@ -155,33 +230,37 @@ export class BeltSystem implements SimulationSystem {
   ): void {
     // 按 progress 降序（队首在前），不改原数组顺序
     const ordered = items.slice().sort((a, b) => b.progress - a.progress);
+    // 物流调试（2026-09-02）: 本段格坐标（日志定位"物品停止的位置"用）
+    const gx = Math.round(pos.x / CELL_SIZE);
+    const gy = Math.round(pos.y / CELL_SIZE);
 
     // === 队首：跨段 / 间距钳制 / 段尾停止 ===
     const head = ordered[0];
     const oldHead = head.progress;
     const headAdvanced = oldHead + ITEM_PROGRESS_PER_TICK;
+    // 物流调试: 记住本 Tick 前的 delta，分支结束后按 跳变 记录 停止/恢复
+    const prevHeadDelta = head.delta;
     /** 后方物品的限制基准（前方物品的 progress）；队首跨段离开后用 1.0=段尾边界(=下游段首)。 */
     let leaderProgress: number;
 
     const downstream = this.findDownstream(world, handle, pos, seg);
-    // 下游段最近入口物品的 progress（空段 = Infinity = 可自由前进/跨段）
-    // + 该物品是否 entering（正被吸入设备、即将消失——2026-08-25 用户实测:
-    // entering 物品行进 0.5→1.5 时 downMin 随之涨到 1.5，旧钳制 min(downMin,1.0)
-    // 会让本段队首爬到 1.0=段尾边界=「两个格中间」并停留 ~1 秒；改为停在
-    // 自己格中心(0.5)，entering 移除后再正常跨段补位，符合精炼炉说明
-    // 「物品停在格中心」与先到先得依次补位的队列形态）
+    // 下游段最近入口物品的 progress（空段 = Infinity = 可自由前进/跨段）。
+    // 2026-09-02 修订（用户日志实测定位: 门口行走占格把每条带腰斩到 4s/件、三带
+    // 输入加不了速）: **entering 物品（已预约、正走进设备）不计入阻挡**——它是设备
+    // 所有的"过客"，后方物品照常跟进供给格（与前件保持 ≥1 格间距，由同段 followers
+    // 夹紧与跨段时机自然形成锁步），传送带以本速 2s/件连续流入，走进设备的行程互相
+    // 重叠（= 精炼炉说明 输入规则2"三条传送带可同时进行物品传输"）。真堵（非
+    // entering 的停走件）仍钳 min(downMin, 1.0)——排队物品停自己格中心的语义不变
+    // （2026-08-25 拍板），仅"entering 占用供给格"（T2.6 旧注）被本修订取代。
     let downMin = Infinity;
-    let downEntering = false;
-    let downSeg: BeltSegmentComp | null | undefined = null;
+    let downSeg: BeltSegmentComp | null | undefined = undefined;
     if (downstream !== null) {
       downSeg = world.getComponent<BeltSegmentComp>(downstream, 'BeltSegmentComp');
       const downItems = downSeg?.items;
       if (downItems && downItems.length > 0) {
         for (const it of downItems) {
-          if (it.progress < downMin) {
-            downMin = it.progress;
-            downEntering = it.entering === true;
-          }
+          if (it.entering === true) continue; // 走进设备的过客不占供给格（2026-09-02 修订）
+          if (it.progress < downMin) downMin = it.progress;
         }
       }
     }
@@ -195,12 +274,23 @@ export class BeltSystem implements SimulationSystem {
       head.progress = stopAt;
       head.delta = Math.max(0, stopAt - oldHead);
       leaderProgress = stopAt;
+      if (stopAt >= PORT_ENTER_DONE) {
+        logisticsDebug.log(
+          `⏹ 物品停止: 段(${gx},${gy}) ${head.itemId}@1.50（预约物品到达端口格中心，本 Tick 由设备移除消失）`,
+        );
+      }
     } else if (downstream === null) {
       // 断头（无下游带）: 停在格中心不凸出位置（A9 §3.1-B / §3.4 堵塞，T2.6 门口同点）。
       const stopAt = Math.min(headAdvanced, STOP_MAX);
       head.progress = stopAt;
       head.delta = Math.max(0, stopAt - oldHead); // 停稳后 delta=0（渲染静止，不插值）
       leaderProgress = stopAt;
+      // 物流调试: 停止/恢复跳变（断头钳制——设备门口供给格或悬空带尾）
+      if (prevHeadDelta > 0 && head.delta === 0) {
+        logisticsDebug.log(`⏹ 物品停止: 段(${gx},${gy}) ${head.itemId}@${stopAt.toFixed(2)}（断头/门口钳制@格中心 0.50）`);
+      } else if (prevHeadDelta === 0 && head.delta > 0) {
+        logisticsDebug.log(`▶ 物品前进: 段(${gx},${gy}) ${head.itemId}@${stopAt.toFixed(2)}（原断头钳制解除）`);
+      }
     } else if (headAdvanced >= 1.0 && downMin === Infinity) {
       // 跨段: 下游空，队首离开本段进入下游段首 progress=0（A9 §2 "重新走"）。
       // 段尾边界与下游段首边界在世界坐标重合 → 视觉无跳跃。
@@ -210,6 +300,13 @@ export class BeltSystem implements SimulationSystem {
         // 从本段 items 移除 head（按引用）
         const idx = items.indexOf(head);
         if (idx >= 0) items.splice(idx, 1);
+        // 物流调试: 跨段（仅记录，无跳变判定）
+        const dp = world.getComponent<Position>(downstream, 'Position');
+        if (dp) {
+          logisticsDebug.log(
+            `↗ 跨段: ${head.itemId} 段(${gx},${gy}) → (${Math.round(dp.x / CELL_SIZE)},${Math.round(dp.y / CELL_SIZE)})`,
+          );
+        }
       }
       // 队首已离开本段；次首的前方现在是"下游段首"(世界=本段 progress 1.0 边界)
       leaderProgress = 1.0; // 后方相对段尾(=下游首)保持间距
@@ -217,15 +314,21 @@ export class BeltSystem implements SimulationSystem {
       // 下游占用（或未到段尾）: 推进不得越过下游最近物品的 progress（一格一物品）。
       // 下游本 Tick 已处理（反向遍历）→ downMin 为最新值: 流动时队首正常 +0.025 前进
       // （下游物品同 Tick 也前进了），堵塞时队首停在下游物品位置后方。
-      // cap 1.0: 下游 entering 物品（预约走进端口格）progress 可达 1.5 > 段尾——
-      // 非 entering 物品不得越过本段段尾 1.0（>1.0 仅预约物品合法，其走 entering 分支）；
-      // 下游最近物品是 entering 时进一步钳到 STOP_MAX: 停在自己格中心而非段尾边界
-      // （entering 物品即将消失，爬到边界=「停在两格中间」，见上方 downEntering 注）。
-      const tailCap = downEntering ? STOP_MAX : 1.0;
-      const stopAt = Math.min(headAdvanced, Math.min(downMin, tailCap));
+      // cap 1.0: 非 entering 物品不得越过本段段尾 1.0（>1.0 仅预约物品合法，其走
+      // entering 分支）。下游只有 entering 过客时不在此分支（downMin=Infinity →
+      // 到 1.0 即跨段跟进供给格，2026-09-02 修订——不再钳在 0.5 等 walking 释放）。
+      const stopAt = Math.min(headAdvanced, Math.min(downMin, 1.0));
       head.progress = Math.max(oldHead, stopAt); // 不后退（防御异常重叠注入）
       head.delta = head.progress - oldHead; // 被夹住不动时 delta=0（渲染静止，不插值）
       leaderProgress = head.progress;
+      // 物流调试: 停止/恢复跳变（下游占用钳制——排队跟停/疏通恢复）
+      if (prevHeadDelta > 0 && head.delta === 0) {
+        logisticsDebug.log(
+          `⏹ 物品停止: 段(${gx},${gy}) ${head.itemId}@${head.progress.toFixed(2)}（下游占用钳制: 下游最近物品@${downMin.toFixed(2)}）`,
+        );
+      } else if (prevHeadDelta === 0 && head.delta > 0) {
+        logisticsDebug.log(`▶ 物品前进: 段(${gx},${gy}) ${head.itemId}@${head.progress.toFixed(2)}（下游钳制解除，随队列推进）`);
+      }
     }
 
     // === 后方物品：间距夹紧（相对前方 leaderProgress，仅调试注入的多件场景可达）===

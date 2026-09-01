@@ -9,7 +9,38 @@
 // 旋转与设备 Sprite 渲染旋转一致（T2.0 验收: 高亮输出端口与渲染对齐）。
 
 import type { Direction } from '../components/BuildingComp.ts';
-import type { Port } from '../data/buildings.ts';
+import type { Port, BuildingDefinition } from '../data/buildings.ts';
+
+/** 端口世界格（Grid 坐标）。 */
+export interface PortCell {
+  /** 端口定义（ports 数组内的原始引用）。 */
+  port: Port;
+  x: number;
+  y: number;
+}
+
+/**
+ * 计算设备全部**输入**端口的世界格（按定义顺序，即"左→中→右"连接序）。
+ * T2.16 起由 BeltSystem（真堵分类）与 IntakeOps（吸入判定）共用——原实现于
+ * IntakeOps，BeltSystem 不能反向导入 machine/（IntakeOps 依赖 BeltSystem 的
+ * STOP_MAX，会成环），故下沉到本共享模块，IntakeOps 再导出保持旧导入路径兼容。
+ * 输出/液体端口不在其中（output 由 T2.7 处理、liquid 由 Phase 2+ 处理）。
+ * @param gx gy 建筑左上角格坐标（Position / CELL_SIZE）
+ */
+export function inputPortCells(
+  gx: number,
+  gy: number,
+  def: BuildingDefinition,
+  direction: Direction,
+): PortCell[] {
+  const cells: PortCell[] = [];
+  for (const port of def.ports) {
+    if (port.type !== 'input') continue;
+    const o = rotatePort(port, def.footprint, direction);
+    cells.push({ port, x: gx + o.dx, y: gy + o.dy });
+  }
+  return cells;
+}
 
 /** 把端口相对位置按建筑朝向旋转，得到在世界坐标系中的相对位置。 */
 export function rotatePort(

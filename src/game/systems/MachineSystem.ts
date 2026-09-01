@@ -11,11 +11,13 @@
 //       输出槽满 → blocked 暂缓（原料不扣，留在输入槽），之后每 Tick 重试，
 //       输出腾出空间即完成暂缓的结算（A8 §2.2/§6.2）
 //   1c. 无计时 → 匹配配方启动新计时（**不扣原料**）；结算成功后同 Tick 立即续启下一次
-//   2. 输入物流 (T2.6 预约制 + T2.10 轮询): 先对全部输入口放行走到端口格中心(1.5)的
-//       预约物品（视觉行程与轮询解耦），再从 inputPollIndex 指针端口起循环走访一圈
-//       预约停在供给格中心(0.5)的队首——成功/跳过指针都前进，全部输入槽满则冻结不重置
-//       （A8 §4.1；每端口每走访至多预约 1 件）。吸入不依赖配方——仓库类设备（T2.12）
-//       同走物流路径（仓库口自身走 def.depot 分支，无限源/汇无公平性诉求，保持定义序）。
+//   2. 输入物流 (T2.6 预约制 + T2.10 轮询，2026-09-02 修订"先到先得"): 先对全部输入口
+//       放行走到端口格中心(1.5)的预约物品（视觉行程与轮询解耦），再戳记各口首次有物品
+//       到门口(0.5)的先到排名，最后从 inputPollIndex 指针端口起**按先到排名序**循环走访
+//       一圈预约停在供给格中心(0.5)的队首——成功/跳过指针都沿排名序前进，全部输入槽满
+//       则冻结不重置（A8 §4.1；每端口每走访至多预约 1 件；未满载时每 Tick 走访全部口，
+//       同 Tick 可多口齐吸）。吸入不依赖配方——仓库类设备（T2.12）同走物流路径
+//       （仓库口自身走 def.depot 分支，无限源/汇无公平性诉求，保持定义序）。
 //   3. 输出物流 (T2.7 注入纪律 + T2.10 轮询): 相位窗口（beltPhase ≤ STOP_MAX）为全局
 //       闸门，窗口外整步跳过且不动 outputPollQueue；窗口内按活跃队列轮转出货——成功
 //       移队尾、失败移出（堵塞集=全部端口−队列），堵塞端口每 Tick 探测真实出货，
@@ -55,7 +57,9 @@ import {
   findFeederBelt,
   tryAbsorbHeadItem,
   releaseArrivedItems,
+  doorHeadItem,
 } from './machine/IntakeOps.ts';
+import { logisticsDebug } from './machine/LogisticsDebug.ts';
 import {
   outputPortCells,
   findReceiverBelt,
@@ -105,6 +109,12 @@ export class MachineSystem implements SimulationSystem {
   onEvent: ((e: ProductionEvent) => void) | null = null;
   /** 最近事件缓冲（调试钩子 __game.productionLog 读，超出上限丢最旧）。 */
   readonly recentEvents: ProductionEvent[] = [];
+  /** 仿真 Tick 计数（每 update +1，dt 恒 50ms）——输入端口先到排名的时间源。 */
+  private simTick = 0;
+  /** 物流调试: 每设备"输入槽满载冻结"上一状态（跳变日志用）。 */
+  private readonly intakeFrozen = new Map<EntityHandle, boolean>();
+  /** 物流调试: 每输入口"门口物品等待中"上一状态（跳变日志用，键 `${handle}:${portIdx}`）。 */
+  private readonly intakeWaiting = new Map<string, boolean>();
 
   constructor(recipes: Map<string, Recipe[]>, registry: ItemRegistry) {
     this.recipes = recipes;
@@ -120,10 +130,16 @@ export class MachineSystem implements SimulationSystem {
   private emit(e: ProductionEvent): void {
     this.recentEvents.push(e);
     if (this.recentEvents.length > MAX_RECENT_EVENTS) this.recentEvents.shift();
+    // 物流调试（2026-09-02）: 生产事件同步入调试日志（吸入在 absorbBeltInputs 有带位置的
+    // 增强行，此处不重复；输出/仓库口吞吐维持既有 [T2.7/T2.12] 控制台转发即可）
+    if (e.type === 'start' || e.type === 'settle' || e.type === 'blocked' || e.type === 'cancel') {
+      logisticsDebug.log(`🏭 ${e.message}`);
+    }
     this.onEvent?.(e);
   }
 
   update(world: World, dt: number): void {
+    this.simTick++;
     // 传送带格索引（T2.6 输入物流用，全 Tick 共享一份；无传送带时为空 Map，各端口查找未命中）
     const beltAt = buildBeltCellIndex(world);
     for (const handle of world.query('BuildingComp')) {
@@ -282,6 +298,10 @@ export class MachineSystem implements SimulationSystem {
         if (!seg) continue;
         const emitted = emitSourceToBelt(seg);
         if (emitted !== null) {
+          const rp = world.getComponent<Position>(receiver, 'Position');
+          logisticsDebug.log(
+            `📤 取货口出货: ${def.name}(${gx},${gy}) ${this.nameOf(emitted)} ×1（无限源 → 带首 ${rp ? `${Math.round(rp.x / CELL_SIZE)},${Math.round(rp.y / CELL_SIZE)}` : '?'}）`,
+          );
           this.emit({
             type: 'depot-output', handle,
             message: `${def.name}: 输出 ${this.nameOf(emitted)} ×1（无限源 → 传送带）`,
@@ -333,19 +353,24 @@ export class MachineSystem implements SimulationSystem {
   }
 
   /**
-   * A8 §7 步骤2 (T2.6 预约制 + T2.10 输入轮询)。
-   * 两段式，放行与预约解耦:
+   * A8 §7 步骤2 (T2.6 预约制 + T2.10 输入轮询，2026-09-02 修订为**先到先得排名序**)。
+   * 三段式:
    *   ① 放行扫描（全部输入口、定义序）: releaseArrivedItems 移除走到端口格中心(1.5)
    *      的预约物品——entering 物品的视觉行程不依赖轮询指针（指针跳过的端口也要放行，
    *      否则物品滞留在设备半格深处占住供给格）。
-   *   ② 预约轮询（A8 §4.1）: 从 inputPollIndex 指向的端口起循环走访一圈，对每口
+   *   ①.5 先到排名戳记: 每口第一次有物品到达供给格中心(0.5)时记下当前仿真 Tick
+   *      （一次性，comp.inputArrivalRank）。满载/类型不符也戳——"物品到了门口"即算
+   *      先到（用户拍板 2026-09-02: B 的物品先到 → 轮转 B-C-A，取代端口定义序）。
+   *   ② 预约轮询（A8 §4.1）: 走访序 = 先到排名序（先到先服务；从未有物品到门口的口
+   *      排最后、按定义序）。从 inputPollIndex 指向的端口起循环走访一圈，对每口
    *      tryAbsorbHeadItem 预约停在供给格中心(0.5)的队首。成功或跳过（无供给带/
-   *      类型不符/未到门口）指针都 +1（mod n）；走访前/补货后检测"全部输入槽满"
-   *      → 冻结: 指针保持不动不重置（A8 §4.1"轮询指针不重置"，精炼炉设备说明
-   *      "A 补完之后…再降到 49 时 B 开始补货"的轮转次序）。
-   * 满载早退放在放行之后——满载只冻结**新预约**，已预约物品照常进门。
-   * 端口序 = inputPortCells 过滤序 = 定义序"左→中→右"；设备旋转只改端口世界位置，
-   * 不改定义序，轮询次序与朝向无关。
+   *      类型不符/未到门口）指针都沿排名序 +1；走访前/补货后检测"全部输入槽满"
+   *      → 冻结: 指针保持不动不重置（A8 §4.1"轮询指针不重置"）。
+   * 满载早退放在放行/戳记之后——满载只冻结**新预约**，已预约物品照常进门、
+   * 后来的带照常建立排名。
+   * 未满载时每 Tick 走访全部口（各口至多预约 1 件，同 Tick 可多口齐吸——
+   * "三条传送带可同时进料"，精炼炉设备说明）——排名只决定同 Tick 内的先后
+   * 与满载腾位时谁先补货。
    */
   private absorbBeltInputs(
     world: World,
@@ -362,38 +387,114 @@ export class MachineSystem implements SimulationSystem {
     const n = cells.length;
     if (n === 0) return;
     const capacity = def.bufferCapacity;
+    const slotTotal = (): number => comp.bufferInput.reduce((s, b) => s + b.count, 0);
 
     // ① 放行扫描: 全部输入口的 entering 物品走到 1.5 即移除（与指针无关）
-    for (const cell of cells) {
+    for (let ci = 0; ci < cells.length; ci++) {
+      const cell = cells[ci];
       const feeder = findFeederBelt(world, beltAt, cell);
       if (feeder === null) continue;
       const seg = world.getComponent<BeltSegmentComp>(feeder, 'BeltSegmentComp');
       if (!seg) continue;
-      releaseArrivedItems(seg);
+      for (const id of releaseArrivedItems(seg)) {
+        logisticsDebug.log(
+          `🏃 走进设备消失: ${def.name} 输入口${ci + 1}（供给格 ${cell.x},${cell.y}）${this.nameOf(id)} 到达端口格中心 1.50（槽内 ${slotTotal()}）`,
+        );
+      }
     }
 
-    // ② 预约轮询。全部输入槽满 → 冻结（指针保持当前位置，A8 §4.1）
+    // ①.5 先到排名戳记（一次性；满载期间后来的带也按到达时刻排队）
+    const rank = comp.inputArrivalRank ?? (comp.inputArrivalRank = new Array<number>(n).fill(Infinity));
+    while (rank.length < n) rank.push(Infinity); // 防御: 定义变更/手改补长
+    for (let i = 0; i < n; i++) {
+      if (rank[i] !== Infinity) continue;
+      const feeder = findFeederBelt(world, beltAt, cells[i]);
+      if (feeder === null) continue;
+      const seg = world.getComponent<BeltSegmentComp>(feeder, 'BeltSegmentComp');
+      if (seg) {
+        const door = doorHeadItem(seg);
+        if (door !== null) {
+          rank[i] = this.simTick;
+          const order = Array.from({ length: n }, (_, j) => j)
+            .sort((a, b) => (rank[a] === rank[b] ? a - b : rank[a] - rank[b]))
+            .filter((j) => rank[j] !== Infinity);
+          logisticsDebug.log(
+            `🥇 先到排名: ${def.name} 输入口${i + 1}（供给格 ${cells[i].x},${cells[i].y}）${this.nameOf(door.itemId)} 首次到货 → 排名序 ${order.map((j) => `输入口${j + 1}`).join('→')}`,
+          );
+        }
+      }
+    }
+
+    // 满载冻结/腾位恢复跳变（物流调试）
     const allFull = (): boolean => comp.bufferInput.every((s) => s.count >= capacity);
-    if (allFull()) return;
-    // 指针防御性归位（存档迁移/手改越界时回 0 而非崩溃）
-    let idx = ((comp.inputPollIndex % n) + n) % n;
-    for (let visited = 0; visited < n; visited++) {
-      comp.inputPollIndex = (idx + 1) % n; // 先进指针: 成功/跳过同律（A8 §4.1 失败也移动到下一个）
-      const feeder = findFeederBelt(world, beltAt, cells[idx]);
-      if (feeder !== null) {
-        const seg = world.getComponent<BeltSegmentComp>(feeder, 'BeltSegmentComp');
-        if (seg) {
-          const absorbed = tryAbsorbHeadItem(seg, comp, capacity);
-          if (absorbed !== null) {
-            this.emit({
-              type: 'input', handle, portIndex: idx,
-              message: `${def.name}: 吸入 ${this.nameOf(absorbed)} ×1（传送带 → 输入口${idx + 1}）`,
-            });
-            if (allFull()) break; // 补满即冻结在下一端口（下次 vacancy 从它开始）
+    const full = allFull();
+    const wasFrozen = this.intakeFrozen.get(handle) ?? false;
+    if (full !== wasFrozen) {
+      this.intakeFrozen.set(handle, full);
+      logisticsDebug.log(full
+        ? `🧊 ${def.name}: 输入槽满 ${slotTotal()}/${capacity} × ${comp.bufferInput.length} 槽 → 轮询冻结（指针=输入口${(comp.inputPollIndex % n) + 1}）`
+        : `💧 ${def.name}: 输入槽腾位 ${slotTotal()}/${capacity} → 轮询恢复（从输入口${(comp.inputPollIndex % n) + 1} 起按先到排名序走访）`);
+    }
+
+    // ② 预约轮询（满载只冻结新预约，不 early-return——等待跳变扫描两条路径都要跑）
+    if (!full) {
+      // 走访序 = 先到排名序（相同值/未到过按定义序；Infinity 与 Infinity 经 === 相等短路）
+      const seq = Array.from({ length: n }, (_, i) => i).sort(
+        (a, b) => (rank[a] === rank[b] ? a - b : rank[a] - rank[b]),
+      );
+      // 指针防御性归位（存档迁移/手改越界时回队首而非崩溃）
+      const startPos = Math.max(0, seq.indexOf(((comp.inputPollIndex % n) + n) % n));
+      for (let visited = 0; visited < n; visited++) {
+        const idx = seq[(startPos + visited) % n];
+        comp.inputPollIndex = seq[(startPos + visited + 1) % n]; // 先进指针: 成功/跳过同律（沿排名序）
+        const feeder = findFeederBelt(world, beltAt, cells[idx]);
+        if (feeder !== null) {
+          const seg = world.getComponent<BeltSegmentComp>(feeder, 'BeltSegmentComp');
+          if (seg) {
+            const before = slotTotal();
+            const absorbed = tryAbsorbHeadItem(seg, comp, capacity);
+            if (absorbed !== null) {
+              logisticsDebug.log(
+                `📥 吸入: ${def.name} 输入口${idx + 1}（供给格 ${cells[idx].x},${cells[idx].y}）${this.nameOf(absorbed)} 预约@0.50 → entering 走进设备（槽 ${before}→${slotTotal()}）`,
+              );
+              this.emit({
+                type: 'input', handle, portIndex: idx,
+                message: `${def.name}: 吸入 ${this.nameOf(absorbed)} ×1（传送带 → 输入口${idx + 1}）`,
+              });
+              if (allFull()) {
+                logisticsDebug.log(`🧊 补满 ${slotTotal()}/${capacity} → 冻结（排名序下一口=输入口${(comp.inputPollIndex % n) + 1}）`);
+                break; // 补满即冻结在排名序下一端口（下次 vacancy 从它开始）
+              }
+            }
           }
         }
       }
-      idx = (idx + 1) % n;
+    }
+
+    // ①.7 门口等待跳变扫描（轮询之后跑——本 Tick 被预约的不算等待；满载路径同样到达）
+    for (let i = 0; i < n; i++) {
+      const key = `${handle}:${i}`;
+      const feeder = findFeederBelt(world, beltAt, cells[i]);
+      const seg = feeder === null ? undefined : world.getComponent<BeltSegmentComp>(feeder, 'BeltSegmentComp');
+      const door = seg === undefined ? null : doorHeadItem(seg);
+      const waiting = door !== null;
+      const prev = this.intakeWaiting.get(key) ?? false;
+      if (waiting === prev) continue;
+      this.intakeWaiting.set(key, waiting);
+      if (!waiting) {
+        logisticsDebug.log(`✅ 等待解除: ${def.name} 输入口${i + 1}（门口物品被预约或离开）`);
+        continue;
+      }
+      // 等待原因: 槽满 / 类型不符（复刻 tryAcceptItem 的可接受判定，仅日志用）
+      const acceptable = comp.bufferInput.some(
+        (s) => s.itemId === null || (s.itemId === door!.itemId && s.count < capacity),
+      );
+      const reason = !acceptable
+        ? `类型不符（槽锁定 ${comp.bufferInput.filter((s) => s.itemId !== null).map((s) => this.nameOf(s.itemId!)).join('/') ?? ''}）`
+        : allFull() ? `输入槽满 ${slotTotal()}/${capacity}` : '未被轮询到（下一 Tick 走访）';
+      logisticsDebug.log(
+        `⏳ 门口等待: ${def.name} 输入口${i + 1}（供给格 ${cells[i].x},${cells[i].y}）${this.nameOf(door!.itemId)}@0.50（${reason}）`,
+      );
     }
   }
 

@@ -19,7 +19,7 @@
 //   渐变: 面板黄 #FFEF00 → 红 #B10000、箭头灰 → 白，时长 BLOCKED_BLEND_MS。
 //   paused 时不算堵（暂停由 LOGO 指示）。
 
-import { Sprite, Container } from 'pixi.js';
+import { Sprite, Container, Text } from 'pixi.js';
 import type { World, EntityHandle } from '../ECS';
 import type { Position } from '../components/Position';
 import type { SpriteComp } from '../components/SpriteComp';
@@ -33,6 +33,7 @@ import {
 } from '../systems/machine/PortStatusOps';
 import type { TextureLookup } from '../systems/RenderSystem';
 import { lerpColor, BLOCKED_BLEND_MS } from './BeltVectorGeometry';
+import { CELL_SIZE } from './constants';
 
 /** 连接高亮颜色（用户指定 #FFEF00）。 */
 const PORT_CONNECTED_TINT = 0xffef00;
@@ -46,6 +47,15 @@ const ARROW_TINT_BLOCKED = 0xffffff;
 export const PORT_CREATE_TINT = 0x80bee9;
 /** 传送带创建模式下输出端口悬停色（更淡的蓝）。 */
 export const PORT_CREATE_HOVER_TINT = 0xa8d4f5;
+/** T2.16 创建模式输入端口候选色（紫——预览末格"够得着"的输入口，与输出口蓝区分）。 */
+const PORT_DOCK_CANDIDATE_TINT = 0xc79bf2;
+/** T2.16 "将连接"确认色（绿——末段方向指向该输入口，落盘即对接成立；
+ *  落盘后常态即回到 T2.8 连接黄 #FFEF00）。 */
+const PORT_DOCK_CONFIRMED_TINT = 0x37d067;
+/** T2.16 起点反例警示色（红——hover 输入口"不能作为起点"，与预览不可放置红一致）。 */
+const PORT_START_INVALID_TINT = 0xe45050;
+/** T2.16 起点反例提示文案。 */
+const START_HINT_TEXT = '输入端口不能作为起点';
 
 /** 单台设备的端口高亮渲染态。 */
 interface PortEntry {
@@ -77,6 +87,12 @@ export class PortHighlightRenderer {
   private isCreateMode: () => boolean;
   /** 查询当前悬停的输出端口格（创建模式下用于悬停淡蓝高亮）。 */
   private getHoveredPortCell: () => { x: number; y: number } | null;
+  /** T2.16: 预览末段的输入端口对接信息（候选紫/确认绿；无预览/无效预览为 null）。 */
+  private getDockInfo?: () => { targets: { x: number; y: number }[]; confirmed: { x: number; y: number }[] } | null;
+  /** T2.16: hover 态悬停的输入端口格（起点反例——红警示 + 文字提示）。 */
+  private getStartHintCell?: () => { x: number; y: number } | null;
+  /** T2.16: 起点反例文字提示（懒创建，挂 layer3Item 顶层）。 */
+  private hintText: Text | null = null;
 
   constructor(
     world: World,
@@ -84,12 +100,16 @@ export class PortHighlightRenderer {
     getTexture: TextureLookup,
     isCreateMode?: () => boolean,
     getHoveredPortCell?: () => { x: number; y: number } | null,
+    getDockInfo?: () => { targets: { x: number; y: number }[]; confirmed: { x: number; y: number }[] } | null,
+    getStartHintCell?: () => { x: number; y: number } | null,
   ) {
     this.world = world;
     this.getTexture = getTexture;
     this.layer = layer;
     this.isCreateMode = isCreateMode ?? (() => false);
     this.getHoveredPortCell = getHoveredPortCell ?? (() => null);
+    this.getDockInfo = getDockInfo;
+    this.getStartHintCell = getStartHintCell;
   }
 
   /**
@@ -108,6 +128,25 @@ export class PortHighlightRenderer {
         entry.container.destroy({ children: true });
         this.entries.delete(handle);
       }
+    }
+
+    // T2.16 创建模式查询先于设备遍历/早退——退出创建模式时提示文字必须被隐藏，
+    // 不能因"场上无设备"的早退跳过
+    const createMode = this.isCreateMode();
+    const hoveredCell = createMode ? this.getHoveredPortCell() : null;
+    const dock = createMode ? (this.getDockInfo?.() ?? null) : null;
+    const startHint = createMode ? (this.getStartHintCell?.() ?? null) : null;
+
+    // T2.16 起点反例文字提示: 悬停输入端口时在端口上方显示（单例，随格子移动）
+    if (startHint !== null) {
+      const t = this.ensureHintText();
+      t.position.set(
+        (startHint.x + 0.5) * CELL_SIZE,
+        startHint.y * CELL_SIZE - CELL_SIZE * 0.1,
+      );
+      t.visible = true;
+    } else if (this.hintText !== null) {
+      this.hintText.visible = false;
     }
 
     if (buildings.length === 0) return;
@@ -132,13 +171,34 @@ export class PortHighlightRenderer {
       // 端口状态 → visible/tint（未连接隐藏；堵塞红 / 连接黄；堵塞箭头白；黄→红渐变）。
       // 创建模式下输出端口覆盖为蓝色 #80BEE9（作为可连接起点提示，未连接也显示），
       // 悬停的端口用更淡的蓝 #A8D4F5 提示可点击。
-      const createMode = this.isCreateMode();
-      const hoveredCell = createMode ? this.getHoveredPortCell() : null;
+      // T2.16 输入端口（创建模式）: 起点反例红 > "将连接"绿 > 候选紫 > 常态（连接黄/隐藏）。
       const inSt = inputPortStatuses(this.world, beltAt, handle, comp, def);
       const outSt = outputPortStatuses(this.world, beltAt, handle, comp, def);
-      this.applyPorts(entry.inSprites, entry.inArrows, entry.inBlends, inSt, blendStep, false, createMode, hoveredCell, null);
-      this.applyPorts(entry.outSprites, entry.outArrows, entry.outBlends, outSt, blendStep, true, createMode, hoveredCell, entry.outMidSprites);
+      this.applyPorts(entry.inSprites, entry.inArrows, entry.inBlends, inSt, blendStep, false, createMode, hoveredCell, null, dock, startHint);
+      this.applyPorts(entry.outSprites, entry.outArrows, entry.outBlends, outSt, blendStep, true, createMode, hoveredCell, entry.outMidSprites, dock, startHint);
     }
+  }
+
+  /** 懒创建起点反例提示文字（layer3Item 顶层，盖在端口高亮之上）。 */
+  private ensureHintText(): Text {
+    if (this.hintText !== null) return this.hintText;
+    const t = new Text({
+      text: START_HINT_TEXT,
+      style: {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: 14,
+        fontWeight: 'bold',
+        fill: 0xffffff,
+        stroke: { color: 0x8a2020, width: 4 },
+        align: 'center',
+      },
+    });
+    t.anchor.set(0.5, 1);
+    t.zIndex = 16000;
+    t.visible = false;
+    this.layer.addChild(t);
+    this.hintText = t;
+    return t;
   }
 
   /** 为一台设备创建端口 Sprite 集（每口面板+箭头各一帧，帧缺失的位置置 null）。 */
@@ -186,7 +246,8 @@ export class PortHighlightRenderer {
    * 逐端口同步显隐 + 颜色（面板/箭头）。
    * 创建模式下输出端口（isOutput && createMode）覆盖为蓝色 #80BEE9 且始终显示，
    * 悬停端口用更淡的蓝 #A8D4F5、箭头白色（面板之上清晰可见）；
-   * 否则按连接黄/堵塞红渐变（面板黄→红、箭头灰→白），未连接隐藏。
+   * T2.16 创建模式下输入端口按对接信息覆盖: 起点反例红 / "将连接"绿 / 候选紫
+   * （箭头白色），优先级高于常态；否则按连接黄/堵塞红渐变，未连接隐藏。
    */
   private applyPorts(
     sprites: Array<Sprite | null>,
@@ -198,22 +259,36 @@ export class PortHighlightRenderer {
     createMode: boolean,
     hoveredCell: { x: number; y: number } | null,
     midSprites: Array<Sprite | null> | null,
+    dock: { targets: { x: number; y: number }[]; confirmed: { x: number; y: number }[] } | null,
+    startHint: { x: number; y: number } | null,
   ): void {
     for (let i = 0; i < sprites.length && i < states.length; i++) {
       const st = states[i];
       const showCreate = createMode && isOutput;
       const isHovered = showCreate && hoveredCell !== null && st.x === hoveredCell.x && st.y === hoveredCell.y;
-      // 堵塞渐变进度向目标（connected 且 blocked → 1，否则 0）线性趋近（创建态不渐变）
-      const target = !showCreate && st.connected && st.blocked ? 1 : 0;
+      // T2.16 输入端口对接态（仅创建模式 + 输入端口）
+      const dockable = createMode && !isOutput && dock !== null;
+      const isConfirmed = dockable && dock!.confirmed.some((c) => c.x === st.x && c.y === st.y);
+      const isCandidate = !isConfirmed && dockable && dock!.targets.some((c) => c.x === st.x && c.y === st.y);
+      const isStartHint = createMode && !isOutput && startHint !== null && st.x === startHint.x && st.y === startHint.y;
+      const showDock = isConfirmed || isCandidate || isStartHint;
+      // 堵塞渐变进度向目标（connected 且 blocked → 1，否则 0）线性趋近（创建态/对接态不渐变）
+      const target = !showCreate && !showDock && st.connected && st.blocked ? 1 : 0;
       const b = blends[i];
       blends[i] = b < target ? Math.min(target, b + blendStep)
         : b > target ? Math.max(target, b - blendStep) : b;
       const blend = blends[i];
-      // top 面板（ports_top 小矩形）：始终显示（创建态蓝 / 连接黄 / 堵塞红）
+      // top 面板（ports_top 小矩形）：始终显示（创建态蓝 / 对接态红绿紫 / 连接黄 / 堵塞红）
       const s = sprites[i];
       if (s) {
-        s.visible = showCreate || st.connected;
-        if (showCreate) {
+        s.visible = showCreate || showDock || st.connected;
+        if (isStartHint) {
+          s.tint = PORT_START_INVALID_TINT;
+        } else if (isConfirmed) {
+          s.tint = PORT_DOCK_CONFIRMED_TINT;
+        } else if (isCandidate) {
+          s.tint = PORT_DOCK_CANDIDATE_TINT;
+        } else if (showCreate) {
           s.tint = PORT_CREATE_TINT;
         } else if (st.connected) {
           s.tint = lerpColor(PORT_CONNECTED_TINT, PORT_BLOCKED_TINT, blend);
@@ -227,9 +302,9 @@ export class PortHighlightRenderer {
       }
       const a = arrows[i];
       if (a) {
-        a.visible = showCreate || st.connected;
-        if (showCreate) {
-          a.tint = ARROW_TINT_BLOCKED; // 白色箭头（蓝色面板之上可见）
+        a.visible = showCreate || showDock || st.connected;
+        if (showCreate || showDock) {
+          a.tint = ARROW_TINT_BLOCKED; // 白色箭头（彩色面板之上可见）
         } else if (st.connected) {
           a.tint = lerpColor(ARROW_TINT_NORMAL, ARROW_TINT_BLOCKED, blend);
         }
@@ -241,5 +316,9 @@ export class PortHighlightRenderer {
   destroy(): void {
     for (const entry of this.entries.values()) entry.container.destroy({ children: true });
     this.entries.clear();
+    if (this.hintText !== null) {
+      this.hintText.destroy();
+      this.hintText = null;
+    }
   }
 }

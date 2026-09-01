@@ -66,13 +66,14 @@ console.log(`  input 全史: ${JSON.stringify(seq.input)}\n  output 全史: ${JS
 if (!seq.messages.every((m) => m.includes('输入口'))) {
   console.log('  ⚠ input 消息缺少端口序号:', seq.messages.slice(-8));
 }
-// 场景A 现在是连续供给实战形态（取货口喂料 + 生产结算），吸入起点随过渡期浮动——
-// 尾 6 次吸入必须是 [a,b,c,a,b,c] 循环且 {a,b,c} 恰为 左/中/右（起点不限）
+// 场景A 是连续供给实战形态（取货口喂料 + 生产结算）。2026-09-02 修订: 轮转序 =
+// 先到排名序（单取货口三口几乎同刻来货，排名序随首次到货微差浮动）——断言只验
+// "三口各两次、周期 3 循环"不变式（inTail[i+3]===inTail[i]），不钉死端口下标算术序。
 const inTail = seq.input.slice(-6);
 const inCycle = inTail.length === 6 && new Set(inTail).size === 3
-  && inTail.every((p, i) => p === (inTail[0] + i) % 3);
+  && inTail.slice(0, 3).every((p, i) => inTail[i + 3] === p);
 ok(inCycle,
-  `B1. input 尾 6 位 = ${JSON.stringify(inTail)} 循环轮转（左→中→右 交替，起点随过渡浮动）`);
+  `B1. input 尾 6 位 = ${JSON.stringify(inTail)} 按先到排名序循环轮转（三口循环，起点随过渡浮动）`);
 // 场景A 的排水口会持续产生 idx1 输出事件——场景B 的轮转段用结构化扫描定位:
 // 第一处"连续 6 件构成三口循环"的窗口（排水事件全为 1，不构成循环）
 let rotWin = null;
@@ -98,8 +99,8 @@ ok(skipZone.length >= 4 && skipZone.every((p) => p === 0 || p === 2),
 // ══ C. portStatus 轮询状态展示 ══
 console.log('[C] portStatus() 轮询状态展示');
 const status = await page.evaluate(() => window.__game.portStatus());
-ok(status.includes('输入轮询指针') && status.includes('输出轮询队列'),
-  'C1. portStatus() 包含"输入轮询指针/输出轮询队列"两行（与端口高亮同屏对照）');
+ok(status.includes('输入轮询指针') && status.includes('输出轮询队列') && status.includes('输入先到排名'),
+  'C1. portStatus() 包含"输入轮询指针/输入先到排名/输出轮询队列"三行（与端口高亮同屏对照）');
 console.log('  ---\n' + status.split('\n').map((l) => '  ' + l).join('\n') + '\n  ---');
 await shot('t210-c1-portstatus');
 

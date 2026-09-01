@@ -245,7 +245,8 @@ console.log('[全链路: 取货口 → 4 段带 → 存货口]');
   tick(600); // 30 秒
   const outN = depotEventCount(machineSys, 'depot-output');
   const inN = depotEventCount(machineSys, 'depot-input');
-  // 2026-08-25 排队停格中心修订后，饱和门节拍 4 秒/件（吸入行走 2s + 中心出发跨段 1s
+  // 2026-09-02 entering 不占格修订后，饱和门节拍 ≈2 秒/件（传送带本速，行走重叠；
+  // 旧 4 秒/件 = 吸入行走 2s 占格 + 中心出发跨段 1s
   // + 到门口中心 1s；旧版爬到段尾边界候场是 3 秒/件——用户实测指出边界停车不符规范）
   assert(outN >= 8, `13a. 取货口持续输出 ≥ 8 件（实际 ${outN}）`);
   assert(inN >= 5, `13b. 存货口持续接收 ≥ 5 件（实际 ${inN}，链上最多滞留 4 件）`);

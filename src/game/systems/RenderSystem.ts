@@ -184,6 +184,8 @@ export class RenderSystem {
     isBeltCreationActive?: () => boolean,
     getHoveredPortCell?: () => { x: number; y: number } | null,
     getHoveredAnyPortCell?: () => { x: number; y: number } | null,
+    getBeltDockInfo?: () => { targets: { x: number; y: number }[]; confirmed: { x: number; y: number }[] } | null,
+    getBeltStartHintCell?: () => { x: number; y: number } | null,
   ) {
     this.world = world;
     this.layers = layers;
@@ -204,8 +206,10 @@ export class RenderSystem {
     this.beltItemRenderer = new BeltItemRenderer(world, layers.layer3Item, belowItems, getTexture);
     this.beltVectorRenderer = new BeltVectorRenderer(world, layers.layer2Building, isBeltCreationActive);
     this.beltHoverRenderer = new BeltHoverRenderer(world, camera, layers.layer2Building);
+    // T2.16: 后两个回调（终点对接/起点反例）一并转发给 PortHighlightRenderer
     this.portHighlightRenderer = new PortHighlightRenderer(
       world, layers.layer3Item, getTexture, isBeltCreationActive, getHoveredPortCell,
+      getBeltDockInfo, getBeltStartHintCell,
     );
   }
 

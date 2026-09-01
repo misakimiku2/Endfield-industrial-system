@@ -56,6 +56,8 @@ export class Game {
       () => this.beltCreation.isActive(), // 创建模式 → 输出端口染蓝 #80BEE9
       () => this.beltCreation.getHoveredPortCell(), // 悬停端口淡蓝高亮
       () => this.beltCreation.getHoveredAnyPortCell(), // T2.12: 含输入口的悬停格（仓库口 Status 面板高亮）
+      () => this.beltCreation.getDockInfo(), // T2.16: 预览末段输入端口对接（候选紫/确认绿）
+      () => this.beltCreation.getStartHintCell(), // T2.16: hover 输入口起点反例（红警示+文字）
     );
     // 占用表 + 放置系统（T1.7）。占用表边界读 worldData.map，不读全局常量。
     this.occupancy = new OccupancyMap(this.worldData.map);
