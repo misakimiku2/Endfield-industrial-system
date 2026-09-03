@@ -137,11 +137,19 @@ export class BeltPointerRenderer {
   private entries = new Map<EntityHandle, PointerEntry>();
   /** 选中态（SelectionSystem 写）；选中段叠加白色 pointer（whiteSprite alpha 渐变）。 */
   private beltSelection: BeltSelection | null = null;
+  /** 延长预览中被隐藏的原尾格（该格带身+箭头由创建系统预览接管渲染）。 */
+  private getHiddenCell?: () => { x: number; y: number } | null;
 
-  constructor(world: World, layer: Container, getTexture: TextureLookup) {
+  constructor(
+    world: World,
+    layer: Container,
+    getTexture: TextureLookup,
+    getHiddenCell?: () => { x: number; y: number } | null,
+  ) {
     this.world = world;
     this.layer = layer;
     this.getTexture = getTexture;
+    this.getHiddenCell = getHiddenCell;
   }
 
   /** 注入选中态（由 RenderSystem.setBeltSelection 转发）。 */
@@ -195,6 +203,8 @@ export class BeltPointerRenderer {
     const globalPhase = BeltSystem.beltPhase + alpha * BeltSystem.beltPhaseDelta;
     // 堵塞渐变步长（线性插值，固定时长；deltaMS=0 时瞬间到位，兼容旧调用）
     const blendStep = deltaMS > 0 ? deltaMS / BLOCKED_BLEND_MS : 1;
+    // 延长预览中被隐藏的原尾格（每帧取一次，段循环内比对格坐标）
+    const hiddenCell = this.getHiddenCell?.() ?? null;
 
     // 2.5 v11: 每链领头物品的连续位置 = max(段序号 + 进度 + alpha*delta)。
     //     含 entering 行走中（p 可到 1.5）——领头走进设备时相位继续前移，队列
@@ -249,6 +259,13 @@ export class BeltPointerRenderer {
 
       const seg = this.world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp')!;
       const pos = this.world.getComponent<Position>(handle, 'Position')!;
+
+      // 延长预览中的原尾格：隐藏箭头（该格由创建系统预览渲染接管，带身同步隐藏）
+      entry.cellWrap.visible = !(
+        hiddenCell &&
+        Math.round(pos.x / CELL_SIZE) === hiddenCell.x &&
+        Math.round(pos.y / CELL_SIZE) === hiddenCell.y
+      );
 
       // 堵塞渐变: 箭头黄 → 橙 #E6956F（blockedBlend 向目标 0/1 线性趋近）
       const blockedTarget = seg.blocked === true ? 1 : 0;

@@ -85,24 +85,26 @@ export function buildBeltCellIndex(world: World): Map<string, EntityHandle> {
 
 /**
  * 找指向端口格的供给传送带段 (A9 §6.7)。
- * 对 4 个方向 k 检查端口格 - dv(k) 处是否有 direction === k 的段——
- * 该段的出口相邻格（段格 + dv(k)）恰为端口格，即"方向指向设备"。
+ * 2026-09-02 修订: **只认端口朝向侧供给格**（端口格 + directionVector(outward)）且
+ * 段方向 === 逆朝向——旧版四邻扫描会把"从侧面横穿指入"的带也算作连接（如端口
+ * (2,0) 朝下，(3,0) 处朝左横穿的带也能连上），用户拍板"接 (2,0) 只能经下方 (2,1)
+ * 进入，不能从 (3,0) 直接横穿连接"。与 BeltCreationSystem 吸附/BeltSystem 真堵
+ * 分类同一规则（供给格 = 朝向侧相邻格，三处单一口径）。
+ * @param portCell 端口格（PortCell，含 outward 朝外方向）
  * @returns 供给段 handle；无则 null。
  */
 export function findFeederBelt(
   world: World,
   beltAt: Map<string, EntityHandle>,
-  portCell: { x: number; y: number },
+  portCell: PortCell,
 ): EntityHandle | null {
-  const dirs: readonly Direction[] = [0, 90, 180, 270];
-  for (const k of dirs) {
-    const dv = directionVector(k);
-    const h = beltAt.get(`${portCell.x - dv.x},${portCell.y - dv.y}`);
-    if (h === undefined) continue;
-    const seg = world.getComponent<BeltSegmentComp>(h, 'BeltSegmentComp');
-    if (seg && seg.direction === k) return h;
-  }
-  return null;
+  const dv = directionVector(portCell.outward);
+  const h = beltAt.get(`${portCell.x + dv.x},${portCell.y + dv.y}`);
+  if (h === undefined) return null;
+  const seg = world.getComponent<BeltSegmentComp>(h, 'BeltSegmentComp');
+  // 段方向须逆朝向指入端口（供给格在朝向侧，指向端口 = -outward）
+  const inward: Direction = ((portCell.outward + 180) % 360) as Direction;
+  return seg && seg.direction === inward ? h : null;
 }
 
 /**

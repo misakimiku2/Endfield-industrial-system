@@ -12,7 +12,8 @@
 //   C 物流: 源矿源源上带（depot-output ≥ 3）→ 流动 → 进存货口消失（depot-input ≥ 3）
 //   D T2.9b 读数: 放精炼炉 → 点击 → 读数"输入: x/50 输出: y/50"可见（截图）；
 //     点击取货口 → 读数消失（非生产设备无缓冲区）
-//   E R 两档旋转: 取货口放置态按 R 两次 → 0°↔180°（截图对比），无 90°/270°
+//   E R 四档旋转（T2.17）: 取货口放置态按 R 四次 → 0°→90°→180°→270°→0°，
+//     90°/270° 预览竖放 1×3（截图对比）
 //   F 存货口悬停: E 模式悬停存货口输入格 → Status 淡蓝（截图）
 //
 // 截图输出: gui-test-screenshots/t212-*.png
@@ -63,6 +64,9 @@ await shot('t212-a1-unloader-preview');
 await page.mouse.click(S.unloader.x, S.unloader.y);
 await page.keyboard.press('Escape');
 await page.mouse.click(S.btnLoader, S.toolbarY);
+await page.keyboard.press('r'); // T2.19: R×2 → 180°，接带面朝下（供给带在存货口下方，与 B 节带位匹配）
+await page.keyboard.press('r');
+await page.waitForTimeout(200);
 await page.mouse.move(S.loader.x, S.loader.y, { steps: 4 });
 await page.mouse.click(S.loader.x, S.loader.y);
 await page.keyboard.press('Escape');
@@ -122,21 +126,24 @@ await page.waitForTimeout(500);
 await shot('t212-d2-readout-depot-none');
 ok(true, 'D1. 截图对比: 精炼炉选中显示读数 / 仓库口选中无读数（人工核验 t212-d1 vs d2）');
 
-// ══ E. R 两档旋转 ══
-console.log('[E] R 键两档旋转（非正方形占地）');
+// ══ E. R 四档旋转（T2.17: 90°/270° 竖放 1×3）══
+console.log('[E] R 键四档旋转（T2.17 占地宽高互换）');
 await page.mouse.click(S.btnUnloader, S.toolbarY);
-await page.keyboard.press('r');
 await page.mouse.move(1000, 500, { steps: 4 });
+await page.keyboard.press('r'); // 90° → 预览竖放 1×3
 await page.waitForTimeout(250);
-await shot('t212-e1-rot180');
-await page.keyboard.press('r');
+await shot('t212-e1-rot90-vertical');
+await page.keyboard.press('r'); // 180°
 await page.waitForTimeout(250);
-await shot('t212-e2-rot0');
-await page.keyboard.press('r'); // 第三次应回到 180（两档循环，无 90°）
+await shot('t212-e2-rot180');
+await page.keyboard.press('r'); // 270° → 竖放 1×3（端口朝另一侧）
 await page.waitForTimeout(250);
-await shot('t212-e3-rot180-again');
+await shot('t212-e3-rot270-vertical');
+await page.keyboard.press('r'); // 回 0°
+await page.waitForTimeout(250);
+await shot('t212-e4-rot0');
 await page.keyboard.press('Escape');
-ok(true, 'E1. 截图对比: R 仅 0°↔180° 两档（人工核验 t212-e1~e3）');
+ok(true, 'E1. 截图对比: R 四档循环 0°→90°→180°→270°→0°，90°/270° 竖放 1×3（人工核验 t212-e1~e4）');
 
 // ══ F. 存货口输入格悬停 ══
 console.log('[F] E 模式悬停存货口（Status 淡蓝）');

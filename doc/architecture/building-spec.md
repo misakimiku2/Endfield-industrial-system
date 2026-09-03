@@ -208,20 +208,17 @@ interface Port {
 
 ### 2.2 方向旋转
 
-建筑有 4 个方向。Port 的 `position` 是默认方向（0°）下的值。旋转时 Port 位置跟随旋转：
+建筑有 4 个方向（0°=右, 90°=下, 180°=左, 270°=上；**90° = 顺时针**，与 Sprite 渲染旋转一致）。Port 的 `position` 是默认方向（0°）下的值。旋转时 Port 位置跟随旋转：
 
-```ts
-function rotatePort(port: Port, direction: 0 | 90 | 180 | 270, footprint: { w: number; h: number }): Port {
-  // 将 (dx, dy) 绕建筑左上角按角度旋转后返回新 Port
-  // 注意：旋转以 footprint 为参考系，而非建筑中心
-}
-```
+> **[2026-09-04 T2.17 修订]** 占地约定由"旋转后占地不变"改为：**90°/270° 旋转时占地宽高互换**（w×h → h×w，同 Factorio 惯例；0°/180° 不变）。非正方形设备（3×1 仓库口）由此解锁四向旋转。单一事实源：`buildings.ts effectiveFootprint(footprint, direction)`。下述公式已按顺时针约定修正（旧版 90°/270° 两式标反，与代码实现不符）。
 
-旋转算法（以 footprint 左上角为原点）：
-- 0°: `(dx, dy)` 不变
-- 90°: `(dx, dy)` → `(dy, footprint.w - 1 - dx)`
-- 180°: `(dx, dy)` → `(footprint.w - 1 - dx, footprint.h - 1 - dy)`
-- 270°: `(dx, dy)` → `(footprint.h - 1 - dy, dx)`
+旋转算法（以 footprint 左上角为原点；90°/270° 代入**互换后**的占地 h×w）：
+- 0°: `(dx, dy)` 不变（占地 w×h 不变）
+- 90°（顺时针）: `(dx, dy)` → `(footprint.h - 1 - dy, dx)`（占地变为 h×w，顶边端口转到右边）
+- 180°: `(dx, dy)` → `(footprint.w - 1 - dx, footprint.h - 1 - dy)`（占地不变）
+- 270°（逆时针）: `(dx, dy)` → `(dy, footprint.w - 1 - dx)`（占地变为 h×w，顶边端口转到左边）
+
+实现: `PortGeometry.rotatePort`（对正方形占地与旧"绕中心旋转"数学逐点等价，正方形设备零行为变化）。
 
 ### 2.3 传送带连接
 
@@ -500,8 +497,8 @@ function getWorldOrigin(gx: number, gy: number): { x: number; y: number } {
 | **Definition 是只读的** | `BuildingDefinition` 在运行时不可修改 |
 | **不要为每个建筑创建 Class** | `BuildingComponent` + `BuildingDefinition` 的组合足以描述所有建筑 |
 | **Footprint 以 Cell 为单位** | w/h 是整数，1×1, 1×2, 2×2, 3×3, 5×5... |
-| **方向只影响渲染和 Port** | `BuildingComponent.direction` 改变 Sprite 旋转角度和 Port 世界坐标，不改变 footprint |
-| **占地面不随旋转改变** | 2×2 建筑旋转后仍是 2×2，不变成 2×1（保持正方形占用）。3×3 建筑旋转后仍是 3×3 |
+| **方向只影响渲染和 Port** | `BuildingComponent.direction` 改变 Sprite 旋转角度和 Port 世界坐标；占地是否互换见下条 |
+| **90°/270° 旋转占地宽高互换**（T2.17 修订） | 正方形占地旋转不变（3×3 旋转后仍是 3×3）；非正方形占地 90°/270° 旋转时 w×h → h×w（3×1 ↔ 1×3），见 `effectiveFootprint`。占用检查/端口几何/渲染锚点均按**有效占地**计算 |
 | **Port 位置使用 Grid 坐标** | `Port.position.dx/dy` 是相对建筑左上角的 Grid 偏移，非建筑中心偏移 |
 | **输入锁定机制** | 每个输入槽独立锁定一种物品类型，槽内数量降为 0 时解除该槽的锁定 |
 | **轮询指针不重置** | 无论设备状态如何，轮询指针始终保持在当前位置，不因满载/阻塞而回零 |

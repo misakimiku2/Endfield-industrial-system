@@ -22,16 +22,18 @@ import type { BuildingComp, Direction } from '../components/BuildingComp';
 import type { Position } from '../components/Position';
 import type { BeltSegmentComp } from '../components/BeltSegmentComp';
 import { CELL_SIZE } from '../render/constants';
-import { drawStraightBelt, drawCornerBelt } from '../render/BeltVectorGeometry';
+import { drawStraightBelt, drawStraightBeltStub, drawCornerBelt } from '../render/BeltVectorGeometry';
 import {
   beltCornerTransform,
   beltTextureRotation,
   turnInfoFromDirections,
+  directionVector,
   type CellTurnInfo,
 } from './belt/BeltPathGeometry';
 import {
   findPath,
   calculateMomentumPath,
+  directionBetween,
   keyOf,
   type GridCell,
   type IsBlocked,
@@ -39,7 +41,7 @@ import {
 } from './belt/BeltPathfinding';
 // T2.16 终点对接: 吸附几何（纯逻辑）+ 输入端口格索引（与吸入判定同源）
 import {
-  applyDockSnap,
+  dockRedirect,
   applySnapToCells,
   dockInfoOf,
   portKey,
@@ -63,6 +65,12 @@ interface StartPoint {
   cell: GridCell;
   /** 第一段传送带的绝对朝向。 */
   direction: Direction;
+  /**
+   * 链首继承的进入方向（computePathCells/computeTurnInfos 的 startDir）。
+   * port 起点 = 端口朝向；tail 起点 = 原尾段 entryDir ?? direction——
+   * 转角尾格物品沿 entryDir 进入，后续转向判定（含 180° 折返禁止）以它为基准。
+   */
+  entryDirection: Direction;
   /** 仅 port 起点使用：来源设备。 */
   buildingHandle?: EntityHandle;
   /** 仅 port 起点使用：端口索引。 */
@@ -108,12 +116,14 @@ export class BeltCreationSystem {
   private startPoint: StartPoint | null = null;
   /** 已确认的中继锚点序列（含起点格）。 */
   private anchors: GridCell[] = [];
-  /** 已落盘的真实传送带格子序列（不含起点格；点击一次落盘一段）。 */
+  /** 已落盘的真实传送带格子序列（不含 port 起点格；tail 起点时前缀含原尾格；点击一次落盘一段）。 */
   private fullPath: GridCell[] = [];
   /** 已落盘实体的 handle，按格子 key 索引（用于更新尾格方向/isTail）。 */
   private committedHandles = new Map<string, EntityHandle>();
   /** 已落盘段的 chainId（首次落盘时确定）。 */
   private committedChainId: string | null = null;
+  /** 新段 segmentIndex 的接续基址（tail 起点首次落盘 = 原尾段 segmentIndex，port = 0）。 */
+  private committedBaseIndex = 0;
   /** 当前 lastAnchor 的出方向——延长时作为 startingDirection（首次 = 起点方向）。 */
   private lastAnchorDirection: Direction = 0;
   /** 鼠标是否在 canvas 内。 */
@@ -125,6 +135,12 @@ export class BeltCreationSystem {
   private highlightGraphics: Graphics;
   /** 预览路径 Graphics 容器（挂 layer2Building）。 */
   private previewContainer: Container;
+  /**
+   * 端口内半格残段预览容器（2026-09-02）: 预览确认对接时，在端口格内画半格带身
+   * 预览。zIndex=0.5（带身 0 之上、物品 0.5 同层、设备 1 之下）→ 被设备纹理遮挡，
+   * "钻入设备"观感——previewContainer 本体 zIndex 20000 在设备之上，故单独挂容器。
+   */
+  private previewStubContainer: Container;
   /** 当前预览路径（live，未提交）。 */
   private previewPath: PathCell[] = [];
   /** 当前预览是否可放置。 */
@@ -133,6 +149,12 @@ export class BeltCreationSystem {
   private pendingSnap: DockSnap | null = null;
   /** T2.16 对接信息: 预览末格相邻的输入端口格（候选/确认），渲染层端口高亮用。 */
   private dockInfo: DockInfo | null = null;
+  /**
+   * 延长预览期间被隐藏的原尾格（带身+pointer 由渲染层按此跳过）。
+   * tail 起点 trySelectStart 置位；首次落盘（形态定型）/退出时清空。
+   * 该格由预览渲染接管（drawPreview 首格叠加），避免"旧带身+预览"双层叠印。
+   */
+  private hiddenTailCell: GridCell | null = null;
 
   constructor(
     world: World,
@@ -153,6 +175,11 @@ export class BeltCreationSystem {
     this.previewContainer.visible = false;
     this.previewContainer.zIndex = 20000;
     this.layers.layer2Building.addChild(this.previewContainer);
+
+    this.previewStubContainer = new Container({ label: 'beltPreviewStubs' });
+    this.previewStubContainer.visible = false;
+    this.previewStubContainer.zIndex = 0.5; // 设备(1)之下——残段"钻入设备"
+    this.layers.layer2Building.addChild(this.previewStubContainer);
   }
 
   // ───────────────────────── 模式控制 ─────────────────────────
@@ -174,6 +201,8 @@ export class BeltCreationSystem {
     this.fullPath = [];
     this.committedHandles.clear();
     this.committedChainId = null;
+    this.committedBaseIndex = 0;
+    this.hiddenTailCell = null;
     this.lastAnchorDirection = 0;
     this.previewPath = [];
     this.previewValid = false;
@@ -191,6 +220,8 @@ export class BeltCreationSystem {
     this.fullPath = [];
     this.committedHandles.clear();
     this.committedChainId = null;
+    this.committedBaseIndex = 0;
+    this.hiddenTailCell = null;
     this.lastAnchorDirection = 0;
     this.previewPath = [];
     this.previewValid = false;
@@ -200,6 +231,7 @@ export class BeltCreationSystem {
     this.highlightGraphics.clear();
     this.clearPreviewSprites();
     this.previewContainer.visible = false;
+    this.previewStubContainer.visible = false;
   }
 
   /** 当前是否处于创建模式。 */
@@ -264,6 +296,7 @@ export class BeltCreationSystem {
     if (!this.mouseInside) {
       // 鼠标离开 canvas 时隐藏预览，但保持模式
       this.previewContainer.visible = false;
+      this.previewStubContainer.visible = false;
       this.drawHighlights(null);
       return;
     }
@@ -278,6 +311,8 @@ export class BeltCreationSystem {
     this.clearPreviewSprites();
     this.previewContainer.removeFromParent();
     this.previewContainer.destroy();
+    this.previewStubContainer.removeFromParent();
+    this.previewStubContainer.destroy();
   }
 
   // ───────────────────────── 内部：起点 ─────────────────────────
@@ -307,6 +342,7 @@ export class BeltCreationSystem {
           kind: 'port',
           cell: { x: gx + abs.dx, y: gy + abs.dy },
           direction: outward,
+          entryDirection: outward,
           buildingHandle: handle,
           portIndex: i,
         });
@@ -324,6 +360,7 @@ export class BeltCreationSystem {
         kind: 'tail',
         cell: { x: gx, y: gy },
         direction: seg.direction,
+        entryDirection: seg.entryDir ?? seg.direction,
         segmentHandle: handle,
       });
     }
@@ -384,6 +421,15 @@ export class BeltCreationSystem {
   }
 
   /**
+   * 延长预览期间被隐藏的原尾格（带身+pointer 渲染层按此跳过，预览接管该格）。
+   * 消费方: main.ts → RenderSystem → BeltVectorRenderer / BeltPointerRenderer。
+   * 仅 tail 起点首段预览期间非 null；首次落盘（形态定型）或退出创建模式即恢复显示。
+   */
+  getHiddenTailCell(): GridCell | null {
+    return this.hiddenTailCell;
+  }
+
+  /**
    * T2.16 起点反例: hover 态鼠标悬停的**输入端口格**（不是合法起点——起点只认
    * 输出端口/断头末端）。消费方: PortHighlightRenderer（红色警示 + 文字提示
    * "输入端口不能作为起点"，替代此前的静默无效）。preview 态恒 null——
@@ -405,6 +451,16 @@ export class BeltCreationSystem {
     this.fullPath = [];
     this.committedHandles.clear();
     this.committedChainId = null;
+    this.committedBaseIndex = 0;
+    // tail 起点：原尾格登记为「已落盘前缀」首格——延长首段允许 90° 侧转时，
+    // 转角落在原尾格上（直段→转角 / 转角→直段），方向/转角计算、落盘更新
+    // （commitCells 旧尾格分支）、阻挡判定（不可穿回）全部走既有链路。
+    // 同时隐藏原尾格实体（带身+pointer），该格视觉由预览渲染接管。
+    if (hovered.kind === 'tail' && hovered.segmentHandle) {
+      this.fullPath = [{ ...hovered.cell }];
+      this.committedHandles.set(keyOf(hovered.cell), hovered.segmentHandle);
+      this.hiddenTailCell = { ...hovered.cell };
+    }
     this.lastAnchorDirection = hovered.direction;
     this.pendingSnap = null;
     this.dockInfo = null;
@@ -462,47 +518,56 @@ export class BeltCreationSystem {
     }
 
     const lastAnchor = this.anchors[this.anchors.length - 1];
-    // 强制首步方向：首次 = 起点方向；延长 = 上次落盘尾段的出方向（禁止逆流延长，文档 T2.0 方向约束）
     const startingDirection = this.lastAnchorDirection;
-    // verticalFirst 看 lastAnchor → mouseGrid 位移(而非 anchors 历史),保证 firstStep 后水平/竖直腿与目标对齐
-    const verticalFirst = Math.abs(this.mouseGrid.y - lastAnchor.y) > Math.abs(this.mouseGrid.x - lastAnchor.x);
 
-    const options: FindPathOptions = {
-      verticalFirst,
-      startingDirection,
-    };
+    // ── 端口重定向（2026-09-02）──
+    // mouse 在输入端口格上 → 寻路目标改为该端口的朝向侧供给格 + 吸附末段指向端口:
+    // 从任意方向（含侧方横穿，如从设备右侧拖到端口上）都自动找最近路径经供给格接入，
+    // 末段拐向端口（侧方进入=90°转角，下方进入=直段）——不再因侧向无法进入而恒红。
+    // 吸附决策存 pendingSnap，末格方向覆盖在 cells 上重放（预览/落盘同源）。
+    const ports = collectInputPortCells(this.world);
+    const dock = dockRedirect(this.mouseGrid, ports);
+    const pathTarget = dock?.target ?? this.mouseGrid;
+    this.pendingSnap = dock?.snap ?? null;
+
+    // verticalFirst 看 lastAnchor → pathTarget 位移(而非 anchors 历史),保证 L 形两腿与真实目标对齐
+    const verticalFirst = Math.abs(pathTarget.y - lastAnchor.y) > Math.abs(pathTarget.x - lastAnchor.x);
+
+    // 首段方向约束:
+    // - port 起点 / 后续延长段: 强制首步 = 起点方向 / 上一落盘段出方向(动量延续,禁止逆流)
+    // - tail 起点首段: 不强制首步——直接朝拖拽方向起步,允许在原尾格上 90° 侧转
+    //   (原尾格直段→转角 / 转角→直段,见 commitCells);仅禁止逆着原尾段进入方向折返
+    //   (180° U 形不是合法带型,与 BeltDockOps 吸附折返判定同一约束)
+    const isTailFirstSegment = this.startPoint.kind === 'tail' && this.anchors.length === 1;
+    const options: FindPathOptions = isTailFirstSegment
+      ? { verticalFirst, allowedDirections: tailFirstStepDirs(this.startPoint.entryDirection) }
+      : { verticalFirst, startingDirection };
 
     const isBlocked = this.makeIsBlocked();
-    let raw = findPath(lastAnchor, this.mouseGrid, isBlocked, options);
+    let raw = findPath(lastAnchor, pathTarget, isBlocked, options);
 
     if (!raw || raw.length < 1) {
       // BFS 找不到路(终点被完全包围或不可达):退化为动量 L 形"理想路径",整条染红提示
       // 用户能看到一条"如果能放置会走这条"的预览,而非消失成单格红块
-      raw = calculateMomentumPath(lastAnchor, this.mouseGrid, {
-        verticalFirst,
-        startingDirection,
-      });
-      if (!raw || raw.length < 1) raw = [lastAnchor, this.mouseGrid];
+      // (tail 首段同样不强制首步;逆折返的首步由 checkPathValid 兜底染红)
+      raw = calculateMomentumPath(
+        lastAnchor,
+        pathTarget,
+        isTailFirstSegment ? { verticalFirst } : { verticalFirst, startingDirection },
+      );
+      if (!raw || raw.length < 1) raw = [lastAnchor, pathTarget];
     }
-
-    // ── T2.16 终点吸附 ──
-    // mouse 在输入端口格上 → 截断到供给格（拖到设备上也能对接，不再整条染红）；
-    // mouse 在供给格上 → 末段方向覆盖为指向端口（落盘即 findFeederBelt 成立）。
-    // 吸附决策存 pendingSnap: checkPathValid 用截断后的 raw 判定合法性，
-    // 末格方向覆盖在 cells 上重放（drawPreview 转角渲染 + commitCells 落盘同源）。
-    const ports = collectInputPortCells(this.world);
-    const snapped = applyDockSnap(raw, this.mouseGrid, ports, this.startPoint.direction);
-    raw = snapped.raw;
-    this.pendingSnap = snapped.snap;
 
     // 拼上已确认路径，用于跨段转角检测（confirmed + preview）。
     // 注意：raw[0] 是寻路起点格 —— 第一段时是端口/断头起点格（不应渲染成传送带），
     // 后续段时是 lastAnchor（已含在 fullPath 末尾），两种情况都要剔除首格。
+    // tail 起点时 fullPath 前缀已含原尾格（trySelectStart 登记），combined[0] 即原尾格，
+    // 其转角/直化信息随新段首步方向一并算出。
     const combined =
       this.fullPath.length > 0
         ? [...this.fullPath, ...raw.slice(1)]
         : raw.slice(1);
-    const cells = computePathCells(combined, this.startPoint.direction);
+    const cells = computePathCells(combined, this.startPoint.entryDirection);
     applySnapToCells(cells, this.pendingSnap);
     this.previewPath = cells;
     // checkPathValid 不再依赖 isFirstSegment：起点格(startCell)和锚点格(lastAnchor)都跳过
@@ -517,12 +582,22 @@ export class BeltCreationSystem {
   /**
    * 检查预览段（raw，相对本次锚点）是否全部可放置。
    * - raw[0] 是本次预览段起点（lastAnchor），跳过。
+   * - tail 起点首段：首步朝原尾段上游折返（180° U 形）判非法。
    * - 起点格（anchors[0]，即原 chain 的尾段 / 设备端口格）出现在 raw[1:] 中即判非法：
    *   路径绕回起点会在原 chain / 建筑端口格上创建重叠段（T2.0 重叠 bug 根因）。
    *   BFS 即使把 startCell 当终点也会返回该路径（终点豁免占用），所以这里必须拒绝。
    */
   private checkPathValid(raw: GridCell[], lastAnchor: GridCell): boolean {
     const startCell = this.anchors[0];
+    // tail 起点首段：首步逆着原尾段进入方向（朝上游 180° 折返）→ 非法。
+    // findPath 的动量/BFS 分支已按 allowedDirections 拦截，但 BFS 失败后的
+    // 动量 fallback 理想路径不经过该校验，这里统一兜底。
+    if (this.startPoint?.kind === 'tail' && this.anchors.length === 1 && raw.length >= 2) {
+      const firstStep = directionBetween(raw[0], raw[1]);
+      if (firstStep !== null && firstStep === oppositeDir(this.startPoint.entryDirection)) {
+        return false;
+      }
+    }
     for (let i = 0; i < raw.length; i++) {
       const c = raw[i];
       // raw[0] 永远是起点格（端口/锚点），不检查
@@ -548,7 +623,9 @@ export class BeltCreationSystem {
     const confirmedLen = this.fullPath.length;
     const newCells = this.previewPath.slice(confirmedLen);
     if (newCells.length === 0) {
-      // 鼠标就在 lastAnchor 上：无新段，忽略
+      // 无新段（鼠标停在锚点格/端口重定向后目标=锚点）。端口吸附指向锚点格时
+      // （尾格已在供给格、方向不对），落盘"尾段转向"——把已落盘尾段更新为指向端口
+      this.commitTailResnap();
       return;
     }
     // 立即落盘新段
@@ -559,6 +636,27 @@ export class BeltCreationSystem {
     // 更新 lastAnchorDirection 为新 tail 的出方向，延长时 refreshPreview 用作 startingDirection
     this.lastAnchorDirection = lastNewCell.direction;
     // 立即基于新锚点刷新预览（从已落盘尾端继续延伸）
+    this.refreshPreview();
+  }
+
+  /**
+   * 零新段时的"尾段转向"落盘（端口重定向补全，2026-09-02）:
+   * 尾段已在端口朝向侧供给格、但方向未指向端口（如横着路过停在供给格）时，
+   * 点击端口格 → 把已落盘尾段更新为指向端口（直段↔转角互转），即刻对接。
+   * 无吸附/吸附不指向锚点格/锚点无实体时为无操作（同旧"鼠标在锚点上忽略"）。
+   */
+  private commitTailResnap(): void {
+    const snap = this.pendingSnap;
+    const lastAnchor = this.anchors[this.anchors.length - 1];
+    if (!snap || snap.cell.x !== lastAnchor.x || snap.cell.y !== lastAnchor.y) return;
+    const handle = this.committedHandles.get(keyOf(lastAnchor));
+    if (!handle) return;
+    const seg = this.world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp');
+    if (!seg) return;
+    const info = turnInfoFromDirections(seg.entryDir ?? seg.direction, snap.dir);
+    this.updateSegment(handle, info, true); // 该格仍是链尾
+    // 后续延长从新方向继续
+    this.lastAnchorDirection = snap.dir;
     this.refreshPreview();
   }
 
@@ -577,17 +675,22 @@ export class BeltCreationSystem {
       if (this.startPoint.kind === 'tail' && this.startPoint.segmentHandle) {
         const seg = this.world.getComponent<BeltSegmentComp>(this.startPoint.segmentHandle, 'BeltSegmentComp');
         this.committedChainId = seg?.chainId ?? `chain-${Date.now()}-${++chainCounter}`;
-        // 延长后原 tail 不再是末端
+        // 延长后原 tail 不再是末端；新段 segmentIndex 接在原尾段之后连续递增
+        // （SelectionSystem 链内排序、BeltPointerRenderer v11 领头相位都按
+        // segmentIndex = 链内连续位置假设，从 0 重排会在延长链上错位）
         if (seg) {
+          this.committedBaseIndex = seg.segmentIndex;
           this.world.addComponent(this.startPoint.segmentHandle, 'BeltSegmentComp', { ...seg, isTail: false });
         }
+        // 原尾格形态已随本次落盘定型（直↔转互转在下方旧尾格分支生效），恢复显示
+        this.hiddenTailCell = null;
       } else {
         this.committedChainId = `chain-${Date.now()}-${++chainCounter}`;
       }
     }
 
     // 链首格继承的进入方向（来自源端）。与旧项目 ConveyorBelt.incomingDirection 对应。
-    const chainIncoming: Direction = this.startPoint.direction;
+    const chainIncoming: Direction = this.startPoint.entryDirection;
 
     // 完整序列（已落盘 + 新段）计算每格方向 + 转角信息
     const full = [...this.fullPath, ...newCells];
@@ -597,7 +700,8 @@ export class BeltCreationSystem {
     applySnapToCells(cells, this.pendingSnap);
     const infos = computeTurnInfos(cells, chainIncoming);
 
-    // 更新已落盘的旧尾格（可能从直段变成转角段，方向/isCorner/entryDir/mirrorH 需要重算）
+    // 更新已落盘的旧尾格（可能从直段变成转角段，方向/isCorner/entryDir/mirrorH 需要重算）。
+    // tail 起点时 fullPath 前缀首格 = 原尾段，首段 90° 侧转的转角/直化在此生效。
     if (this.fullPath.length > 0) {
       const prevTailIdx = this.fullPath.length - 1;
       const prevTailCell = cells[prevTailIdx];
@@ -615,7 +719,7 @@ export class BeltCreationSystem {
         cells[i].y,
         infos[i],
         this.committedChainId!,
-        i, // segmentIndex: 链内序号（0=链首）
+        this.committedBaseIndex + i, // segmentIndex: 链内连续序号（tail 延长接续原尾段）
         isTail,
         i === 0 ? chainIncoming : undefined,
       );
@@ -700,12 +804,18 @@ export class BeltCreationSystem {
    * 绘制预览路径（只画尚未落盘的部分；已落盘段由真实实体渲染）。
    * - previewPath 非空 → 整条按 previewValid 染色(蓝/红),含转角渲染
    * - previewPath 为空 + previewValid=false → 鼠标格单格红块(BFS 无路径)
+   * - tail 首段预览期间原尾格被隐藏（hiddenTailCell），该格由预览接管渲染
    */
   private drawPreview(): void {
     this.clearPreviewSprites();
     const startIdx = this.fullPath.length;
+    // tail 起点首段预览期间：原尾格实体被隐藏（getHiddenTailCell），该格由预览
+    // 接管渲染（含 90° 侧转的直↔转形态变化）；首次落盘后（anchors>1）不再接管，
+    // 原尾格以落盘定型的新形态恢复显示。
+    const headPreviewIdx =
+      this.startPoint?.kind === 'tail' && this.anchors.length === 1 && startIdx > 0 ? 0 : -1;
 
-    if (this.previewPath.length <= startIdx) {
+    if (this.previewPath.length <= startIdx && headPreviewIdx < 0) {
       // 预览路径为空: 仅在预览无效时,在鼠标当前格画单格红块提示"此处不可达"(BFS 失败)
       if (!this.previewValid && this.mode === 'preview' && this.mouseInside) {
         this.drawInvalidMarker();
@@ -716,12 +826,34 @@ export class BeltCreationSystem {
     // 预览路径非空: 整条按 previewValid 染色(蓝/红),含转角正确渲染
     // 方案A：用矢量 Graphics 绘制（与落盘带身同构），缩小 zoom 无缝无接缝。
     const previewColor = this.previewValid ? COLOR_PREVIEW_VALID : COLOR_PREVIEW_INVALID;
-    const startDir = this.startPoint!.direction;
+    const startDir = this.startPoint!.entryDirection;
     const infos = computeTurnInfos(this.previewPath, startDir);
 
-    for (let i = startIdx; i < this.previewPath.length; i++) {
+    // 原尾格的渲染形态: 有新段时用推导 info（含 90° 侧转的直↔转互转）；
+    // 无新段（鼠标停在尾格上）时用已落盘实体的当前形态——单格序列的推导 info
+    // 会退化成 entry 方向直段，转角尾格会画错形状。端口吸附指向尾格时（尾格已在
+    // 供给格、鼠标点在端口上）以吸附方向为出方向——预览"这一格将拐向端口"。
+    let headInfo = infos[0];
+    if (headPreviewIdx === 0 && this.previewPath.length <= startIdx) {
+      const handle = this.committedHandles.get(keyOf(this.previewPath[0]));
+      const seg = handle
+        ? this.world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp')
+        : undefined;
+      if (seg) {
+        const snap = this.pendingSnap;
+        const snapped =
+          snap !== null && snap.cell.x === this.previewPath[0].x && snap.cell.y === this.previewPath[0].y;
+        headInfo = turnInfoFromDirections(
+          seg.entryDir ?? seg.direction,
+          snapped ? snap!.dir : seg.direction,
+        );
+      }
+    }
+
+    for (let i = 0; i < this.previewPath.length; i++) {
+      if (i !== headPreviewIdx && i < startIdx) continue; // 已落盘格（原尾格除外）不渲染
       const cell = this.previewPath[i];
-      const info = infos[i];
+      const info = i === headPreviewIdx ? headInfo : infos[i];
       const g = new Graphics();
       g.position.set(cell.x * CELL_SIZE + CELL_SIZE / 2, cell.y * CELL_SIZE + CELL_SIZE / 2);
       g.alpha = PREVIEW_ALPHA;
@@ -740,6 +872,52 @@ export class BeltCreationSystem {
     }
 
     this.previewContainer.visible = true;
+
+    // 端口内半格残段预览（2026-09-02）: 确认对接（绿）时，末段在端口格内的半格
+    // 延伸先于落盘可见。挂 previewStubContainer（zIndex 0.5，设备之下）——被设备
+    // 纹理遮挡的"钻入设备"观感与落盘后 BeltVectorRenderer 的残段一致。
+    if (this.dockInfo !== null && this.dockInfo.confirmed.length > 0) {
+      const last = this.previewPath[this.previewPath.length - 1];
+      const dv = directionVector(last.direction);
+      const stub = new Graphics();
+      stub.position.set(
+        (last.x + dv.x) * CELL_SIZE + CELL_SIZE / 2,
+        (last.y + dv.y) * CELL_SIZE + CELL_SIZE / 2,
+      );
+      stub.alpha = PREVIEW_ALPHA;
+      stub.rotation = beltTextureRotation(last.direction);
+      // 水平方向镜像修正（T2.20，与 BeltVectorRenderer 同律）: ±π/2 旋转会把本地
+      // "上/下半格"转到流动背侧（设备内侧=穿模），取反使残段恒落在靠段一侧
+      const horizontal = last.direction === 0 || last.direction === 180;
+      drawStraightBeltStub(stub, CELL_SIZE, { shellColor: previewColor, beltColor: previewColor }, horizontal);
+      this.previewStubContainer.addChild(stub);
+      this.previewStubContainer.visible = true;
+    }
+
+    // 输出口的半格残段预览（2026-09-02 补全）: port 起点首段（尚未落盘任何格）时，
+    // 起点端口格内的**出口侧**半格——物品将从端口格中心冒出，带身从设备下方接出。
+    // 首段落盘后由 BeltVectorRenderer 的已落盘残段接管（判定：接收段入口朝向 =
+    // 端口朝外方向），预览不再重复画。
+    const srcPort = this.startPoint;
+    if (
+      srcPort !== null &&
+      srcPort.kind === 'port' &&
+      this.fullPath.length === 0 &&
+      this.previewPath.length > 0
+    ) {
+      const stub = new Graphics();
+      stub.position.set(
+        srcPort.cell.x * CELL_SIZE + CELL_SIZE / 2,
+        srcPort.cell.y * CELL_SIZE + CELL_SIZE / 2,
+      );
+      stub.alpha = PREVIEW_ALPHA;
+      stub.rotation = beltTextureRotation(srcPort.direction);
+      // 水平方向镜像修正（T2.20，同上）: 竖直出口侧天然正确，水平取反
+      const horizontal = srcPort.direction === 0 || srcPort.direction === 180;
+      drawStraightBeltStub(stub, CELL_SIZE, { shellColor: previewColor, beltColor: previewColor }, horizontal ? false : true);
+      this.previewStubContainer.addChild(stub);
+      this.previewStubContainer.visible = true;
+    }
   }
 
   /** 在鼠标当前格渲染单格红色警示块(BFS 无路径时提示"此处不可达")。 */
@@ -762,6 +940,12 @@ export class BeltCreationSystem {
       child.removeFromParent();
       child.destroy();
     }
+    const stubs = this.previewStubContainer.children.slice();
+    for (const child of stubs) {
+      child.removeFromParent();
+      child.destroy();
+    }
+    this.previewStubContainer.visible = false;
   }
 }
 
@@ -802,6 +986,20 @@ function offsetToDir(dx: number, dy: number): Direction {
   if (dx < 0) return 180;
   if (dy > 0) return 90;
   return 270;
+}
+
+/** 相反方向（180° 折返判定用，与 BeltDockOps.opposite 同一约定）。 */
+function oppositeDir(dir: Direction): Direction {
+  return ((dir + 180) % 360) as Direction;
+}
+
+/**
+ * tail 起点首段允许的首步方向集合：同向 + 两个 90° 侧转，
+ * 排除逆着原尾段进入方向的上游折返（180° U 形不是合法带型）。
+ */
+function tailFirstStepDirs(entryDirection: Direction): Direction[] {
+  const reverse = oppositeDir(entryDirection);
+  return ([0, 90, 180, 270] as Direction[]).filter((d) => d !== reverse);
 }
 
 /**

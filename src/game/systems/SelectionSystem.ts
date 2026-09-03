@@ -11,8 +11,9 @@
 //     定时器触发前 pointerup = 选中（走本类原逻辑），定时器触发 = 升级为移动态。
 //
 // 命中测试:
-//   - 设备: 遍历 Position+SpriteComp+BuildingComp，footprint 世界 AABB 点包含测试
-//     （Phase 1 footprint 全正方形，旋转不改 AABB，A3 §6）。尊重 def.selectable。
+//   - 设备: 遍历 Position+SpriteComp+BuildingComp，**有效占地**世界 AABB 点包含测试
+//     （T2.17: 90°/270° 旋转非正方形占地宽高互换，见 buildings.ts effectiveFootprint）。
+//     尊重 def.selectable。
 //   - 传送带段（T2.0）: 遍历 Position+SpriteComp+BeltSegmentComp，1×1 格 AABB 测试。
 //   - 设备格与传送带格互斥（防穿模），同一世界点不会同时命中两者。
 //
@@ -31,6 +32,8 @@ import type { SpriteComp } from '../components/SpriteComp';
 import type { BuildingComp } from '../components/BuildingComp';
 import type { BeltSegmentComp } from '../components/BeltSegmentComp';
 import { getBuildingDefinition } from '../data/buildings';
+import { effectiveFootprint } from '../data/buildings';
+import { CELL_SIZE } from '../render/constants';
 import { queryChain } from './belt/BeltChainOps';
 import type { BeltSelection } from './belt/BeltSelection';
 
@@ -82,11 +85,14 @@ export function pickBuildingAt(
 
     const pos = world.getComponent<Position>(handle, 'Position')!;
     const spr = world.getComponent<SpriteComp>(handle, 'SpriteComp')!;
-    // 世界 AABB: Position = footprint 左上角 (A2 §2.4)，宽高 = cells × CELL_SIZE。
-    // Phase 1 footprint 全正方形，direction 旋转不改变 AABB (A3 §6)。
+    // 世界 AABB: Position = footprint 左上角 (A2 §2.4)。宽高按**有效占地**（T2.17:
+    // 非正方形占地 90°/270° 旋转宽高互换，3×1 仓库口横放/竖放命中区域随之切换）。
+    const eff = def ? effectiveFootprint(def.footprint, building.direction) : null;
+    const bw = eff ? eff.w * CELL_SIZE : spr.width;
+    const bh = eff ? eff.h * CELL_SIZE : spr.height;
     if (
-      wx >= pos.x && wx <= pos.x + spr.width &&
-      wy >= pos.y && wy <= pos.y + spr.height
+      wx >= pos.x && wx <= pos.x + bw &&
+      wy >= pos.y && wy <= pos.y + bh
     ) {
       return handle;
     }
@@ -141,6 +147,8 @@ export function pickTargetAt(world: World, wx: number, wy: number): SelectionTar
 
 /**
  * 计算选中框的屏幕四边形顶点（footprint 四角经 worldToScreen 投影）。
+ * footprint 宽高取**有效占地**（T2.17: 90°/270° 旋转非正方形占地宽高互换），
+ * 保证竖放的 3×1 仓库口选中框与其视觉占地重合。
  * 实体已销毁/缺组件时返回 null。
  */
 export function buildingScreenPolygon(
@@ -152,12 +160,15 @@ export function buildingScreenPolygon(
   const pos = world.getComponent<Position>(handle, 'Position');
   const spr = world.getComponent<SpriteComp>(handle, 'SpriteComp');
   if (!pos || !spr) return null;
+  const building = world.getComponent<BuildingComp>(handle, 'BuildingComp');
+  const def = building ? getBuildingDefinition(building.definitionId) : undefined;
+  const eff = building && def ? effectiveFootprint(def.footprint, building.direction) : null;
 
   return [
     camera.worldToScreen(pos.x, pos.y),
-    camera.worldToScreen(pos.x + spr.width, pos.y),
-    camera.worldToScreen(pos.x + spr.width, pos.y + spr.height),
-    camera.worldToScreen(pos.x, pos.y + spr.height),
+    camera.worldToScreen(pos.x + (eff ? eff.w * CELL_SIZE : spr.width), pos.y),
+    camera.worldToScreen(pos.x + (eff ? eff.w * CELL_SIZE : spr.width), pos.y + (eff ? eff.h * CELL_SIZE : spr.height)),
+    camera.worldToScreen(pos.x, pos.y + (eff ? eff.h * CELL_SIZE : spr.height)),
   ];
 }
 

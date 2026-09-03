@@ -9,6 +9,8 @@
 //   - buildCost/powerConsumption/inputSlotCount/outputSlotCount/bufferCapacity:
 //     Phase 2 生产系统才用，Phase 1 照填 (A3 §1.1 都给了值)，避免 Phase 2 再补表。
 
+import type { Direction } from '../components/BuildingComp';
+
 /** 建筑分类 (A3 §1)。 */
 export type BuildingCategory =
   | 'extraction'   // 采矿类
@@ -38,10 +40,30 @@ export interface Port {
   itemFilter?: string[];
 }
 
-/** 占地面尺寸（单位 Cell）。正方形/矩形均可，旋转后占地不变 (A3 §6)。 */
+/** 占地面尺寸（单位 Cell）。正方形/矩形均可；90°/270° 旋转时宽高互换（见 effectiveFootprint）。 */
 export interface Footprint {
   w: number;
   h: number;
+}
+
+/**
+ * 朝向 direction 下的**有效占地**（旋转几何单一事实源，2026-09-02 T2.17 修订）。
+ *
+ * 旧约定 A3 §6"旋转后占地不变"只对正方形占地自洽；非正方形（3×1 仓库口）按旧约定
+ * 只能 0°/180° 两档旋转。T2.17 起改为: **90°/270° 旋转时占地宽高互换**（3×1 ↔ 1×3，
+ * 同 Factorio 惯例），四向旋转全档开放。0°/180° 占地不变。
+ *
+ * 消费方: PortGeometry.rotatePort（端口格旋转）、OccupancyMap.occupy/releaseFootprint、
+ * PlacementSystem（预览锚点/占用检查）、RenderSystem（设备中心/视口剔除）、
+ * SelectionSystem（命中/选中框）。改占地语义只改这里。
+ */
+export function effectiveFootprint(
+  footprint: Footprint,
+  direction: Direction,
+): Footprint {
+  return direction === 90 || direction === 270
+    ? { w: footprint.h, h: footprint.w }
+    : { w: footprint.w, h: footprint.h };
 }
 
 /**
@@ -247,18 +269,17 @@ export const BUILDING_DEFINITIONS: Record<string, BuildingDefinition> = {
 
   // ── T2.12 简化版仓库取货口/存货口（2026-08-24 用户澄清：非生产设备，无限源/汇）──
   // 3×1 整图背景（Depot.svg 共用，whole 路径不进九宫格）；单层 billboard LOGO 居中。
-  // 朝向只允许 0°/180°（非正方形占地，A3 §6 旋转不换占地 → RotationPolicy 两档）。
-  // h=1 时 dy=0 行 portOutwardBase 判为顶边朝上：取货口输出口=带从上方接出（同精炼炉
-  // 输出口语义）；存货口输入口=供给带从下方指入（findFeederBelt 四方向扫描）。
+  // 朝向四档循环（T2.17: 90°/270° 旋转占地宽高互换 3×1↔1×3，见 effectiveFootprint）。
+  // T2.18（2026-09-04 用户拍板）: **只有中间格是端口**（dx=1）——两侧格不是端口，
+  // 不能起带/对接；吞吐 1 件/2 秒/设备。h=1 时 portOutwardBase 判朝上（T2.19）:
+  // 取货口带从上方接出、存货口带从上方落入——两台设备接带面一致（0° 都在顶侧）。
   depot_unloader: {
     id: 'depot_unloader',
     name: '仓库取货口',
     category: 'logistics',
     footprint: { w: 3, h: 1 },
     ports: [
-      { type: 'output', position: { dx: 0, dy: 0 } },
-      { type: 'output', position: { dx: 1, dy: 0 } },
-      { type: 'output', position: { dx: 2, dy: 0 } },
+      { type: 'output', position: { dx: 1, dy: 0 } }, // 仅中间格（T2.18）
     ],
     texture: 'depot',
     logoTextureKey: 'depot_unloader_logo',
@@ -276,9 +297,7 @@ export const BUILDING_DEFINITIONS: Record<string, BuildingDefinition> = {
     category: 'logistics',
     footprint: { w: 3, h: 1 },
     ports: [
-      { type: 'input', position: { dx: 0, dy: 0 } },
-      { type: 'input', position: { dx: 1, dy: 0 } },
-      { type: 'input', position: { dx: 2, dy: 0 } },
+      { type: 'input', position: { dx: 1, dy: 0 } }, // 仅中间格（T2.18）
     ],
     texture: 'depot',
     logoTextureKey: 'depot_loader_logo',

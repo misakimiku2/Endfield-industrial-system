@@ -107,13 +107,13 @@ export function calculateMomentumPath(
 
   if (sx === ex && sy === ey) return [start];
 
-  const path: GridCell[] = [];
+  // 路径恒含起点格（与 findPathBFS/调用方「raw[0] = 寻路起点」不变量一致）
+  const path: GridCell[] = [{ x: sx, y: sy }];
   let cx = sx;
   let cy = sy;
 
   // 起始端口方向约束：先沿 startingDirection 迈一步
   if (startingDirection !== undefined && (cx !== ex || cy !== ey)) {
-    path.push({ x: cx, y: cy });
     const v = directionVector(startingDirection);
     cx += v.x;
     cy += v.y;

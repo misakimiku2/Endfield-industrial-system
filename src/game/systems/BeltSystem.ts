@@ -35,7 +35,7 @@ import type { World, EntityHandle } from '../ECS.ts';
 import type { SimulationSystem } from '../GameLoop.ts';
 import type { BeltItem, BeltSegmentComp } from '../components/BeltSegmentComp.ts';
 import type { Position } from '../components/Position.ts';
-import type { BuildingComp } from '../components/BuildingComp.ts';
+import type { BuildingComp, Direction } from '../components/BuildingComp.ts';
 import { getBuildingDefinition, type BuildingDefinition } from '../data/buildings.ts';
 import { directionVector } from './belt/BeltPathGeometry.ts';
 import { inputPortCells } from './PortGeometry.ts';
@@ -143,8 +143,10 @@ export class BeltSystem implements SimulationSystem {
       list.push({ seg, exitKey });
       chainSegs.set(seg.chainId, list);
     }
-    // 设备输入口索引（端口格 → 设备）——链尾出口命中即"对接设备"
-    const inputDock = new Map<string, { comp: BuildingComp; def: BuildingDefinition }>();
+    // 设备输入口索引（端口格 → 设备 + 端口朝外方向）——链尾出口命中且从朝向侧指入
+    // 才算"对接设备"（2026-09-02 修订，与 findFeederBelt 同一规则: 侧向横穿指入的
+    // 链尾永远送不进设备，视同断头红提示）
+    const inputDock = new Map<string, { comp: BuildingComp; def: BuildingDefinition; outward: Direction }>();
     for (const handle of world.query('BuildingComp', 'Position')) {
       const bComp = world.getComponent<BuildingComp>(handle, 'BuildingComp');
       const bPos = world.getComponent<Position>(handle, 'Position');
@@ -154,7 +156,7 @@ export class BeltSystem implements SimulationSystem {
       const bgx = Math.round(bPos.x / CELL_SIZE);
       const bgy = Math.round(bPos.y / CELL_SIZE);
       for (const cell of inputPortCells(bgx, bgy, def, bComp.direction)) {
-        inputDock.set(`${cell.x},${cell.y}`, { comp: bComp, def });
+        inputDock.set(`${cell.x},${cell.y}`, { comp: bComp, def, outward: cell.outward });
       }
     }
     const redMemo = new Map<string, boolean>();
@@ -181,7 +183,15 @@ export class BeltSystem implements SimulationSystem {
         return red;
       }
       const dock = inputDock.get(deadEnd.exitKey);
-      if (dock === undefined) { redMemo.set(chainId, true); return true; } // ① 断头
+      // ① 断头: 出口无设备输入口，或链尾不是从端口朝向侧指入（侧向横穿，2026-09-02
+      //    修订——与 findFeederBelt 同口径，横穿带永远送不进设备，按断头红提示）
+      if (
+        dock === undefined ||
+        deadEnd.seg.direction !== (((dock.outward + 180) % 360) as Direction)
+      ) {
+        redMemo.set(chainId, true);
+        return true;
+      }
       const { comp, def } = dock;
       if (comp.paused || def.depot === 'load') return false; // paused 由 LOGO 指示 / 无限汇瞬态
       // 门口停走物品（非 entering 中 progress 最大者，与 doorHeadItem 同口径）

@@ -15,14 +15,16 @@
 
 import type { MapInstance } from './MapInstance';
 import type { BuildingDefinition } from '../data/buildings';
+import { effectiveFootprint } from '../data/buildings';
 import type { Direction } from '../components/BuildingComp';
 
 /**
  * 占用表。不进 ECS（它是 WorldData 持有的世界结构，不是 Component）。
  *
  * 一个 OccupancyMap 实例对应一张地图（一个 MapInstance）。占用记录的是
- * "哪个 Cell 被哪个 building 的哪个朝向占用"——存 definitionId 便于调试/查询，
- * 朝向不影响占用（正方形 footprint 旋转占地不变，A3 §6），故占用表只记位置不记朝向。
+ * "哪个 Cell 被哪个 building 的哪个朝向占用"——存 definitionId 便于调试/查询。
+ * 朝向影响占用区域: T2.17 起非正方形占地 90°/270° 旋转宽高互换（effectiveFootprint，
+ * 3×1 仓库口 ↔ 1×3），occupy/releaseFootprint 按 direction 取有效占地。
  */
 export class OccupancyMap {
   /** key "gx,gy" → building definitionId。null 不进表（未占用）。 */
@@ -95,16 +97,15 @@ export class OccupancyMap {
    * @param gx        footprint 左上角 Cell 的 gridX
    * @param gy        footprint 左上角 Cell 的 gridY
    * @param def       建筑定义（取 footprint.w/h 和 id）
-   * @param direction 朝向（**不影响占用**，正方形占地旋转不变 A3 §6；保留参数为 Phase 2
-   *                  非 1:1 footprint 预留，目前所有 building footprint 都是正方形）
+   * @param direction 朝向（T2.17: 90°/270° 时非正方形占地宽高互换，见 effectiveFootprint）
    */
   occupyFootprint(
     gx: number,
     gy: number,
     def: BuildingDefinition,
-    _direction: Direction,
+    direction: Direction,
   ): void {
-    const { w, h } = def.footprint;
+    const { w, h } = effectiveFootprint(def.footprint, direction);
     for (let dy = 0; dy < h; dy++) {
       for (let dx = 0; dx < w; dx++) {
         this.occupy(gx + dx, gy + dy, def.id);
@@ -115,14 +116,15 @@ export class OccupancyMap {
   /**
    * 释放一个 building 的整个 footprint 区域（便利方法）。
    * T1.9 删除设备时用，本会话建好接口备用。幂等：未占用的 Cell 释放无操作。
+   * 与 occupyFootprint 同一套有效占地计算，方向必须与放置时一致。
    */
   releaseFootprint(
     gx: number,
     gy: number,
     def: BuildingDefinition,
-    _direction: Direction,
+    direction: Direction,
   ): void {
-    const { w, h } = def.footprint;
+    const { w, h } = effectiveFootprint(def.footprint, direction);
     for (let dy = 0; dy < h; dy++) {
       for (let dx = 0; dx < w; dx++) {
         this.release(gx + dx, gy + dy);

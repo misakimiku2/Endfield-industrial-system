@@ -9,19 +9,19 @@
 //   （预览吸附/落盘）与 PortHighlightRenderer（端口高亮）共用，端口格索引由
 //   IntakeOps.collectInputPortCells 提供（与 MachineSystem 吸入判定同一来源）。
 //
-// 吸附规则 applyDockSnap:
-//   · mouse 在**输入端口格**上 → 路径截断到供给格（倒数第二格），末段方向 = 供给格→端口。
-//     拖到设备上也能对接，不再整条染红（用户实测的主要卡点）。
-//   · mouse 在**供给格**（端口四邻格）上 → 末段方向覆盖为指向端口（覆盖默认尾向），
-//     落盘即保证 findFeederBelt 判定成立。
-//   · 吸附会产生 180° 折返（进入方向与指向端口方向相反，如单格带从背离侧进入）时
-//     放弃吸附——传送带只有直段和 90° 转角，180° U 形不是合法带型。
+// 对接规则（2026-09-02 三轮修订——**端口重定向**）:
+//   · mouse 悬停在**输入端口格**上 → 寻路目标重定向到该端口的**朝向侧供给格**
+//     （端口格 + outward 向量），并吸附末段方向 = 逆朝向指向端口。从任意方向拖到
+//     端口上（含侧方横穿接近）都会自动找最近路径经供给格接入，不再恒红：侧方进入
+//     供给格 → 末段 90° 拐向端口（转角），下方进入 → 直段。点击端口格 = 唯一对接触发手势。
+//   · 供给格被占/不可放置 → 路径终于供给格，由 checkPathValid 染红（"接不上"反馈）。
 //
 // 本模块不依赖 World/渲染（纯几何），单测直跑（DD-011 先例: BufferOps/ProductionOps）。
 
 import type { Direction } from '../../components/BuildingComp.ts';
 import { directionVector } from './BeltPathGeometry.ts';
-import { directionBetween, type GridCell } from './BeltPathfinding.ts';
+import type { GridCell } from './BeltPathfinding.ts';
+import type { PortCell } from '../PortGeometry.ts';
 
 /** 端口格索引的键（与 IntakeOps.buildBeltCellIndex 同一约定）。 */
 export const portKey = (cell: { x: number; y: number }): string => `${cell.x},${cell.y}`;
@@ -32,12 +32,6 @@ export interface DockSnap {
   dir: Direction;
 }
 
-/** applyDockSnap 的结果: 截断后的路径 + 吸附决策（null = 无吸附）。 */
-export interface DockSnapResult {
-  raw: GridCell[];
-  snap: DockSnap | null;
-}
-
 /** 相反方向（180° 折返判定用）。 */
 function opposite(dir: Direction): Direction {
   if (dir === 0) return 180;
@@ -46,74 +40,31 @@ function opposite(dir: Direction): Direction {
   return 90;
 }
 
-/** 方向遍历序（与 IntakeOps.findFeederBelt 一致: 右/下/左/上，多口命中时取首个）。 */
-const DOCK_DIRS: readonly Direction[] = [0, 90, 180, 270];
-
 /**
- * 供给格判定: cell 的四邻格中有输入端口格？
- * @param ports 输入端口格索引（IntakeOps.collectInputPortCells）
- * @returns 命中的端口格 + cell 指向它的方向；无则 null。
+ * 端口重定向（2026-09-02 三轮修订）: mouse 悬停在**输入端口格**上时，寻路目标改为
+ * 该端口**朝向侧供给格**，并给出吸附决策（末段方向 = 逆朝向指向端口）。
+ * 旧版把端口格本身作为寻路终点再截断——朝向侧规则收紧后侧向进入无法吸附（恒红）；
+ * 重定向后"从任意方向拖到端口上"都自动找最近路径接到供给格，末段拐向端口。
+ * 供给格上方恒为被占端口格 → 路径不可能从端口侧进入供给格 → 吸附不会产生 180° 折返
+ * （侧方进入 → 90° 转角，下方进入 → 直段）。
  */
-export function dockTargetAt(
-  cell: GridCell,
-  ports: Map<string, GridCell>,
-): { portCell: GridCell; dir: Direction } | null {
-  for (const k of DOCK_DIRS) {
-    const dv = directionVector(k);
-    const portCell = ports.get(portKey({ x: cell.x + dv.x, y: cell.y + dv.y }));
-    if (portCell !== undefined) return { portCell, dir: k };
-  }
-  return null;
-}
-
-/** 吸附格的进入方向: 首个带格（路径 idx 1，前格是锚点/端口格）用链首继承方向 startDir，
- *  其余格取前一格位移（与 computePathCells/computeTurnInfos 的 incoming 口径一致）。 */
-function incomingDirOf(path: GridCell[], idx: number, startDir: Direction): Direction | null {
-  if (idx <= 1) return startDir;
-  return directionBetween(path[idx - 1], path[idx]);
-}
-
-/**
- * 预览路径的终点吸附（T2.16 需求"末段方向吸附"的核心）。
- * @param raw 寻路结果（含起点格，末格 = mouseGrid——findPath/动量 L 形都保证终于终点格）
- * @param mouseGrid 当前鼠标格
- * @param ports 输入端口格索引
- * @param startDir 链首继承方向（起点端口朝向 / 延长时上一尾段出方向）
- */
-export function applyDockSnap(
-  raw: GridCell[],
+export function dockRedirect(
   mouseGrid: GridCell,
-  ports: Map<string, GridCell>,
-  startDir: Direction,
-): DockSnapResult {
-  if (raw.length < 2) return { raw, snap: null };
-
-  // ① mouse 在输入端口格上 → 截断到供给格，末段指向端口。
-  //    要求截断后仍有至少 1 个带格（raw ≥ 3: [起点, 供给格, 端口格] 起步），
-  //    否则供给格 = 起点格（锚点/原尾段），无可落盘新段，不吸附（路径含端口格 → 染红）。
-  if (raw.length >= 3 && ports.has(portKey(mouseGrid))) {
-    const supply = raw[raw.length - 2];
-    const dir = directionBetween(supply, mouseGrid);
-    if (dir !== null) {
-      if (incomingDirOf(raw, raw.length - 2, startDir) !== opposite(dir)) {
-        return { raw: raw.slice(0, -1), snap: { cell: supply, dir } };
-      }
-      return { raw, snap: null }; // 180° 折返 → 放弃（原路径含端口格，checkPathValid 染红提示）
-    }
-  }
-
-  // ② mouse 在供给格上 → 末段方向覆盖为指向端口。
-  const target = dockTargetAt(mouseGrid, ports);
-  if (target !== null && incomingDirOf(raw, raw.length - 1, startDir) !== opposite(target.dir)) {
-    return { raw, snap: { cell: { x: mouseGrid.x, y: mouseGrid.y }, dir: target.dir } };
-  }
-  return { raw, snap: null };
+  ports: Map<string, PortCell>,
+): { target: GridCell; snap: DockSnap } | null {
+  const portCell = ports.get(portKey(mouseGrid));
+  if (portCell === undefined) return null;
+  const odv = directionVector(portCell.outward);
+  const target: GridCell = { x: portCell.x + odv.x, y: portCell.y + odv.y };
+  return { target, snap: { cell: target, dir: opposite(portCell.outward) } };
 }
 
 /**
  * 把吸附方向写到路径格序列的末格（末格须与吸附格重合，防错位写入）。
  * computePathCells 的默认尾向是"沿用上一格方向"——吸附后须覆盖，随后
  * computeTurnInfos 依 incoming/outgoing 自然得出直段或 90° 转角。
+ * 防御: 覆盖会产生 180° 折返（末段自然方向恰为吸附方向的反向）时不覆盖——
+ * 端口重定向下供给格上方恒为被占端口格，正常不可达，此为异常拓扑兜底。
  */
 export function applySnapToCells<T extends { x: number; y: number; direction: Direction }>(
   cells: T[],
@@ -121,34 +72,37 @@ export function applySnapToCells<T extends { x: number; y: number; direction: Di
 ): void {
   if (!snap || cells.length === 0) return;
   const last = cells[cells.length - 1];
-  if (last.x === snap.cell.x && last.y === snap.cell.y) last.direction = snap.dir;
+  if (last.x !== snap.cell.x || last.y !== snap.cell.y) return;
+  if (last.direction === opposite(snap.dir)) return; // 180° 折返防御
+  last.direction = snap.dir;
 }
 
 /** 预览末段的对接信息（渲染层输入端口高亮用）。 */
 export interface DockInfo {
-  /** 预览末格四邻中的输入端口格（候选——"够得着"）。 */
-  targets: GridCell[];
   /** 末格 + 末段方向命中的端口格（落盘即 findFeederBelt 成立——"将连接"）。 */
   confirmed: GridCell[];
 }
 
 /**
- * 由预览末格与末段方向得出对接信息（T2.16 需求"输入端口终点高亮/将连接确认"）。
- * targets = 末格四邻全部输入端口格；confirmed = 末段方向指向的那个端口格。
+ * 由预览末格与末段方向得出对接信息。
+ * 2026-09-02: 候选紫（targets 四邻端口"够得着"）已按用户要求移除——只保留
+ * "将连接"绿: confirmed = 末段**从端口朝向侧供给格**指向的那个端口格
+ * （与 findFeederBelt 同口径，侧向横穿不算）。
  */
 export function dockInfoOf(
   tail: GridCell,
   tailDir: Direction,
-  ports: Map<string, GridCell>,
+  ports: Map<string, PortCell>,
 ): DockInfo {
-  const targets: GridCell[] = [];
   const confirmed: GridCell[] = [];
-  for (const k of DOCK_DIRS) {
-    const dv = directionVector(k);
-    const portCell = ports.get(portKey({ x: tail.x + dv.x, y: tail.y + dv.y }));
-    if (portCell === undefined) continue;
-    targets.push(portCell);
-    if (k === tailDir) confirmed.push(portCell);
+  const dv = directionVector(tailDir);
+  const portCell = ports.get(portKey({ x: tail.x + dv.x, y: tail.y + dv.y }));
+  if (portCell !== undefined) {
+    // 末格须是端口朝向侧供给格（= 端口格 + outward 向量），否则是侧向横穿——不算确认
+    const odv = directionVector(portCell.outward);
+    if (tail.x === portCell.x + odv.x && tail.y === portCell.y + odv.y) {
+      confirmed.push(portCell);
+    }
   }
-  return { targets, confirmed };
+  return { confirmed };
 }

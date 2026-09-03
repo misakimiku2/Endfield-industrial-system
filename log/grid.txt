@@ -1,0 +1,169 @@
+09-03 03:10:33.821 21906 21906 D AuroraKotlin: [Pinch] visual 252@-691 272@2705 ok
+09-03 03:10:33.897 21906 21906 D AuroraKotlin: [Pinch] visual 252@-460 272@2257 ok
+09-03 03:10:33.963 21906 21906 D AuroraKotlin: [Pinch] visual 252@-85 272@1529 ok
+09-03 03:10:34.029 21906 21906 D AuroraKotlin: [Pinch] visual 252@-47 272@1457 ok
+09-03 03:10:34.096 21906 21906 D AuroraKotlin: [Pinch] visual 252@-47 272@1457 ok
+09-03 03:10:34.121 21906 21906 D AuroraKotlin: [Pinch] commit target=1 current=2 progress=1.0 remaining=0.0
+09-03 03:10:34.127 21906 21906 D AuroraKotlin: [FLIP] span 4 -> 6 anchorPos=256 anchorTop=-47 paddingTop=51 offset=-98 firstVisible=256
+09-03 03:10:34.127 21906 21906 D AuroraKotlin: [Cell] applyCellWidth cellPx=421 wasZero=false childCount=28 mode=GRID itemCount=458
+09-03 03:10:34.142 21906 21906 D AuroraKotlin: [FLIP] layout-applied anchorPos=256 anchorTop=-47 nowTop=-13 firstVisible=252
+09-03 03:10:34.142 21906 21906 D AuroraKotlin: [FLIP] fixAnchor anchorPos=256 anchorTop=-47 viewTop=-13 drift=34
+09-03 03:10:34.143 21906 21906 D AuroraKotlin: [FLIP] anchor=256@-47 children=48 oldCount=28 animated=10 missing=20 skipped=18 maxDelta=1.3339844@276
+09-03 03:10:34.157 21906 21906 D AuroraKotlin: [Cell] pos=280 coverW=422 coverH=649 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:10:34.901 21906 21906 D AuroraKotlin: [Cell] pos=300 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:10:35.586 21906 21906 D AuroraKotlin: [Cell] pos=320 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:10:37.441 21906 21906 D AuroraKotlin: [Cell] pos=340 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:10:38.596 21906 21906 D AuroraKotlin: [Cell] pos=360 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:10:55.026 21906 21906 D AuroraKotlin: [Pinch] multi-touch start: pointers=2
+09-03 03:10:55.069 21906 21906 D AuroraKotlin: [Pinch] begin anchorPos=330 anchorTop=-140 anchorW=422 anchorH=467 textHeight=45 availWidth=2698 gap=34 paddingTop=51 childCount=54
+09-03 03:10:55.109 21906 21906 D AuroraKotlin: [Pinch] visual 324@-555 344@810 364@2174 ok
+09-03 03:10:55.176 21906 21906 D AuroraKotlin: [Pinch] visual 324@-409 344@721 364@1851 ok
+09-03 03:10:55.244 21906 21906 D AuroraKotlin: [Pinch] visual 324@-241 344@619 364@1478 ok
+09-03 03:10:55.310 21906 21906 D AuroraKotlin: [Pinch] visual 324@-140 344@558 364@1255 ok
+09-03 03:10:55.376 21906 21906 D AuroraKotlin: [Pinch] visual 324@-140 344@558 364@1255 ok
+09-03 03:10:55.396 21906 21906 D AuroraKotlin: [Pinch] commit target=0 current=1 progress=1.0 remaining=0.0
+09-03 03:10:55.400 21906 21906 D AuroraKotlin: [FLIP] span 6 -> 9 anchorPos=330 anchorTop=-140 paddingTop=51 offset=-191 firstVisible=330
+09-03 03:10:55.400 21906 21906 D AuroraKotlin: [Cell] applyCellWidth cellPx=269 wasZero=false childCount=54 mode=GRID itemCount=458
+09-03 03:10:55.445 21906 21906 D AuroraKotlin: [FLIP] layout-applied anchorPos=330 anchorTop=-140 nowTop=-106 firstVisible=324
+09-03 03:10:55.445 21906 21906 D AuroraKotlin: [FLIP] fixAnchor anchorPos=330 anchorTop=-140 viewTop=-106 drift=34
+09-03 03:10:55.445 21906 21906 D AuroraKotlin: [FLIP] anchor=330@-140 children=108 oldCount=54 animated=27 missing=54 skipped=27 maxDelta=2.2226562@369
+09-03 03:10:55.461 21906 21906 D AuroraKotlin: [Cell] pos=380 coverW=271 coverH=421 cellPx=269 imgW=1600 imgH=1200 mode=GRID
+09-03 03:10:55.461 21906 21906 D AuroraKotlin: [Cell] pos=400 coverW=270 coverH=269 cellPx=269 imgW=1200 imgH=1600 mode=GRID
+09-03 03:10:55.461 21906 21906 D AuroraKotlin: [Cell] pos=420 coverW=271 coverH=269 cellPx=269 imgW=1200 imgH=1600 mode=GRID
+09-03 03:10:56.117 21906 21906 D AuroraKotlin: [Cell] pos=440 coverW=270 coverH=269 cellPx=269 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:03.120 21906 21906 D AuroraKotlin: [Cell] pos=380 coverW=271 coverH=269 cellPx=269 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:03.254 21906 21906 D AuroraKotlin: [Cell] pos=360 coverW=270 coverH=269 cellPx=269 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:03.488 21906 21906 D AuroraKotlin: [Cell] pos=340 coverW=270 coverH=269 cellPx=269 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:03.604 21906 21906 D AuroraKotlin: [Cell] pos=320 coverW=271 coverH=269 cellPx=269 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:04.132 21906 21906 D AuroraKotlin: [Cell] pos=440 coverW=270 coverH=269 cellPx=269 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:05.393 21906 21906 D AuroraKotlin: [Cell] pos=380 coverW=271 coverH=269 cellPx=269 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:05.603 21906 21906 D AuroraKotlin: [Cell] pos=360 coverW=270 coverH=269 cellPx=269 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:06.079 21906 21906 D AuroraKotlin: [Cell] pos=340 coverW=270 coverH=269 cellPx=269 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:06.396 21906 21906 D AuroraKotlin: [Cell] pos=320 coverW=271 coverH=269 cellPx=269 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:06.689 21906 21906 D AuroraKotlin: [Cell] pos=300 coverW=270 coverH=269 cellPx=269 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:06.956 21906 21906 D AuroraKotlin: [Cell] pos=280 coverW=271 coverH=269 cellPx=269 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:07.332 21906 21906 D AuroraKotlin: [Cell] pos=260 coverW=270 coverH=269 cellPx=269 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:08.102 21906 21906 D AuroraKotlin: [Cell] pos=240 coverW=271 coverH=269 cellPx=269 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:15.080 21906 21906 D AuroraKotlin: [Cell] pos=220 coverW=270 coverH=269 cellPx=269 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:15.290 21906 21906 D AuroraKotlin: [Cell] pos=200 coverW=271 coverH=269 cellPx=269 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:15.716 21906 21906 D AuroraKotlin: [Cell] pos=180 coverW=270 coverH=269 cellPx=269 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:19.093 21906 21906 D AuroraKotlin: [Pinch] multi-touch start: pointers=2
+09-03 03:11:19.147 21906 21906 D AuroraKotlin: [Pinch] begin anchorPos=198 anchorTop=-36 anchorW=270 anchorH=315 textHeight=45 availWidth=2698 gap=34 paddingTop=51 childCount=117
+09-03 03:11:19.190 21906 21906 D AuroraKotlin: [Pinch] visual 180@-734 200@-36 220@662 240@1360 260@2058 280@3105 ok
+09-03 03:11:19.265 21906 21906 D AuroraKotlin: [Pinch] visual 180@-734 200@-36 220@662 240@1360 260@2058 280@3105 ok
+09-03 03:11:19.332 21906 21906 D AuroraKotlin: [Pinch] visual 180@-734 200@-36 220@662 240@1360 260@2058 280@3105 ok
+09-03 03:11:19.399 21906 21906 D AuroraKotlin: [Pinch] visual 180@-734 200@-36 220@662 240@1360 260@2058 280@3105 ok
+09-03 03:11:19.468 21906 21906 D AuroraKotlin: [Pinch] visual 180@-734 200@-36 220@662 240@1360 260@2058 280@3105 ok
+09-03 03:11:19.584 21906 21906 D AuroraKotlin: [Pinch] visual 180@-734 200@-36 220@662 240@1360 260@2058 280@3105 ok
+09-03 03:11:19.651 21906 21906 D AuroraKotlin: [Pinch] visual 180@-734 200@-36 220@662 240@1360 260@2058 280@3105 ok
+09-03 03:11:19.716 21906 21906 D AuroraKotlin: [Pinch] visual 180@-734 200@-36 220@662 240@1360 260@2058 280@3105 ok
+09-03 03:11:19.791 21906 21906 D AuroraKotlin: [Pinch] visual 180@-734 200@-36 220@662 240@1360 260@2058 280@3105 ok
+09-03 03:11:19.861 21906 21906 D AuroraKotlin: [Pinch] visual 180@-743 200@-36 220@671 240@1385 260@2092 280@3145 ok
+09-03 03:11:19.935 21906 21906 D AuroraKotlin: [Pinch] visual 180@-852 200@-36 220@780 240@1671 260@2487 280@3602 ok
+09-03 03:11:20.003 21906 21906 D AuroraKotlin: [Pinch] visual 180@-974 200@-36 220@902 240@1992 260@2931 280@4114 ok
+09-03 03:11:20.551 21906 21906 D AuroraKotlin: [Pinch] multi-touch start: pointers=2
+09-03 03:11:20.594 21906 21906 D AuroraKotlin: [Pinch] begin anchorPos=198 anchorTop=-36 anchorW=270 anchorH=315 textHeight=45 availWidth=2698 gap=34 paddingTop=51 childCount=117
+09-03 03:11:20.661 21906 21906 D AuroraKotlin: [Pinch] visual 180@-1459 200@-36 220@1387 240@3262 260@4686 280@6143 ok
+09-03 03:11:20.735 21906 21906 D AuroraKotlin: [Pinch] visual 180@-1537 200@-36 220@1465 240@3466 260@4967 280@6468 ok
+09-03 03:11:20.802 21906 21906 D AuroraKotlin: [Pinch] visual 180@-1537 200@-36 220@1465 240@3466 260@4967 280@6468 ok
+09-03 03:11:20.886 21906 21906 D AuroraKotlin: [Pinch] visual 180@-1537 200@-36 220@1465 240@3466 260@4967 280@6468 ok
+09-03 03:11:20.943 21906 21906 D AuroraKotlin: [Pinch] commit target=1 current=0 progress=1.0 remaining=0.0
+09-03 03:11:20.951 21906 21906 D AuroraKotlin: [FLIP] span 9 -> 6 anchorPos=198 anchorTop=-36 paddingTop=51 offset=-87 firstVisible=198
+09-03 03:11:20.951 21906 21906 D AuroraKotlin: [Cell] applyCellWidth cellPx=421 wasZero=false childCount=117 mode=GRID itemCount=458
+09-03 03:11:20.965 21906 21906 D AuroraKotlin: [FLIP] layout-applied anchorPos=198 anchorTop=-36 nowTop=-2 firstVisible=198
+09-03 03:11:20.965 21906 21906 D AuroraKotlin: [FLIP] fixAnchor anchorPos=198 anchorTop=-36 viewTop=-2 drift=34
+09-03 03:11:20.966 21906 21906 D AuroraKotlin: [FLIP] anchor=198@-36 children=54 oldCount=117 animated=36 missing=0 skipped=18 maxDelta=4.6660156@240
+09-03 03:11:23.296 21906 21906 D AuroraKotlin: [Cell] pos=260 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:24.457 21906 21906 D AuroraKotlin: [Cell] pos=280 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:25.237 21906 21906 D AuroraKotlin: [Cell] pos=200 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:26.029 21906 21906 D AuroraKotlin: [Cell] pos=180 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:27.016 21906 21906 D AuroraKotlin: [Cell] pos=160 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:27.434 21906 21906 D AuroraKotlin: [Cell] pos=140 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:27.810 21906 21906 D AuroraKotlin: [Cell] pos=120 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:28.355 21906 21906 D AuroraKotlin: [Cell] pos=100 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:28.739 21906 21906 D AuroraKotlin: [Cell] pos=80 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:29.206 21906 21906 D AuroraKotlin: [Cell] pos=60 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:29.960 21906 21906 D AuroraKotlin: [Cell] pos=40 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:30.359 21906 21906 D AuroraKotlin: [Cell] pos=20 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:30.734 21906 21906 D AuroraKotlin: [Cell] pos=0 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:31.796 21906 21906 D AuroraKotlin: [Cell] pos=60 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:32.047 21906 21906 D AuroraKotlin: [Cell] pos=80 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:32.214 21906 21906 D AuroraKotlin: [Cell] pos=100 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:32.499 21906 21906 D AuroraKotlin: [Cell] pos=120 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:32.674 21906 21906 D AuroraKotlin: [Cell] pos=140 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:33.026 21906 21906 D AuroraKotlin: [Cell] pos=160 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:33.685 21906 21906 D AuroraKotlin: [Cell] pos=180 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:34.353 21906 21906 D AuroraKotlin: [Cell] pos=200 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:34.940 21906 21906 D AuroraKotlin: [Cell] pos=220 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:35.557 21906 21906 D AuroraKotlin: [Cell] pos=240 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:36.000 21906 21906 D AuroraKotlin: [Cell] pos=260 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:36.451 21906 21906 D AuroraKotlin: [Cell] pos=280 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:36.945 21906 21906 D AuroraKotlin: [Cell] pos=300 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:37.313 21906 21906 D AuroraKotlin: [Cell] pos=320 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:37.696 21906 21906 D AuroraKotlin: [Cell] pos=340 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:38.156 21906 21906 D AuroraKotlin: [Cell] pos=360 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:38.391 21906 21906 D AuroraKotlin: [Cell] pos=380 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:38.758 21906 21906 D AuroraKotlin: [Cell] pos=400 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:39.009 21906 21906 D AuroraKotlin: [Cell] pos=420 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:39.686 21906 21906 D AuroraKotlin: [Cell] pos=440 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:41.253 21906 21906 D AuroraKotlin: [Pinch] multi-touch start: pointers=2
+09-03 03:11:41.264 21906 21906 D AuroraKotlin: [Pinch] begin anchorPos=402 anchorTop=-257 anchorW=422 anchorH=467 textHeight=45 availWidth=2698 gap=34 paddingTop=51 childCount=60
+09-03 03:11:41.289 21906 21906 D AuroraKotlin: [Pinch] visual 396@-762 416@778 436@2319 ok
+09-03 03:11:41.357 21906 21906 D AuroraKotlin: [Pinch] visual 396@-814 416@1216 436@3247 ok
+09-03 03:11:41.423 21906 21906 D AuroraKotlin: [Pinch] visual 396@-869 416@1686 436@4242 ok
+09-03 03:11:41.491 21906 21906 D AuroraKotlin: [Pinch] visual 396@-985 416@2655 436@6295 ok
+09-03 03:11:41.564 21906 21906 D AuroraKotlin: [Pinch] visual 396@-985 416@2655 436@6295 ok
+09-03 03:11:41.642 21906 21906 D AuroraKotlin: [Pinch] visual 396@-985 416@2655 436@6295 ok
+09-03 03:11:41.682 21906 21906 D AuroraKotlin: [Pinch] commit target=2 current=1 progress=1.0 remaining=0.0
+09-03 03:11:41.689 21906 21906 D AuroraKotlin: [FLIP] span 6 -> 4 anchorPos=402 anchorTop=-257 paddingTop=51 offset=-308 firstVisible=402
+09-03 03:11:41.689 21906 21906 D AuroraKotlin: [Cell] applyCellWidth cellPx=649 wasZero=false childCount=60 mode=GRID itemCount=458
+09-03 03:11:41.697 21906 21906 D AuroraKotlin: [FLIP] layout-applied anchorPos=402 anchorTop=-257 nowTop=-223 firstVisible=400
+09-03 03:11:41.697 21906 21906 D AuroraKotlin: [FLIP] fixAnchor anchorPos=402 anchorTop=-257 viewTop=-223 drift=34
+09-03 03:11:41.697 21906 21906 D AuroraKotlin: [FLIP] anchor=402@-257 children=28 oldCount=60 animated=26 missing=0 skipped=2 maxDelta=5.0@420
+09-03 03:11:43.506 21906 21906 D AuroraKotlin: [Cell] pos=440 coverW=649 coverH=649 cellPx=649 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:47.034 21906 21906 D AuroraKotlin: [Cell] pos=420 coverW=649 coverH=649 cellPx=649 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:48.087 21906 21906 D AuroraKotlin: [Cell] pos=400 coverW=649 coverH=649 cellPx=649 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:48.888 21906 21906 D AuroraKotlin: [Cell] pos=380 coverW=649 coverH=649 cellPx=649 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:50.142 21906 21906 D AuroraKotlin: [Cell] pos=360 coverW=649 coverH=649 cellPx=649 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:51.387 21906 21906 D AuroraKotlin: [Cell] pos=340 coverW=649 coverH=649 cellPx=649 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:52.081 21906 21906 D AuroraKotlin: [Cell] pos=320 coverW=649 coverH=649 cellPx=649 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:52.718 21906 21906 D AuroraKotlin: [Cell] pos=300 coverW=649 coverH=649 cellPx=649 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:53.393 21906 21906 D AuroraKotlin: [Cell] pos=280 coverW=649 coverH=649 cellPx=649 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:54.203 21906 21906 D AuroraKotlin: [Pinch] multi-touch start: pointers=2
+09-03 03:11:54.255 21906 21906 D AuroraKotlin: [Pinch] begin anchorPos=284 anchorTop=-39 anchorW=649 anchorH=695 textHeight=46 availWidth=2698 gap=34 paddingTop=51 childCount=28
+09-03 03:11:54.278 21906 21906 D AuroraKotlin: [Pinch] visual 280@-760 300@2822 ok
+09-03 03:11:54.354 21906 21906 D AuroraKotlin: [Pinch] visual 280@-715 300@2543 ok
+09-03 03:11:54.420 21906 21906 D AuroraKotlin: [Pinch] visual 280@-666 300@2244 ok
+09-03 03:11:54.497 21906 21906 D AuroraKotlin: [Pinch] visual 280@-584 300@1733 ok
+09-03 03:11:54.563 21906 21906 D AuroraKotlin: [Pinch] visual 280@-541 300@1465 ok
+09-03 03:11:54.630 21906 21906 D AuroraKotlin: [Pinch] visual 280@-541 300@1465 ok
+09-03 03:11:54.656 21906 21906 D AuroraKotlin: [Pinch] commit target=1 current=2 progress=1.0 remaining=0.0
+09-03 03:11:54.660 21906 21906 D AuroraKotlin: [FLIP] span 4 -> 6 anchorPos=284 anchorTop=-39 paddingTop=51 offset=-90 firstVisible=284
+09-03 03:11:54.660 21906 21906 D AuroraKotlin: [Cell] applyCellWidth cellPx=421 wasZero=false childCount=28 mode=GRID itemCount=458
+09-03 03:11:54.681 21906 21906 D AuroraKotlin: [FLIP] layout-applied anchorPos=284 anchorTop=-39 nowTop=-5 firstVisible=282
+09-03 03:11:54.681 21906 21906 D AuroraKotlin: [FLIP] fixAnchor anchorPos=284 anchorTop=-39 viewTop=-5 drift=34
+09-03 03:11:54.682 21906 21906 D AuroraKotlin: [FLIP] anchor=284@-39 children=48 oldCount=28 animated=10 missing=20 skipped=18 maxDelta=227.66602@280
+09-03 03:11:54.692 21906 21906 D AuroraKotlin: [Cell] pos=320 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:56.154 21906 21906 D AuroraKotlin: [Cell] pos=260 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:57.665 21906 21906 D AuroraKotlin: [Cell] pos=260 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:11:58.436 21906 21906 D AuroraKotlin: [Cell] pos=240 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:11:59.496 21906 21906 D AuroraKotlin: [Cell] pos=300 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:12:00.281 21906 21906 D AuroraKotlin: [Cell] pos=320 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:12:01.386 21906 21906 D AuroraKotlin: [Cell] pos=340 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:12:01.713 21906 21906 D AuroraKotlin: [Cell] pos=260 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:12:02.220 21906 21906 D AuroraKotlin: [Cell] pos=240 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:12:04.963 21906 21906 D AuroraKotlin: [Cell] pos=220 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:12:07.418 21906 21906 D AuroraKotlin: [Cell] pos=300 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:12:07.971 21906 21906 D AuroraKotlin: [Cell] pos=240 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:12:08.339 21906 21906 D AuroraKotlin: [Cell] pos=300 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:12:09.025 21906 21906 D AuroraKotlin: [Cell] pos=320 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:12:10.387 21906 21906 D AuroraKotlin: [Cell] pos=340 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:12:11.524 21906 21906 D AuroraKotlin: [Cell] pos=360 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:12:11.735 21906 21906 D AuroraKotlin: [Cell] pos=280 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:12:12.835 21906 21906 D AuroraKotlin: [Cell] pos=260 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:12:13.630 21906 21906 D AuroraKotlin: [Cell] pos=320 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:12:13.998 21906 21906 D AuroraKotlin: [Cell] pos=340 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:12:14.716 21906 21906 D AuroraKotlin: [Cell] pos=360 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:12:15.312 21906 21906 D AuroraKotlin: [Cell] pos=380 coverW=422 coverH=421 cellPx=421 imgW=1600 imgH=1200 mode=GRID
+09-03 03:12:15.401 21906 21906 D AuroraKotlin: [Cell] pos=300 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID
+09-03 03:12:16.004 21906 21906 D AuroraKotlin: [Cell] pos=280 coverW=422 coverH=421 cellPx=421 imgW=1200 imgH=1600 mode=GRID

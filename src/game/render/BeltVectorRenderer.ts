@@ -17,11 +17,16 @@ import { Graphics, type Container } from 'pixi.js';
 import type { World, EntityHandle } from '../ECS';
 import type { Position } from '../components/Position';
 import type { BeltSegmentComp } from '../components/BeltSegmentComp';
-import { beltTextureRotation, beltCornerTransform } from '../systems/belt/BeltPathGeometry';
+import type { BuildingComp, Direction } from '../components/BuildingComp';
+import { beltTextureRotation, beltCornerTransform, directionVector } from '../systems/belt/BeltPathGeometry';
+import { inputPortCells, type PortCell } from '../systems/PortGeometry';
+import { outputPortCells } from '../systems/machine/OutputOps';
+import { getBuildingDefinition } from '../data/buildings';
 import type { BeltSelection } from '../systems/belt/BeltSelection';
 import { CELL_SIZE } from './constants';
 import {
   drawStraightBelt,
+  drawStraightBeltStub,
   drawCornerBelt,
   BELT_COLOR_BELT,
   BELT_COLOR_SHELL_SELECTED,
@@ -60,14 +65,30 @@ export class BeltVectorRenderer {
   private beltSelection: BeltSelection | null = null;
   /** 查询是否处于传送带创建模式。创建模式下断头末端(tail)带身黄→蓝渐变。 */
   private isCreateMode: () => boolean;
+  /** 延长预览中被隐藏的原尾格（该格由 BeltCreationSystem 预览接管渲染）。 */
+  private getHiddenCell?: () => { x: number; y: number } | null;
 
   /** handle → entry，用于 diff。 */
   private entries = new Map<EntityHandle, VectorEntry>();
+  /**
+   * 端口格 key → 半格残段 Graphics（2026-09-02）。对接输入端口的供给段在端口格内
+   * 的半格延伸（物品 progress 1.0→1.5 走进设备期间有带身可骑）。zIndex 按设备路径
+   * 分派（T2.20）: 九宫格设备挂 0（设备之下"钻入"观感）；整图设备挂 2（设备之上，
+   * 否则旋转 90°/270° 时残段被不透明端口贴图完全遮住，观感如"没连上"）。
+   * key = 端口格坐标。
+   */
+  private portStubs = new Map<string, { g: Graphics; lastKey: string }>();
 
-  constructor(world: World, layer: Container, isCreateMode?: () => boolean) {
+  constructor(
+    world: World,
+    layer: Container,
+    isCreateMode?: () => boolean,
+    getHiddenCell?: () => { x: number; y: number } | null,
+  ) {
     this.world = world;
     this.layer = layer;
     this.isCreateMode = isCreateMode ?? (() => false);
+    this.getHiddenCell = getHiddenCell;
   }
 
   /** 注入选中态（由 RenderSystem.setBeltSelection 转发）。 */
@@ -95,9 +116,36 @@ export class BeltVectorRenderer {
       }
     }
 
-    if (visible.length === 0) return;
+    if (visible.length === 0) {
+      this.updatePortStubs([]);
+      return;
+    }
 
     // 2. 新增 + 同步
+    const hiddenCell = this.getHiddenCell?.() ?? null;
+    // 端口索引（端口内半格残段判定用，与 findFeederBelt/findReceiverBelt 同一来源）。
+    // above = 残段是否画在设备贴图之上：整图设备（仓库口等，美术端口格侧边不透明）
+    // 旋转 90°/270° 时残段若挂设备之下会被完全遮住（T2.20），故抬到设备之上；
+    // 九宫格设备（精炼炉）维持设备之下的"钻入"观感不变。
+    const ports = new Map<string, { cell: PortCell; above: boolean }>();
+    const outPorts = new Map<string, { cell: PortCell; above: boolean }>();
+    for (const bHandle of this.world.query('BuildingComp', 'Position')) {
+      const bComp = this.world.getComponent<BuildingComp>(bHandle, 'BuildingComp');
+      const bPos = this.world.getComponent<Position>(bHandle, 'Position');
+      if (!bComp || !bPos) continue;
+      const def = getBuildingDefinition(bComp.definitionId);
+      if (!def) continue;
+      const above = def.baseStyle !== 'nineslice';
+      const bgx = Math.round(bPos.x / CELL_SIZE);
+      const bgy = Math.round(bPos.y / CELL_SIZE);
+      for (const cell of inputPortCells(bgx, bgy, def, bComp.direction)) {
+        ports.set(`${cell.x},${cell.y}`, { cell, above });
+      }
+      for (const cell of outputPortCells(bgx, bgy, def, bComp.direction)) {
+        outPorts.set(`${cell.x},${cell.y}`, { cell, above });
+      }
+    }
+    const portStubs: Array<{ key: string; gx: number; gy: number; dir: Direction; selected: boolean; blocked: boolean; blend: number; exitHalf: boolean; above: boolean }> = [];
     for (const handle of visible) {
       const seg = this.world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp')!;
       const pos = this.world.getComponent<Position>(handle, 'Position')!;
@@ -109,6 +157,13 @@ export class BeltVectorRenderer {
         entry = { g, lastKey: '', handle, blockedBlend: 0 };
         this.entries.set(handle, entry);
       }
+
+      // 延长预览中的原尾格：隐藏带身（该格由创建系统预览渲染接管，避免双层叠印）
+      entry.g.visible = !(
+        hiddenCell &&
+        Math.round(pos.x / CELL_SIZE) === hiddenCell.x &&
+        Math.round(pos.y / CELL_SIZE) === hiddenCell.y
+      );
 
       // 位置：格中心（矢量几何以格子中心为原点）
       entry.g.position.set(pos.x + CELL_SIZE / 2, pos.y + CELL_SIZE / 2);
@@ -158,6 +213,112 @@ export class BeltVectorRenderer {
         }
         entry.lastKey = key;
       }
+
+      // 端口内半格残段收集（见 updatePortStubs），两类判定与连接语义同口径:
+      // ① 输入对接（进入侧半格）: 出口相邻格是输入端口，且段方向 = 逆端口朝向指入
+      //    （findFeederBelt 同口径）
+      if (ports.size > 0) {
+        const fdv = directionVector(seg.direction);
+        const fx = Math.round(pos.x / CELL_SIZE) + fdv.x;
+        const fy = Math.round(pos.y / CELL_SIZE) + fdv.y;
+        const hit = ports.get(`${fx},${fy}`);
+        if (
+          hit !== undefined &&
+          seg.direction === (((hit.cell.outward + 180) % 360) as Direction)
+        ) {
+          portStubs.push({
+            key: `${hit.cell.x},${hit.cell.y}`,
+            gx: hit.cell.x,
+            gy: hit.cell.y,
+            dir: seg.direction,
+            selected,
+            blocked,
+            blend,
+            exitHalf: false,
+            above: hit.above,
+          });
+        }
+      }
+      // ② 输出接出（出口侧半格，2026-09-02 补全）: 入口相邻格是输出端口，且入口
+      //    朝向 = 端口朝外方向（沿端口朝向接出，findReceiverBelt 的朝向侧对齐形态）
+      if (outPorts.size > 0) {
+        const entryDir = seg.entryDir ?? seg.direction;
+        const edv = directionVector(entryDir);
+        const px = Math.round(pos.x / CELL_SIZE) - edv.x;
+        const py = Math.round(pos.y / CELL_SIZE) - edv.y;
+        const hit = outPorts.get(`${px},${py}`);
+        if (hit !== undefined && entryDir === hit.cell.outward) {
+          portStubs.push({
+            key: `${hit.cell.x},${hit.cell.y}`,
+            gx: hit.cell.x,
+            gy: hit.cell.y,
+            dir: hit.cell.outward,
+            selected,
+            blocked,
+            blend,
+            exitHalf: true,
+            above: hit.above,
+          });
+        }
+      }
+    }
+
+    this.updatePortStubs(portStubs);
+  }
+
+  /**
+   * 同步"端口内半格残段"（2026-09-02）: 对接输入端口的供给段在其端口格内画**进入侧**
+   * 半格带身（物品 progress 1.0→1.5 走进设备期间有带身可骑）；输出端口的接收段在其
+   * 端口格内画**出口侧**半格带身（物品 progress=0 从端口格中心冒出，带身从设备下方
+   * 接出）。zIndex（T2.20）: 九宫格设备挂 0（设备 zIndex=1 之下，"钻入/钻出"观感，
+   * 与走进/走出设备的物品 belowItems 0.5 一致）；**整图设备挂 2（设备之上）**——其
+   * 端口格贴图侧边不透明（旋转后尤甚），残段挂之下会被完全遮住、看起来像没连上。
+   * 染色跟随所属段（选中/堵塞渐变）。key = 端口格坐标（一格一带下每口至多一段）。
+   */
+  private updatePortStubs(
+    portStubs: Array<{ key: string; gx: number; gy: number; dir: Direction; selected: boolean; blocked: boolean; blend: number; exitHalf: boolean; above: boolean }>,
+  ): void {
+    const seen = new Set<string>();
+    for (const f of portStubs) {
+      if (seen.has(f.key)) continue; // 同端口多带防御（一格一带下不可达）
+      seen.add(f.key);
+      let stub = this.portStubs.get(f.key);
+      if (!stub) {
+        const g = new Graphics();
+        this.layer.addChild(g);
+        stub = { g, lastKey: '' };
+        this.portStubs.set(f.key, stub);
+      }
+      // 残段恒挂设备之下（zIndex 0，与带身同层）——"钻入设备"观感: 可见部分为
+      // 设备美术的透明边距，边框/面板始终盖在残段之上（T2.20 二次修订:
+      // 曾改挂设备之上修正旋转不可见，但会盖住设备边框，已回退）
+      stub.g.zIndex = 0;
+      stub.g.position.set(f.gx * CELL_SIZE + CELL_SIZE / 2, f.gy * CELL_SIZE + CELL_SIZE / 2);
+      stub.g.rotation = beltTextureRotation(f.dir);
+      stub.g.scale.set(1, 1);
+      const key = `${f.dir}|${f.selected ? 1 : 0}|${f.blocked ? 1 : 0}|${f.exitHalf ? 1 : 0}`;
+      if (stub.lastKey !== key || (f.blend > 0 && f.blend < 1)) {
+        stub.g.clear();
+        let colors: BeltColors | undefined;
+        if (f.selected) {
+          colors = { shellColor: BELT_COLOR_SHELL_SELECTED, beltColor: BELT_COLOR_BELT_SELECTED };
+        } else if (f.blocked || f.blend > 0) {
+          colors = { beltColor: lerpColor(BELT_COLOR_BELT, BELT_COLOR_STATUS_BLOCKED, f.blend) };
+        }
+        // 水平方向（0/180）镜像修正（T2.20）: ±π/2 旋转会把本地"上/下半格"转到
+        // 水平流动的背侧（竖直 90/270 的 0/π 旋转天然正确）——取反 exitHalf 使
+        // 残段恒落在靠段一侧（朝向带子/设备 mouth）
+        const horizontal = f.dir === 0 || f.dir === 180;
+        drawStraightBeltStub(stub.g, CELL_SIZE, colors, horizontal ? !f.exitHalf : f.exitHalf);
+        stub.lastKey = key;
+      }
+    }
+    for (const [key, stub] of this.portStubs) {
+      if (!seen.has(key)) {
+        stub.g.removeFromParent();
+        stub.g.destroy();
+        this.portStubs.delete(key);
+      }
     }
   }
 
@@ -168,5 +329,10 @@ export class BeltVectorRenderer {
       entry.g.destroy();
     }
     this.entries.clear();
+    for (const stub of this.portStubs.values()) {
+      stub.g.removeFromParent();
+      stub.g.destroy();
+    }
+    this.portStubs.clear();
   }
 }

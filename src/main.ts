@@ -21,7 +21,7 @@ import { GridRenderer } from './game/render/GridRenderer';
 import { loadAllAssets, getTexture } from './game/render/AssetsLoader';
 import { InventoryUI } from './game/ui/InventoryUI';
 import { deviceReadoutText } from './game/ui/DeviceReadout';
-import { BUILDING_DEFINITIONS, getBuildingDefinition, createOutputPollQueue, type BuildingDefinition } from './game/data/buildings';
+import { BUILDING_DEFINITIONS, getBuildingDefinition, createOutputPollQueue, effectiveFootprint, type BuildingDefinition } from './game/data/buildings';
 import type { BuildingComp, BufferSlot, Direction } from './game/components/BuildingComp';
 import { loadItemRegistry } from './game/data/items';
 import { parseRecipeCsv, buildRecipeIndex, formatRecipeSummary } from './game/data/recipes';
@@ -456,8 +456,11 @@ async function main() {
       return false;
     }
     const { w, h } = def.footprint;
-    if (!occupancy.canPlace(gx, gy, w, h)) {
-      if (!quiet) console.warn(`placeAt: (${gx},${gy}) ${w}×${h} 无法放置（越界或占用冲突）`);
+    // 占用检查按**有效占地**（T2.17: 90°/270° 时非正方形占地宽高互换 3×1↔1×3）；
+    // SpriteComp 尺寸恒为 0° 朝向（未旋转）尺寸，视觉旋转由渲染侧完成
+    const eff = effectiveFootprint(def.footprint, dir);
+    if (!occupancy.canPlace(gx, gy, eff.w, eff.h)) {
+      if (!quiet) console.warn(`placeAt: (${gx},${gy}) ${eff.w}×${eff.h} 无法放置（越界或占用冲突）`);
       return false;
     }
     const handle = game.world.createEntity();
@@ -505,8 +508,14 @@ async function main() {
     }
     const h = handles[0];
     const pos = game.world.getComponent<Position>(h, 'Position')!;
-    const spr = game.world.getComponent<SpriteComp>(h, 'SpriteComp')!;
-    const screen = camera.worldToScreen(pos.x + spr.width / 2, pos.y + spr.height / 2);
+    // 中心按有效占地（T2.17: 90°/270° 旋转非正方形占地宽高互换），命中测试同源
+    const building = game.world.getComponent<BuildingComp>(h, 'BuildingComp')!;
+    const def = getBuildingDefinition(building.definitionId)!;
+    const eff = effectiveFootprint(def.footprint, building.direction);
+    const screen = camera.worldToScreen(
+      pos.x + (eff.w * CELL_SIZE) / 2,
+      pos.y + (eff.h * CELL_SIZE) / 2,
+    );
     const t0 = performance.now();
     selection.onPointerDown(screen.x, screen.y, 0, t0);
     selection.onPointerUp(t0 + 10); // 10ms < 300ms = 短按
@@ -1456,7 +1465,7 @@ async function main() {
     console.log(`[${ts()}] ════ T2.12 一键测试: 仓库取货口 → 传送带 → 仓库存货口 ════`);
     clearAllPlaced();
     if (!placeAt('depot_unloader', 5, 5)) return 'T2.12 测试失败: 取货口放置失败';
-    if (!placeAt('depot_loader', 5, 0)) return 'T2.12 测试失败: 存货口放置失败';
+    if (!placeAt('depot_loader', 5, 0, 180)) return 'T2.12 测试失败: 存货口放置失败'; // T2.19: 180°=接带面朝下，供给带 (6,1) 从下方指入
     if (spawnBelt([[6, 4], [6, 3], [6, 2], [6, 1]], 270) !== 4) return 'T2.12 测试失败: 传送带创建失败';
     const depotCount = (type: string): number =>
       machineSystem.recentEvents.filter((e) => e.type === type).length;
@@ -1527,20 +1536,26 @@ async function main() {
       machineSystem.recentEvents.filter((e) => e.type === 'output').map((e) => e.portIndex ?? -1);
 
     // ── 场景A: 输入轮询（连续供给·实战形态）──
-    // 真实玩法路径: 取货口(无限源)三个输出口各接一条 3 格供给带，喂精炼炉三个输入口
-    // ——传送带源源不断来料（每口 1件/2秒，链满后取货口暂停、链上腾位即续供）。
-    // 输入槽注 47 近满: 生产每 2 秒结算腾 1 位 → 轮询指针决定哪条带的门口件被吸入
-    // （先到排名序交替），其余门口件可见地排队等待。顶部存货口排走产物防 blocked。
+    // 真实玩法路径: 三台取货口（无限源，T2.18 起每台只有中间 1 个输出口）各接一条
+    // 供给带（左右带经 L 形转弯），喂精炼炉三个输入口——传送带源源不断来料
+    // （每口 1件/2秒）。输入槽注 47 近满: 生产每 2 秒结算腾 1 位 → 轮询指针决定
+    // 哪条带的门口件被吸入（先到排名序交替），其余门口件可见地排队等待。
+    // 顶部存货口排走产物防 blocked。
     clearAllPlaced();
     if (!placeAt('refining_unit', 5, 5)) return 'T2.10 测试失败: 精炼炉放置失败';
-    if (!placeAt('depot_unloader', 5, 11)) return 'T2.10 测试失败: 取货口放置失败';
-    if (!placeAt('depot_loader', 5, 2)) return 'T2.10 测试失败: 存货口放置失败';
-    for (const x of [5, 6, 7]) {
-      if (spawnBelt([[x, 10], [x, 9], [x, 8]], 270) !== 3) return 'T2.10 测试失败: 3 格供给带创建失败';
-    }
+    if (!placeAt('depot_unloader', 3, 11)) return 'T2.10 测试失败: 左取货口放置失败';
+    if (!placeAt('depot_unloader', 5, 12)) return 'T2.10 测试失败: 中取货口放置失败';
+    if (!placeAt('depot_unloader', 7, 13)) return 'T2.10 测试失败: 右取货口放置失败';
+    if (!placeAt('depot_loader', 5, 2, 180)) return 'T2.10 测试失败: 存货口放置失败'; // 180°=接带面朝下，排水带 (6,3) 指入
+    // 左带: 左取货口中口 (4,11) 上方起带 → 右转上行至左门 (5,8)
+    if (spawnBelt([[4, 10], [5, 10], [5, 9], [5, 8]], 270) !== 4) return 'T2.10 测试失败: 左供给带创建失败';
+    // 中带: 中取货口中口 (6,12) 上方直行至中门 (6,8)
+    if (spawnBelt([[6, 11], [6, 10], [6, 9], [6, 8]], 270) !== 4) return 'T2.10 测试失败: 中供给带创建失败';
+    // 右带: 右取货口中口 (8,13) 上行 → 左转至右门 (7,8)
+    if (spawnBelt([[8, 12], [8, 11], [8, 10], [7, 10], [7, 9], [7, 8]], 270) !== 6) return 'T2.10 测试失败: 右供给带创建失败';
     if (spawnBelt([[6, 4], [6, 3]], 270) !== 2) return 'T2.10 测试失败: 排水带创建失败';
     injectInput('originium_ore', 47); // 近满: 几次结算后即进入"每 2 秒腾 1 位"的轮询节奏
-    console.log(`[${ts()}] [步骤1] 场景A就绪: 取货口(5,11) 三口各接 3 格供给带喂精炼炉（源矿实战路径）+ 顶部存货口排产物。` +
+    console.log(`[${ts()}] [步骤1] 场景A就绪: 三台取货口各接一条供给带（左/右带 L 形转弯）喂精炼炉三口（源矿实战路径）+ 顶部存货口排产物。` +
       `观察: 三条带源源不断来料；输入槽近满后每 2 秒有一个口"吞"掉门口件——按先到排名序交替（portStatus() 的"输入先到排名"行），其余门口件排队等待`);
     // 稳态采样: 等过渡期结束（吸入事件 ≥10 次 且 三个门口格同时有件排队），
     // 再取**接下来**的 6 次吸入断言循环（轮转起点随过渡期指针位置浮动，不固定为左口）
@@ -1555,7 +1570,7 @@ async function main() {
     const steadyBase = inputPortsOf().length;
     const sixIn = await waitFor(() => inputPortsOf().length - steadyBase >= 6, 60000);
     const seqIn = inputPortsOf().slice(-6); // 尾采样: 免疫环形缓冲淘汰导致的下标漂移
-    // 2026-09-02 修订: 轮转序 = 先到排名序（单取货口同 Tick 三口齐射，排名序随首次
+    // 2026-09-02 修订: 轮转序 = 先到排名序（三台取货口各自供料，排名序随首次
     // 到货微差浮动）——断言只验"三口各两次、周期 3 循环"不变式（seqIn[i+3]==seqIn[i]），
     // 不再钉死端口下标算术序。
     const cycleOk = sixIn && seqIn.length === 6
@@ -1575,11 +1590,11 @@ async function main() {
     // 流动走进顶部存货口。三条带对称全空时同 Tick 多口齐出的"爆发"在这里不会
     // 发生——轮询次序因此肉眼可辨（用户 2026-08-25 反馈: 1 格断头带场景两端口
     // 同 Tick 齐出，看不出轮询；节流是每端口每 Tick 1 件，不是每设备 1 件）。
-    console.log(`[${ts()}] [步骤4] 切换场景B: 预注源矿连续生产（1件/2秒），三个输出口各接 3 格传送带汇入顶部存货口 → 观察产物轮流出现在左/中/右带首`);
+    console.log(`[${ts()}] [步骤4] 切换场景B: 预注源矿连续生产（1件/2秒），三个输出口各接 3 格传送带；顶部存货口只接中带（T2.18: 存货口仅中间口收料），左右带 3 格满后即暂满堵停 → 前 6 件出货观察产物轮流出现在左/中/右带首`);
     clearAllPlaced();
     if (!placeAt('refining_unit', 5, 5)) return 'T2.10 测试失败: 场景B 精炼炉放置失败';
     injectInput('originium_ore', 30); // 连续生产 ≈60 秒产物供给（1件/2秒）
-    if (!placeAt('depot_loader', 5, 1)) return 'T2.10 测试失败: 场景B 存货口放置失败';
+    if (!placeAt('depot_loader', 5, 1, 180)) return 'T2.10 测试失败: 场景B 存货口放置失败'; // 180°=接带面朝下，中带尾 (6,2) 指入
     for (const x of [5, 6, 7]) {
       if (spawnBelt([[x, 4], [x, 3], [x, 2]], 270) !== 3) return 'T2.10 测试失败: 场景B 3 格接收带创建失败';
     }
@@ -1601,18 +1616,19 @@ async function main() {
       console.log(`[${ts()}] T2.10 测试失败: 连续生产下出货应为三口循环（实际 ${JSON.stringify(rotSeq)}）:\n${portStatus()}`);
       return 'T2.10 测试失败: 输出轮询顺序异常';
     }
-    console.log(`[${ts()}] [步骤5b] ✅ 输出轮转验证通过。观察画面 8 秒: 晶体外壳轮流出现在三条带首、沿 3 格带上升、走进存货口消失...`);
+    console.log(`[${ts()}] [步骤5b] ✅ 输出轮转验证通过。观察画面 8 秒: 晶体外壳轮流出现在三条带首（左右带 3 格暂满后该口自动堵停轮空，中带持续汇入存货口）...`);
     await sleep(8000);
 
     // ── 场景C: 堵塞跳过 + 恢复追加队尾（可见版）──
     // 中带截短为 2 格断头带并预置满（永久堵塞）→ 产物只在左/右带交替出现；
     // 等左右带首都腾空后一次性注 3 件货 → 依次 左→右→（恢复探测）中，中口排在
     // 最后 = "恢复追加到当前轮询顺序末尾"的可见形态。
-    console.log(`[${ts()}] [步骤6] 切换场景C: 左/右 3 格带接存货口，中带截短为 2 格断头带并预置满（永久堵塞）→ 产物应只在左右带交替出现`);
+    console.log(`[${ts()}] [步骤6] 切换场景C: 左/右 3 格带暂存排货，中带截短为 2 格断头带并预置满（永久堵塞）→ 产物应只在左右带交替出现`);
     clearAllPlaced();
     if (!placeAt('refining_unit', 5, 5)) return 'T2.10 测试失败: 场景C 精炼炉放置失败';
     injectInput('originium_ore', 30);
-    if (!placeAt('depot_loader', 5, 1)) return 'T2.10 测试失败: 场景C 存货口放置失败';
+    // T2.18: 左右带不再接存货口（存货口仅中间口收料，且中带是断头带）——左右带
+    // 暂满即该口轮空，容量 3+3 足够覆盖 4 件出货采样与步骤8的腾位重注
     if (spawnBelt([[5, 4], [5, 3], [5, 2]], 270) !== 3) return 'T2.10 测试失败: 场景C 左带创建失败';
     if (spawnBelt([[6, 4], [6, 3]], 270) !== 2) return 'T2.10 测试失败: 场景C 中带创建失败';
     if (spawnBelt([[7, 4], [7, 3], [7, 2]], 270) !== 3) return 'T2.10 测试失败: 场景C 右带创建失败';
@@ -1777,8 +1793,8 @@ async function main() {
   console.log('  T2.8 手动: setPaused(true/false) 手动暂停/恢复（LOGO 换图标、计时冻结） → portStatus() 查端口连接黄/堵塞红（与画面高亮同源） → productionStatus() 对照 "(已暂停)" 标记');
   console.log('  T2.9 观察: 点击设备 → 屏幕左上显示"输入: x/50 输出: y/50"单行读数（临时件，T2.15 弹窗吸收）；点击仓库口不显示（非生产设备）');
   console.log('  T2.12 一键测试: __game.test("t212")  ← 复制这一条到控制台回车即可（取货口+4段带+存货口: 源矿持续上带→流动→进存货口消失+暂停/恢复演示）');
-  console.log('  T2.12 手动: 工具栏选"仓库取货口"放置（R 只在水平两档旋转） → E 进创建模式悬停其上方（Status 面板蓝） → 从输出口起带上行 → 末端接"仓库存货口"底边 → 物品流进去消失');
-  console.log('  T2.10 一键测试: __game.test("t210")  ← 复制这一条到控制台回车即可（3入: 取货口持续供料实战形态，三条 3 格带满载流动、按先到排名序交替吞门口件（portStatus 看排名）；3出: 连续生产轮转 1→2→3；中带堵塞跳过+恢复 左→右→中；约 2 分钟）');
+  console.log('  T2.12 手动: 工具栏选"仓库取货口"放置（R 四档旋转: 90°/270° 时竖放 1×3，T2.17） → E 进创建模式悬停其上方（Status 面板蓝） → 从输出口起带 → 末端接"仓库存货口"端口侧 → 物品流进去消失');
+  console.log('  T2.10 一键测试: __game.test("t210")  ← 复制这一条到控制台回车即可（3入: 三台取货口各接一条带持续供料实战形态（T2.18 单口/台），三条带满载流动、按先到排名序交替吞门口件（portStatus 看排名）；3出: 连续生产轮转 1→2→3；中带堵塞跳过+恢复 左→右→中；约 2 分钟）');
   console.log('  T2.10 手动: portStatus() 查看"输入轮询指针/输出轮询队列"（与 productionLog() 的 输入口N/输出口N 序号对照）；多口接带时满槽腾位看补货顺序、堵一条带看出货跳过与疏通恢复');
   console.log('  物流调试: 控制台实时打印 物品停止/恢复(位置+原因)/跨段/先到排名/吸入/走进设备/门口等待/满载冻结/生产事件——__game.logisticsLog() 覆盘、__game.logisticsDebug(false) 关闭（定位"三带进料"问题用，事后退役）');
   console.log('  T2.16 终点对接: E 模式拖带 → 悬停设备输入端口格（或紧邻供给格）→ 端口亮绿"将连接"、末段自动指向端口 → 左键落盘即接通（拖到设备上也能接，不再整条染红）；悬停输入口当起点会提示"输入端口不能作为起点"');

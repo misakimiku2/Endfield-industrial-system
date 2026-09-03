@@ -25,7 +25,7 @@ import type { BeltSegmentComp } from '../../components/BeltSegmentComp.ts';
 import type { BuildingComp, Direction } from '../../components/BuildingComp.ts';
 import type { BuildingDefinition } from '../../data/buildings.ts';
 import { directionVector } from '../belt/BeltPathGeometry.ts';
-import { rotatePort } from '../PortGeometry.ts';
+import { rotatePort, rotateDirection, portOutwardBase } from '../PortGeometry.ts';
 import { consumeFromSlot } from './BufferOps.ts';
 import type { PortCell } from './IntakeOps.ts';
 
@@ -44,7 +44,12 @@ export function outputPortCells(
   for (const port of def.ports) {
     if (port.type !== 'output') continue;
     const o = rotatePort(port, def.footprint, direction);
-    cells.push({ port, x: gx + o.dx, y: gy + o.dy });
+    cells.push({
+      port,
+      x: gx + o.dx,
+      y: gy + o.dy,
+      outward: rotateDirection(portOutwardBase(port, def.footprint), direction),
+    });
   }
   return cells;
 }

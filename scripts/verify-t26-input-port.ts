@@ -108,12 +108,14 @@ console.log('[findFeederBelt 连接判定]');
   at(6, 9, 270); // 朝上但隔了一格（指向 (6,8)）✗
   const idx = buildBeltCellIndex(w);
   assertEq(idx.size, 3, '2a. 格索引收录全部 3 段');
-  assert(findFeederBelt(w, idx, { x: 6, y: 7 }) !== null,
-    '2b. (6,8)朝上 → 是端口格 (6,7) 的供给带');
-  assert(findFeederBelt(w, idx, { x: 7, y: 7 }) === null,
-    '2c. (7,8)朝右 → 不是端口格 (7,7) 的供给带（方向背离设备）');
-  assert(findFeederBelt(w, idx, { x: 3, y: 3 }) === null,
-    '2d. 无任何段指向的格 → null（(6,9)朝上指向 (6,8)，若 (6,8) 是端口则它是对应供给带）');
+  // 2026-09-02 起 findFeederBelt 只认端口朝向侧供给格（PortCell 含 outward）:
+  // 端口 (6,7)/(7,7) 取 outward=90（朝下，供给格在正下方），供给带须逆朝向指入
+  assert(findFeederBelt(w, idx, { x: 6, y: 7, outward: 90 }) !== null,
+    '2b. (6,8)朝上 → 是端口格 (6,7)（outward 朝下）的供给带');
+  assert(findFeederBelt(w, idx, { x: 7, y: 7, outward: 90 }) === null,
+    '2c. (7,8)朝右 → 不是端口格 (7,7) 的供给带（方向不逆朝向指入）');
+  assert(findFeederBelt(w, idx, { x: 3, y: 3, outward: 90 }) === null,
+    '2d. 供给格无段 → null');
 }
 
 console.log('[tryAbsorbHeadItem 预约判定 + releaseArrivedItems 放行]');

@@ -1,23 +1,18 @@
-// 放置朝向策略 — 纯函数（T2.12 引入）
-// 依据: A3 §6"旋转后占地不变"、implementation-phase-2.md T2.12 朝向约束
+// 放置朝向策略 — 纯函数（T2.12 引入，T2.17 修订）
+// 依据: A6 §4.0 viewRotation 参考系、implementation-phase-2.md T2.17 朝向修订
 //
-// 非正方形占地（如 3×1 仓库口）旋转 90° 后，rotatePort 会把端口旋出占地、
-// Sprite 视觉与 OccupancyMap 占地错位——A3 §6 约定占地不随朝向交换宽高，
-// 故非正方形设备只允许 0°/180° 两档（R 键步进 180°）；正方形设备四档循环。
+// T2.17 起所有设备 R 键一律 90° 四档循环: 90°/270° 旋转时非正方形占地宽高互换
+// （3×1 仓库口 ↔ 1×3，见 buildings.ts effectiveFootprint），端口旋转数学对任意
+// 占地自洽，不再需要"非正方形只允许 0°/180° 两档"的特例。
 // PlacementSystem.onKeyDown('KeyR') 调用本函数决定下一个 screenAngle。
 
 /** 放置预览的屏幕呈现角（0/90/180/270）。 */
 export type ScreenAngle = 0 | 90 | 180 | 270;
 
 /**
- * 按一次 R 后的下一个屏幕呈现角。
+ * 按一次 R 后的下一个屏幕呈现角（屏幕顺时针 +90°，四档循环）。
  * @param current 当前屏幕呈现角
- * @param footprint 占地（正方形 → 90° 步进四档；非正方形 → 180° 步进两档）
  */
-export function nextScreenAngle(
-  current: ScreenAngle,
-  footprint: { w: number; h: number },
-): ScreenAngle {
-  const step = footprint.w === footprint.h ? 90 : 180;
-  return ((current + step) % 360) as ScreenAngle;
+export function nextScreenAngle(current: ScreenAngle): ScreenAngle {
+  return ((current + 90) % 360) as ScreenAngle;
 }

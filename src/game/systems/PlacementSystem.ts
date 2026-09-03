@@ -38,7 +38,7 @@ import type { SceneLayers } from '../render/SceneRenderer';
 import type { TextureLookup } from './RenderSystem';
 import type { AtlasGroup } from '../render/AssetsLoader';
 import type { BuildingDefinition } from '../data/buildings';
-import { createOutputPollQueue } from '../data/buildings';
+import { createOutputPollQueue, effectiveFootprint } from '../data/buildings';
 import type { Direction } from '../components/BuildingComp';
 import type { OccupancyMap } from '../world/OccupancyMap';
 import { CELL_SIZE } from '../render/constants';
@@ -212,11 +212,11 @@ export class PlacementSystem {
   onKeyDown(code: string): void {
     if (this.mode !== 'placing') return; // R 监听只在放置模式激活（用户强调）
     if (code === 'KeyR') {
-      // R: 屏幕顺时针旋转。绝不直接碰 direction（防错根本）。步进由 RotationPolicy
-      // 决定: 正方形占地 90° 四档循环；非正方形（3×1 仓库口等）180° 两档——
-      // 90° 会把端口旋出占地（A3 §6 旋转不换占地，rotatePort 数学仅对正方形自洽）。
+      // R: 屏幕顺时针旋转 90°。绝不直接碰 direction（防错根本）。
+      // T2.17 起四档全开放: 90°/270° 旋转时非正方形占地宽高互换（effectiveFootprint），
+      // 端口旋转、占用、渲染中心全部按有效占地计算，预览与落盘所见即所存。
       if (this.currentDef) {
-        this.screenAngle = nextScreenAngle(this.screenAngle, this.currentDef.footprint);
+        this.screenAngle = nextScreenAngle(this.screenAngle);
       }
       this.refreshPreview();
     } else if (code === 'Escape') {
@@ -289,7 +289,7 @@ export class PlacementSystem {
     this.ensurePreview(nineslice);
     const preview = this.preview!;
 
-    const wp = def.footprint.w * CELL_SIZE; // footprint 世界像素宽
+    const wp = def.footprint.w * CELL_SIZE; // sprite 内容世界像素宽（0° 朝向，未旋转）
     const hp = def.footprint.h * CELL_SIZE;
 
     // 换内容（def 或 textureKey 变化时）
@@ -329,15 +329,22 @@ export class PlacementSystem {
       this.previewLogo.visible = false;
     }
 
-    // 屏幕坐标 → 世界坐标 → 以鼠标为中心算 footprint 左上角（T1.7 修订：鼠标=设备中心）
-    const world = this.camera.screenToWorld(this.mouseScreenX, this.mouseScreenY);
-    const { w, h } = def.footprint;
-    const place = placementFromMouse(world.x, world.y, w, h);
-    // 根节点 position = 设备中心（whole 的 Sprite anchor 0.5 / nineslice 子树以原点为中心）
-    preview.position.set(place.topLeftWorld.x + wp / 2, place.topLeftWorld.y + hp / 2);
-
-    // 旋转: 世界角度 = screenAngle − viewRotation（A6 §4.0），与落盘 direction 同公式
+    // 旋转: 世界角度 = screenAngle − viewRotation（A6 §4.0），与落盘 direction 同公式。
+    // 先算角度 → 有效占地（T2.17: 90°/270° 时宽高互换），预览锚点/占用检查与落盘共用。
     const worldAngle = this.worldAngleFromScreen();
+    const { w: effW, h: effH } = effectiveFootprint(def.footprint, worldAngle);
+
+    // 屏幕坐标 → 世界坐标 → 以鼠标为中心算有效占地左上角（T1.7 修订：鼠标=设备中心）
+    const world = this.camera.screenToWorld(this.mouseScreenX, this.mouseScreenY);
+    const place = placementFromMouse(world.x, world.y, effW, effH);
+    // 根节点 position = 有效占地中心（whole 的 Sprite anchor 0.5 / nineslice 子树以原点
+    // 为中心）。sprite 内容恒按 0° 尺寸 wp×hp 绘制、由 rotation 整体旋转——90°/270° 时
+    // 视觉恰好覆盖互换后的 effW×effH 占地，中心重合即对齐（T2.17）。
+    preview.position.set(
+      place.topLeftWorld.x + (effW * CELL_SIZE) / 2,
+      place.topLeftWorld.y + (effH * CELL_SIZE) / 2,
+    );
+
     preview.rotation = ROTATION_SIGN * (worldAngle * Math.PI) / 180;
     // 同步 filter mask 旋转，使端口箭头跟随预览一起转（whole 路径）
     this.previewFilter?.setRotation(preview.rotation);
@@ -348,7 +355,7 @@ export class PlacementSystem {
     }
 
     // 有效性反馈: whole → filter 切主体纯色；nineslice → 逐 Sprite tint
-    this.previewValid = this.occupancy.canPlace(place.topLeftGrid.x, place.topLeftGrid.y, w, h);
+    this.previewValid = this.occupancy.canPlace(place.topLeftGrid.x, place.topLeftGrid.y, effW, effH);
     if (nineslice) {
       tintContainer(preview, this.previewValid ? PREVIEW_TINT_VALID : PREVIEW_TINT_INVALID);
     } else {
@@ -398,18 +405,18 @@ export class PlacementSystem {
     if (!this.currentDef) return;
     const def = this.currentDef;
     const world = this.camera.screenToWorld(this.mouseScreenX, this.mouseScreenY);
-    const { w, h } = def.footprint;
-    // 鼠标=设备中心 → footprint 左上角（与预览同算法，保证所见即所放）
-    const place = placementFromMouse(world.x, world.y, w, h);
+    // 先算朝向 → 有效占地（T2.17: 90°/270° 宽高互换），与预览同算法保证所见即所放
+    const direction = this.worldAngleFromScreen();
+    const { w: effW, h: effH } = effectiveFootprint(def.footprint, direction);
+    const place = placementFromMouse(world.x, world.y, effW, effH);
     const grid = place.topLeftGrid;
     const snap = place.topLeftWorld;
 
-    if (!this.occupancy.canPlace(grid.x, grid.y, w, h)) {
+    if (!this.occupancy.canPlace(grid.x, grid.y, effW, effH)) {
       // 无法放置：预览已是橙红（refreshPreview 设的 tint），此处不额外动作
       return;
     }
 
-    const direction = this.worldAngleFromScreen();
     const handle = this.world.createEntity();
     this.world.addComponent(handle, 'Position', { x: snap.x, y: snap.y });
     this.world.addComponent(handle, 'BuildingComp', {
@@ -429,8 +436,10 @@ export class PlacementSystem {
       group: 'devices' as AtlasGroup,
       textureKey: def.texture,
       logoTextureKey: def.logoTextureKey,
-      width: w * CELL_SIZE,
-      height: h * CELL_SIZE,
+      // sprite 内容尺寸恒为 0° 朝向（未旋转）尺寸；90°/270° 的视觉旋转由
+      // RenderSystem 按 direction 旋转、以有效占地中心为锚完成（T2.17）
+      width: def.footprint.w * CELL_SIZE,
+      height: def.footprint.h * CELL_SIZE,
       layer: 2,
     });
     this.occupancy.occupyFootprint(grid.x, grid.y, def, direction);

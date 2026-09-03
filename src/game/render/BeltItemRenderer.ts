@@ -60,15 +60,19 @@ export class BeltItemRenderer {
   /** itemId → Texture 缓存，避免每帧每物品重复 Assets 查找。 */
   private texCache = new Map<string, Texture>();
   /**
-   * 物品 → 帧间**内插**状态（2026-09-02 两轮修订: 先修外推过冲回弹，再修每帧覆盖
-   * 导致的 20Hz 跳变）。prevTick = 上一 Tick 的逻辑 progress（渲染在 prevTick →
-   * 本 Tick progress 之间内插，永不超过逻辑位置——零倒退零过冲）；lastSeen 用于
-   * 检测"本 Tick 是否已推进"——**只在 progress 变化的第一帧**推进 prevTick，同 Tick
-   * 的后续帧保持 prevTick 不动（否则 prev==current 物品静止在 Tick 位置，60FPS 下
-   * 呈 20Hz 步进微抖）。WeakMap: 物品移除/跨段重建（新对象）自动回收；新物品以
+   * 物品 → 帧间**内插**状态（2026-09-02 三轮修订: ①修外推过冲回弹 ②修每帧覆盖导致
+   * 的 20Hz 跳变 ③修静止物品高频抖动——prevTick 改在 **Tick 边界**（alpha 回卷）推进，
+   * 而非"progress 变化"时推进: 旧版物品停住（断头/门口/排队钳制）后 progress 恒定，
+   * prevTick 永远停在停止前一 Tick 的位置，renderProgress 随 alpha 0→1 周期性扫动，
+   * 表现为停止物品 20Hz 前后微抖（用户实测"整条线高频抖动"）。边界推进后停止物品
+   * prevTick==progress，插值区间塌缩为 0，恒静止）。prevTick = 上一 Tick 的逻辑
+   * progress（渲染在 prevTick → 本 Tick progress 之间内插，永不超过逻辑位置——
+   * 零倒退零过冲）。WeakMap: 物品移除/跨段重建（新对象）自动回收；新物品以
    * progress−delta 起步（跨段前格 1.0 == 新格 0，世界坐标连续）。
    */
   private renderState = new WeakMap<BeltItem, { prevTick: number; lastSeen: number }>();
+  /** 上一帧的 alpha。alpha 每 Simulation Tick 回卷变小（accumulator −= SIM_STEP）→ 回卷 = 新 Tick 第一帧。 */
+  private lastAlpha = -1;
 
   constructor(world: World, _layer: Container, belowLayer: Container, getTexture: TextureLookup) {
     this.world = world;
@@ -84,9 +88,17 @@ export class BeltItemRenderer {
    *   物品被钳制（门口 0.5 / walking 1.5）的前一窗口会画过头（~0.02 格），钳制
    *   Tick（delta=0）瞬间回弹——用户实测"进输入端时先后退一下再前进"。内插渲染
    *   永不超过逻辑位置: 零倒退、零过冲，代价仅一 Tick(50ms) 视觉延迟（1.6px 级，
-   *   不可感知）。停止物品 prev==progress 恒静止；恢复流动从停点平滑起步。
+   *   不可感知）。prevTick 在 **Tick 边界（alpha 回卷）** 推进——静止物品插值区间
+   *   塌缩为 0 恒静止（旧版按"progress 变化"推进，停住后 prevTick 滞后一格增量，
+   *   静止物品 20Hz 前后微抖）；恢复流动从停点平滑起步。
    */
   update(alpha: number): void {
+    // Tick 边界检测: alpha = accumulator/SIM_STEP，每 Simulation Tick 回卷变小。
+    // 边界帧把 prevTick 推进到上一 Tick 位置——**无论 progress 是否变化**（静止物品
+    // 也要塌缩插值区间，否则 20Hz 扫动微抖，见 renderState 字段注释）。
+    const tickBoundary = alpha < this.lastAlpha;
+    this.lastAlpha = alpha;
+
     const visible = this.world.query('BeltSegmentComp');
     const seen = new Set<EntityHandle>(visible);
 
@@ -140,11 +152,11 @@ export class BeltItemRenderer {
         if (st === undefined) {
           st = { prevTick: item.progress - (item.delta || 0), lastSeen: item.progress };
           this.renderState.set(item, st);
-        } else if (st.lastSeen !== item.progress) {
-          st.prevTick = st.lastSeen; // Tick 推进的第一帧: 记住上一 Tick 位置
+        } else if (tickBoundary) {
+          st.prevTick = st.lastSeen; // 新 Tick: 上一 Tick 位置成为插值起点（静止物品同樣推进→区间塌缩）
           st.lastSeen = item.progress;
         }
-        const renderProgress = st.prevTick + alpha * (item.progress - st.prevTick);
+        const renderProgress = st.prevTick + alpha * (st.lastSeen - st.prevTick);
         const { x, y, rotation } = this.itemTransform(seg, renderProgress, pos);
         sprite.position.set(x, y);
         sprite.rotation = rotation; // 物品像 pointer 一样旋转（直段朝流向/转角沿切线）

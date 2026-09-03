@@ -7,8 +7,8 @@
 // 断言:
 //   A 定义与端口几何:
 //     1. depot_unloader/depot_loader 定义存在，3×1 占地，logistics 分类，无缓冲槽位
-//     2. 取货口 3 输出口在（唯一一行）顶边语义格；180° 镜像
-//     3. 存货口 3 输入口同格（h=1 顶/底同排，靠 findFeederBelt 四方向扫描成立）
+//     2. 取货口唯一输出口=中间格（T2.18）；180° 原地镜像
+//     3. 存货口唯一输入口=中间格（T2.18；T2.19 接带面朝上，与取货口一致）
 //   B DepotOps 纯逻辑:
 //     4. DEPOT_SOURCE_ITEM = originium_ore（简化版固定源矿）
 //     5. emitSourceToBelt: 相位窗口外 null / 段占用 null / 空段注入 beltPhase 相位
@@ -22,8 +22,8 @@
 //    12. 存货口无限汇: 逐件注入全部消失，bufferInput 恒为 []（无槽位）
 //    13. 全链路: 取货口 → 4 段带 → 存货口，输出/接收事件持续产生
 //    14. 非生产设备: state 恒 idle、currentRecipeId 恒 null
-//   D 朝向策略（3×1 非正方形）:
-//    15. 非正方形 R 只在 0/180 两档循环；正方形 90° 步进四档循环
+//   D 朝向策略（T2.17 四向旋转）:
+//    15. R 一律 90° 四档循环；90°/270° 端口旋入互换后的 1×3 占地、outward 随朝向旋转
 import { readFileSync } from 'node:fs';
 import { World } from '../src/game/ECS.ts';
 import type { EntityHandle } from '../src/game/ECS.ts';
@@ -95,14 +95,15 @@ if (UNLOADER && LOADER) {
   assertEq(LOADER.logoTextureKey, 'depot_loader_logo', '1j. 存货口单层 LOGO key');
 
   console.log('[端口几何]');
-  assertEq(outputPortCells(5, 5, UNLOADER, 0).map((c) => [c.x, c.y]), [[5, 5], [6, 5], [7, 5]],
-    '2a. 取货口 0°: 3 输出口 (5,5)(6,5)(7,5)');
-  assertEq(outputPortCells(5, 5, UNLOADER, 180).map((c) => [c.x, c.y]), [[7, 5], [6, 5], [5, 5]],
-    '2b. 取货口 180°: 输出口镜像（定义序反序，物理同一排）');
+  // T2.18: 只有中间格是端口（dx=1），两侧格不能起带/对接
+  assertEq(outputPortCells(5, 5, UNLOADER, 0).map((c) => [c.x, c.y]), [[6, 5]],
+    '2a. 取货口 0°: 唯一输出口=中间格 (6,5)');
+  assertEq(outputPortCells(5, 5, UNLOADER, 180).map((c) => [c.x, c.y]), [[6, 5]],
+    '2b. 取货口 180°: 中间格原地镜像（h=1 行内不变）');
   assertEq(outputPortCells(5, 5, UNLOADER, 0).length
-    + inputPortCells(5, 5, UNLOADER, 0).length, 3, '2c. 取货口无输入口');
-  assertEq(inputPortCells(5, 5, LOADER, 0).map((c) => [c.x, c.y]), [[5, 5], [6, 5], [7, 5]],
-    '2d. 存货口 0°: 3 输入口 (5,5)(6,5)(7,5)（h=1 顶/底同排，供给带从下方指入）');
+    + inputPortCells(5, 5, UNLOADER, 0).length, 1, '2c. 取货口恰 1 个端口（输出）');
+  assertEq(inputPortCells(5, 5, LOADER, 0).map((c) => [c.x, c.y]), [[6, 5]],
+    '2d. 存货口 0°: 唯一输入口=中间格 (6,5)（T2.19: 接带面朝上，供给带在上方指入）');
   assertEq(outputPortCells(5, 5, LOADER, 0).length, 0, '2e. 存货口无输出口');
 }
 
@@ -211,7 +212,7 @@ console.log('[存货口吸入集成]');
 {
   BeltSystem.beltPhase = 0;
   const { world, place, belt, tick, machineSys } = freshWorld();
-  const l = place('depot_loader', 5, 10); // (5,10)-(7,10)，中输入口 (6,10)，供给带 (6,11) 朝上
+  const l = place('depot_loader', 5, 10, 180); // (5,10)-(7,10)，中输入口 (6,10)，180°=接带面朝下，供给带 (6,11) 朝上指入
   const feeder = belt(6, 11, 270);
   // 注入一件 → 预约(0.5) → 放行(1.5) → 从段上消失
   feeder.items.push({ itemId: 'origocrust', progress: 0, delta: 0 });
@@ -240,7 +241,7 @@ console.log('[全链路: 取货口 → 4 段带 → 存货口]');
   BeltSystem.beltPhase = 0;
   const { place, belt, tick, machineSys } = freshWorld();
   place('depot_unloader', 5, 5);       // 中输出口 (6,5)
-  place('depot_loader', 5, 0);         // (5,0)-(7,0)，中输入口 (6,0)，供给带 (6,1)
+  place('depot_loader', 5, 0, 180);    // (5,0)-(7,0)，中输入口 (6,0)，180°=接带面朝下，供给带 (6,1)
   const chain = [belt(6, 4, 270), belt(6, 3, 270), belt(6, 2, 270), belt(6, 1, 270)];
   tick(600); // 30 秒
   const outN = depotEventCount(machineSys, 'depot-output');
@@ -255,13 +256,24 @@ console.log('[全链路: 取货口 → 4 段带 → 存货口]');
   assert(onBelt <= 4, `13d. 带上流动滞留 ≤ 4 件（实际 ${onBelt}，其余已进入存货口消失）`);
 }
 
-// ═══════════════════ D. 朝向策略（非正方形 0/180 两档）═══════════════════
+// ═══════════════════ D. 朝向策略（T2.17: 四档旋转 + 占地宽高互换）═══════════════════
 console.log('[朝向策略]');
-assertEq(nextScreenAngle(0, { w: 3, h: 1 }), 180, '15a. 3×1 按 R: 0° → 180°（非正方形两档循环）');
-assertEq(nextScreenAngle(180, { w: 3, h: 1 }), 0, '15b. 3×1 再按 R: 180° → 0°');
-assertEq(nextScreenAngle(0, { w: 3, h: 3 }), 90, '15c. 3×3 按 R: 0° → 90°（正方形四档循环）');
-assertEq(nextScreenAngle(270, { w: 3, h: 3 }), 0, '15d. 3×3: 270° → 0°');
-assertEq(nextScreenAngle(90, { w: 5, h: 3 }), 270, '15e. 5×3（非正方形）: 90° → 270°（+180° 步进自洽映射；实际从 0 起步只会落在 0/180 档）');
+assertEq(nextScreenAngle(0), 90, '15a. 按 R: 0° → 90°（T2.17 四档全开放）');
+assertEq(nextScreenAngle(90), 180, '15b. 按 R: 90° → 180°');
+assertEq(nextScreenAngle(180), 270, '15c. 按 R: 180° → 270°');
+assertEq(nextScreenAngle(270), 0, '15d. 按 R: 270° → 0°（循环）');
+const u90 = outputPortCells(5, 5, UNLOADER, 90);
+assertEq(u90.map((c) => [c.x, c.y]), [[5, 6]],
+  '15e. 取货口 90°: 唯一输出口=竖放 1×3 占地的中间格 (5,6)');
+assert(u90.every((c) => c.outward === 0), '15f. 取货口 90°: 功能面朝右——带从右侧接出');
+const u270 = outputPortCells(5, 5, UNLOADER, 270);
+assertEq(u270.map((c) => [c.x, c.y]), [[5, 6]],
+  '15g. 取货口 270°: 唯一输出口=中间格 (5,6)');
+assert(u270.every((c) => c.outward === 180), '15h. 取货口 270°: 功能面朝左——带从左侧接出');
+const l90 = inputPortCells(5, 5, LOADER, 90);
+assertEq(l90.map((c) => [c.x, c.y]), [[5, 6]],
+  '15i. 存货口 90°: 唯一输入口=中间格 (5,6)');
+assert(l90.every((c) => c.outward === 0), '15j. 存货口 90°: 功能面朝右——供给带从右侧指入（T2.19 输入口与输出口同向）');
 
 // ── 汇总 ──
 console.log(`\n${passed} 通过, ${failed} 失败`);

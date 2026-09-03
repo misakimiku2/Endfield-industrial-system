@@ -135,6 +135,39 @@ export function drawStraightBelt(g: Graphics, cellSize: number, colors?: BeltCol
 }
 
 /**
+ * 在 g 中绘制一个**半格长度**的传送带直段残段（格子中心为原点，默认方向朝下）。
+ * 覆盖本地 y ∈ [-cellSize/2, 0]（进入侧半格，默认）或 [0, +cellSize/2]（出口侧半格，
+ * exitHalf=true）——本地 +y = 流向，beltTextureRotation 把本地 +y 旋转到 direction 方向。
+ * 用途（2026-09-02）:
+ *   · 输入对接: 供给段在端口格内的**进入侧**半格——物品 progress 1.0→1.5 走进设备
+ *     期间有带身可骑，传送带视觉"连进端口"（钻入设备观感）。
+ *   · 输出接出: 接收段在端口格内的**出口侧**半格——物品 progress=0 从端口格中心
+ *     冒出，带身从设备下方接出（钻出设备观感，同日补全）。
+ * 渲染层挂在设备之下（zIndex 低于设备）。
+ * @param g 目标 Graphics（应已 clear()）。
+ * @param cellSize 一个格子的世界像素边长。
+ * @param colors 染色；缺省 shell=#CECCCC、belt=#FFEF00。预览态传预览色。
+ * @param exitHalf true 画出口侧半格（输出端），false 画进入侧半格（输入端，默认）。
+ */
+export function drawStraightBeltStub(
+  g: Graphics,
+  cellSize: number,
+  colors?: BeltColors,
+  exitHalf = false,
+): void {
+  const s = cellSize / BELT_SVG_SIZE;
+  const shell = colors?.shellColor ?? BELT_COLOR_SHELL;
+  const belt = colors?.beltColor ?? BELT_COLOR_BELT;
+  const half = cellSize / 2;
+  const y0 = exitHalf ? 0 : -half;
+  // 灰壳 + 黄带，宽度与整段一致，长度取指定侧半格
+  g.beginPath();
+  g.rect((-STRAIGHT_SHELL_W / 2) * s, y0, STRAIGHT_SHELL_W * s, half).fill({ color: shell });
+  g.beginPath();
+  g.rect((-STRAIGHT_BELT_W / 2) * s, y0, STRAIGHT_BELT_W * s, half).fill({ color: belt });
+}
+
+/**
  * 在 g 中绘制一个传送带转角（格子中心为原点，默认"下→右"转角——外凸在右下）。
  * 调用方负责 rotation/mirror 定位到目标方向（beltCornerTransform）。
  *

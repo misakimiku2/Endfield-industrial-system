@@ -35,7 +35,7 @@ import { BeltHoverRenderer } from '../render/BeltHoverRenderer';
 import { PortHighlightRenderer, PORT_CREATE_TINT, PORT_CREATE_HOVER_TINT } from '../render/PortHighlightRenderer';
 import { buildNineSliceBase, buildNineSlicePorts, getBakedNineSliceTexture } from '../render/NineSliceAssembler';
 import { emptyPortMask, portMaskFromDef } from '../render/PortMask';
-import { getBuildingDefinition, type BuildingDefinition } from '../data/buildings';
+import { getBuildingDefinition, effectiveFootprint, type BuildingDefinition } from '../data/buildings';
 import { outputPortCells } from './machine/OutputOps';
 import { inputPortCells } from './machine/IntakeOps';
 import { CELL_SIZE } from '../render/constants';
@@ -184,8 +184,9 @@ export class RenderSystem {
     isBeltCreationActive?: () => boolean,
     getHoveredPortCell?: () => { x: number; y: number } | null,
     getHoveredAnyPortCell?: () => { x: number; y: number } | null,
-    getBeltDockInfo?: () => { targets: { x: number; y: number }[]; confirmed: { x: number; y: number }[] } | null,
+    getBeltDockInfo?: () => { confirmed: { x: number; y: number }[] } | null,
     getBeltStartHintCell?: () => { x: number; y: number } | null,
+    getBeltHiddenTailCell?: () => { x: number; y: number } | null,
   ) {
     this.world = world;
     this.layers = layers;
@@ -196,7 +197,8 @@ export class RenderSystem {
     // 前两个同时转发给 PortHighlightRenderer（普通设备端口染色）。
     this.isBeltCreationActive = isBeltCreationActive;
     this.getHoveredAnyPortCell = getHoveredAnyPortCell;
-    this.pointerRenderer = new BeltPointerRenderer(world, layers.layer3Item, getTexture);
+    // 延长预览隐藏的原尾格：转发给带身/pointer 渲染器（该格由创建系统预览接管）
+    this.pointerRenderer = new BeltPointerRenderer(world, layers.layer3Item, getTexture, getBeltHiddenTailCell);
     // T2.8 层级修订（从下到上: 带身→物品→设备→端口高亮→箭头）:
     // belowItems 挂 layer2Building 且 zIndex=0.5（带身 0 之上、设备 1 之下）→
     // 所有传送带物品在带身上传输，进入设备 footprint 即被设备纹理遮挡（"钻到设备下方"）。
@@ -204,7 +206,7 @@ export class RenderSystem {
     belowItems.zIndex = 0.5;
     layers.layer2Building.addChild(belowItems);
     this.beltItemRenderer = new BeltItemRenderer(world, layers.layer3Item, belowItems, getTexture);
-    this.beltVectorRenderer = new BeltVectorRenderer(world, layers.layer2Building, isBeltCreationActive);
+    this.beltVectorRenderer = new BeltVectorRenderer(world, layers.layer2Building, isBeltCreationActive, getBeltHiddenTailCell);
     this.beltHoverRenderer = new BeltHoverRenderer(world, camera, layers.layer2Building);
     // T2.16: 后两个回调（终点对接/起点反例）一并转发给 PortHighlightRenderer
     this.portHighlightRenderer = new PortHighlightRenderer(
@@ -285,8 +287,13 @@ export class RenderSystem {
       }
 
       const sprite = entry.sprite;
-      // 位置同步: 左上角 → 中心（anchor 0.5）
-      sprite.position.set(pos.x + spr.width / 2, pos.y + spr.height / 2);
+      // 位置同步: 左上角 → 中心（anchor 0.5）。设备按**有效占地**取中心（T2.17:
+      // 90°/270° 时非正方形占地宽高互换，sprite 内容绕该中心整体旋转后恰覆盖占地）；
+      // 非设备实体（传送带段/测试 Sprite）恒方形，直接用 SpriteComp 尺寸。
+      const eff = building && def ? effectiveFootprint(def.footprint, building.direction) : null;
+      const halfW = eff ? (eff.w * CELL_SIZE) / 2 : spr.width / 2;
+      const halfH = eff ? (eff.h * CELL_SIZE) / 2 : spr.height / 2;
+      sprite.position.set(pos.x + halfW, pos.y + halfH);
 
       // 朝向同步:
       // - 带 BuildingComp 的实体按 direction 旋转（A3 §3.3 世界朝向）。
@@ -333,8 +340,13 @@ export class RenderSystem {
         this.applyDepotStatus(entry, building, def, pos, spr);
       }
 
-      // 视口剔除: 实体世界 AABB 与可见范围无交集 → 隐藏
-      sprite.visible = this.intersectsView(pos, spr, view);
+      // 视口剔除: 实体世界 AABB（有效占地）与可见范围无交集 → 隐藏
+      sprite.visible = this.intersectsView(
+        pos,
+        eff ? eff.w * CELL_SIZE : spr.width,
+        eff ? eff.h * CELL_SIZE : spr.height,
+        view,
+      );
     }
 
     // 传送带带身矢量渲染（T2.0 方案A）：在 Sprite 同步之后，刷新带身 Graphics 位置/朝向/选中变色。
@@ -388,6 +400,12 @@ export class RenderSystem {
     const tex = this.getTexture(spr.group, spr.textureKey) ?? Texture.EMPTY;
     const sprite = new Sprite(tex);
     sprite.anchor.set(0.5);
+    // whole 整图设备（仓库口等）与 nineslice 设备同层级: zIndex=1，位于传送带带身(0)
+    // 与物品(0.5)之上——否则默认 0 与带身同级，后创建的内容（端口内半格残段、
+    // 走进设备的物品）会按插入序画到设备上方（2026-09-02 实测修复）。
+    if (this.world.getComponent<BuildingComp>(handle, 'BuildingComp')) {
+      sprite.zIndex = 1;
+    }
     // sprite 屏幕变换对齐到整数像素：非整数 zoom 下消除亚像素接缝（整数 zoom 无副作用）。
     sprite.roundPixels = BELT_ROUND_PIXELS;
     // 用 scale 而非 width/height，因为后续 update 会根据朝向/镜像调整 scale.y；
@@ -657,16 +675,17 @@ export class RenderSystem {
     return this.camera.getViewport();
   }
 
-  /** 实体世界 AABB 是否与可见范围相交。 */
+  /** 实体世界 AABB（Position 左上角 + 有效占地宽高的世界像素）是否与可见范围相交。 */
   private intersectsView(
     pos: Position,
-    spr: SpriteComp,
+    worldW: number,
+    worldH: number,
     view: { minX: number; maxX: number; minY: number; maxY: number },
   ): boolean {
     return !(
-      pos.x + spr.width < view.minX ||
+      pos.x + worldW < view.minX ||
       pos.x > view.maxX ||
-      pos.y + spr.height < view.minY ||
+      pos.y + worldH < view.minY ||
       pos.y > view.maxY
     );
   }

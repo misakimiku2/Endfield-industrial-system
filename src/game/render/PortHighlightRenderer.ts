@@ -24,7 +24,7 @@ import type { World, EntityHandle } from '../ECS';
 import type { Position } from '../components/Position';
 import type { SpriteComp } from '../components/SpriteComp';
 import type { BuildingComp } from '../components/BuildingComp';
-import { getBuildingDefinition, type BuildingDefinition } from '../data/buildings';
+import { getBuildingDefinition, effectiveFootprint, type BuildingDefinition } from '../data/buildings';
 import { buildBeltCellIndex } from '../systems/machine/IntakeOps';
 import {
   inputPortStatuses,
@@ -47,10 +47,8 @@ const ARROW_TINT_BLOCKED = 0xffffff;
 export const PORT_CREATE_TINT = 0x80bee9;
 /** 传送带创建模式下输出端口悬停色（更淡的蓝）。 */
 export const PORT_CREATE_HOVER_TINT = 0xa8d4f5;
-/** T2.16 创建模式输入端口候选色（紫——预览末格"够得着"的输入口，与输出口蓝区分）。 */
-const PORT_DOCK_CANDIDATE_TINT = 0xc79bf2;
 /** T2.16 "将连接"确认色（绿——末段方向指向该输入口，落盘即对接成立；
- *  落盘后常态即回到 T2.8 连接黄 #FFEF00）。 */
+ *  落盘后常态即回到 T2.8 连接黄 #FFEF00）。候选紫已按用户要求移除（2026-09-02）。 */
 const PORT_DOCK_CONFIRMED_TINT = 0x37d067;
 /** T2.16 起点反例警示色（红——hover 输入口"不能作为起点"，与预览不可放置红一致）。 */
 const PORT_START_INVALID_TINT = 0xe45050;
@@ -87,8 +85,8 @@ export class PortHighlightRenderer {
   private isCreateMode: () => boolean;
   /** 查询当前悬停的输出端口格（创建模式下用于悬停淡蓝高亮）。 */
   private getHoveredPortCell: () => { x: number; y: number } | null;
-  /** T2.16: 预览末段的输入端口对接信息（候选紫/确认绿；无预览/无效预览为 null）。 */
-  private getDockInfo?: () => { targets: { x: number; y: number }[]; confirmed: { x: number; y: number }[] } | null;
+  /** T2.16: 预览末段的输入端口对接信息（确认绿；无预览/无效预览为 null）。 */
+  private getDockInfo?: () => { confirmed: { x: number; y: number }[] } | null;
   /** T2.16: hover 态悬停的输入端口格（起点反例——红警示 + 文字提示）。 */
   private getStartHintCell?: () => { x: number; y: number } | null;
   /** T2.16: 起点反例文字提示（懒创建，挂 layer3Item 顶层）。 */
@@ -100,7 +98,7 @@ export class PortHighlightRenderer {
     getTexture: TextureLookup,
     isCreateMode?: () => boolean,
     getHoveredPortCell?: () => { x: number; y: number } | null,
-    getDockInfo?: () => { targets: { x: number; y: number }[]; confirmed: { x: number; y: number }[] } | null,
+    getDockInfo?: () => { confirmed: { x: number; y: number }[] } | null,
     getStartHintCell?: () => { x: number; y: number } | null,
   ) {
     this.world = world;
@@ -164,8 +162,13 @@ export class PortHighlightRenderer {
         entry = this.createEntry(def, spr);
         this.entries.set(handle, entry);
       }
-      // 每帧同步锚（设备静态，开销可忽略；也兼容未来搬迁）
-      entry.container.position.set(pos.x + spr.width / 2, pos.y + spr.height / 2);
+      // 每帧同步锚（设备静态，开销可忽略；也兼容未来搬迁）。中心取**有效占地**
+      // （T2.17: 90°/270° 旋转非正方形占地宽高互换），与 RenderSystem 设备中心同数学。
+      const eff = effectiveFootprint(def.footprint, comp.direction);
+      entry.container.position.set(
+        pos.x + (eff.w * CELL_SIZE) / 2,
+        pos.y + (eff.h * CELL_SIZE) / 2,
+      );
       entry.container.rotation = (comp.direction * Math.PI) / 180;
 
       // 端口状态 → visible/tint（未连接隐藏；堵塞红 / 连接黄；堵塞箭头白；黄→红渐变）。
@@ -246,7 +249,7 @@ export class PortHighlightRenderer {
    * 逐端口同步显隐 + 颜色（面板/箭头）。
    * 创建模式下输出端口（isOutput && createMode）覆盖为蓝色 #80BEE9 且始终显示，
    * 悬停端口用更淡的蓝 #A8D4F5、箭头白色（面板之上清晰可见）；
-   * T2.16 创建模式下输入端口按对接信息覆盖: 起点反例红 / "将连接"绿 / 候选紫
+   * T2.16 创建模式下输入端口按对接信息覆盖: 起点反例红 / "将连接"绿
    * （箭头白色），优先级高于常态；否则按连接黄/堵塞红渐变，未连接隐藏。
    */
   private applyPorts(
@@ -259,7 +262,7 @@ export class PortHighlightRenderer {
     createMode: boolean,
     hoveredCell: { x: number; y: number } | null,
     midSprites: Array<Sprite | null> | null,
-    dock: { targets: { x: number; y: number }[]; confirmed: { x: number; y: number }[] } | null,
+    dock: { confirmed: { x: number; y: number }[] } | null,
     startHint: { x: number; y: number } | null,
   ): void {
     for (let i = 0; i < sprites.length && i < states.length; i++) {
@@ -269,16 +272,15 @@ export class PortHighlightRenderer {
       // T2.16 输入端口对接态（仅创建模式 + 输入端口）
       const dockable = createMode && !isOutput && dock !== null;
       const isConfirmed = dockable && dock!.confirmed.some((c) => c.x === st.x && c.y === st.y);
-      const isCandidate = !isConfirmed && dockable && dock!.targets.some((c) => c.x === st.x && c.y === st.y);
       const isStartHint = createMode && !isOutput && startHint !== null && st.x === startHint.x && st.y === startHint.y;
-      const showDock = isConfirmed || isCandidate || isStartHint;
+      const showDock = isConfirmed || isStartHint;
       // 堵塞渐变进度向目标（connected 且 blocked → 1，否则 0）线性趋近（创建态/对接态不渐变）
       const target = !showCreate && !showDock && st.connected && st.blocked ? 1 : 0;
       const b = blends[i];
       blends[i] = b < target ? Math.min(target, b + blendStep)
         : b > target ? Math.max(target, b - blendStep) : b;
       const blend = blends[i];
-      // top 面板（ports_top 小矩形）：始终显示（创建态蓝 / 对接态红绿紫 / 连接黄 / 堵塞红）
+      // top 面板（ports_top 小矩形）：始终显示（创建态蓝 / 对接态红绿 / 连接黄 / 堵塞红）
       const s = sprites[i];
       if (s) {
         s.visible = showCreate || showDock || st.connected;
@@ -286,8 +288,6 @@ export class PortHighlightRenderer {
           s.tint = PORT_START_INVALID_TINT;
         } else if (isConfirmed) {
           s.tint = PORT_DOCK_CONFIRMED_TINT;
-        } else if (isCandidate) {
-          s.tint = PORT_DOCK_CANDIDATE_TINT;
         } else if (showCreate) {
           s.tint = PORT_CREATE_TINT;
         } else if (st.connected) {

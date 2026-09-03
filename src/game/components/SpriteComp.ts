@@ -13,9 +13,13 @@ export interface SpriteComp {
   textureKey: string;
   /** 可选： billboard 徽标层 key，叠加在主体上方并保持屏幕朝上（同属 group）。 */
   logoTextureKey?: string;
-  /** Sprite 世界像素宽（= footprint cells × CELL_SIZE）。 */
+  /**
+   * Sprite 内容世界像素宽（= 0° 朝向 footprint cells × CELL_SIZE）。
+   * T2.17: 恒存**未旋转**尺寸——90°/270° 旋转由渲染侧按 direction 转动内容、
+   * 以有效占地（effectiveFootprint）中心为锚，本字段不随朝向交换宽高。
+   */
   width: number;
-  /** Sprite 世界像素高。 */
+  /** Sprite 内容世界像素高（未旋转尺寸，语义同 width）。 */
   height: number;
   /** 渲染层级 (0~5)，对应 SceneLayers 的 layer0~layer5 Container (A2 §4)。 */
   layer: number;
