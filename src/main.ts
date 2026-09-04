@@ -250,7 +250,7 @@ async function main() {
   };
   window.addEventListener('keydown', onKeyBeltMode);
 
-  // 键盘: 传送带创建模式下 Escape 落盘当前预览（若有）再退出，与右键一致。
+  // 键盘: 传送带创建模式下 Escape 直接退出（丢弃当前预览段不落盘），与右键一致。
   const onKeyBeltEscape = (e: KeyboardEvent): void => {
     if (e.code !== 'Escape') return;
     if (!belt.isActive()) return;
@@ -1774,7 +1774,7 @@ async function main() {
   console.log(`  世界: ${MAP.widthCells}×${MAP.heightCells} cells (MapInstance), CELL_SIZE=${CELL_SIZE}`);
   console.log('  操作: 中键拖拽/WASD(屏幕相对)/边缘滚动 平移, 滚轮以鼠标为中心缩放, Ctrl+R 视图旋转');
   console.log('  放置: 底部工具栏选设备 → 左键放网格 → R 旋转(相对视图) → 右键/ESC 取消');
-  console.log('  传送带: E 进入创建模式 → 点蓝色高亮端口/末端选起点 → 移动鼠标显蓝色预览(L形+BFS绕障) → 左键加中继锚点延伸折线 → 右键/ESC/E 落盘整条链');
+  console.log('  传送带: E 进入创建模式 → 点蓝色高亮端口/末端选起点 → 移动鼠标显蓝色预览(L形+BFS绕障) → 左键逐段落盘并延伸 → 右键/ESC/E 退出(不落盘)');
   console.log('  交互: 左键点设备=选中(黄色填充+白色选中框); 左键点传送带段=选中该格(白边+斜杠+隐pointer), 双击同段=选中整条链; 点空白=取消; Delete=删当前所选(单格→单段/整链→整链)');
   console.log('  验收: __game.placeAt("refining_unit",5,5) 放设备 → selectFirstBuilding() 选中 → deleteSelectedBuilding() 删除 → getOccupiedCells() 查占用');
   console.log('  T1.10: __game.spawnBenchmarkDevices(100) 一键100设备 / fillBenchmarkDevices() 铺满地图 → runFpsBenchmark() 采样FPS/内存 → memoryStressCheck() 内存压测');

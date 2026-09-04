@@ -4,11 +4,11 @@
 //
 // 职责:
 //   - 维护"传送带创建模式"状态机（idle ↔ hover ↔ preview）
-//   - 按 E 进入/退出；右键 / ESC / 再按 E 退出（右键/ESC 在 preview 态先落盘再退出）
+//   - 按 E 进入/退出；右键 / ESC / 再按 E 退出（右键/ESC 直接丢弃当前预览段，不落盘）
 //   - hover 态高亮设备输出端口与已有断头传送带末端
 //   - 点击起点 → 移动鼠标显示蓝色预览路径（动量L形 + BFS绕障）
 //   - 多锚点：preview 态左键把当前鼠标格作为中继锚点继续延伸折线
-//   - 右键 / ESC 落盘整条链为真实传送带段
+//   - 落盘模型为左键逐段提交：preview 态每次左键把预览新段落盘为真实传送带段（addWaypoint → commitCells）
 //
 // 创建模式下普通设备选中逻辑由 main.ts 暂停转发，避免冲突。
 
@@ -101,7 +101,7 @@ let chainCounter = 0;
  * 输入由 main.ts 转发:
  *   - toggleMode(): E 键切换进入/退出
  *   - setMouse(screenX, screenY, inside): 鼠标位置
- *   - onPointerDown(button): 左键确认/选择起点/添加中继锚点，右键落盘+退出
+ *   - onPointerDown(button): hover 态左键选起点，preview 态左键落盘一段并延伸；右键直接退出（不落盘）
  *   - update(dt): 主循环每帧调用，刷新高亮与预览
  */
 export class BeltCreationSystem {
