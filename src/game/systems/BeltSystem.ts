@@ -39,15 +39,16 @@ import type { BuildingComp, Direction } from '../components/BuildingComp.ts';
 import { getBuildingDefinition, type BuildingDefinition } from '../data/buildings.ts';
 import { directionVector } from './belt/BeltPathGeometry.ts';
 import { inputPortCells } from './PortGeometry.ts';
-import { logisticsDebug } from './machine/LogisticsDebug.ts';
+import { logisticsDebug } from './machine/LogisticsDebug.ts';
 import { CELL_SIZE } from '../render/constants.ts';
 
 /**
  * 物品 progress 每 Tick 增量 (A9 §2.2)。
  * 推导: 传送带速度 0.5 格/秒 (A9 §1.2)，progress 归一化到 1 格，
  *   每 Tick(50ms=0.05s) 推进 0.5 × 0.05 = 0.025。跨一整段需 40 Tick / 2 秒。
+ * 导出供 MachineSystem 复用（T2.21 设备级输出节拍 = 1/速度 = 40 Tick/件）。
  */
-const ITEM_PROGRESS_PER_TICK = 0.025;
+export const ITEM_PROGRESS_PER_TICK = 0.025;
 
 /**
  * 相邻物品的最小世界间距（格）。一格一物品（用户 2026-08-17 澄清，修订 A9 §2.3 的
@@ -92,7 +93,7 @@ export class BeltSystem implements SimulationSystem {
    */
   static beltPhase = 0;
   /** 本 tick 的 beltPhase 增量，渲染层帧间插值用（正常=0.025，重置 tick=0 避免倒退跳跃）。 */
-  static beltPhaseDelta = ITEM_PROGRESS_PER_TICK;
+  static beltPhaseDelta = ITEM_PROGRESS_PER_TICK;
 
   update(world: World, _dt: number): void {
     // 反向遍历（链尾→链头）：跨段物品 push 到下游段时，下游已处理 → 本 tick 不推进新物品，
@@ -216,6 +217,7 @@ export class BeltSystem implements SimulationSystem {
       const seg = world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp');
       if (seg) seg.blocked = rawStopped.get(seg.chainId) === true && redMemo.get(seg.chainId) === true;
     }
+
   }
 
   /**

@@ -41,7 +41,7 @@ import {
   type Recipe,
   type RecipeInput,
 } from '../src/game/data/recipes.ts';
-import { BUILDING_DEFINITIONS, createOutputPollQueue } from '../src/game/data/buildings.ts';
+import { BUILDING_DEFINITIONS } from '../src/game/data/buildings.ts';
 import { createBufferSlots, tryAcceptItem, consumeFromSlot } from '../src/game/systems/machine/BufferOps.ts';
 import {
   planRecipeInputs,
@@ -222,7 +222,7 @@ const placeFurnace = (definitionId = 'refining_unit'): { handle: number; comp: B
     definitionId, direction: 0, state: 'idle',
     bufferInput: createBufferSlots(def.inputSlotCount),
     bufferOutput: createBufferSlots(def.outputSlotCount),
-    inputPollIndex: 0, outputPollQueue: createOutputPollQueue(def), // T2.10
+    inputPollIndex: 0, outputPollQueue: [], // T2.10 →T2.21 队列=接收带 handle，出料时发现填入
     currentRecipeId: null, progress: 0, elapsed: 0,
   };
   world.addComponent(handle, 'BuildingComp', comp);

@@ -32,7 +32,7 @@ import {
   buildItemRegistry,
 } from '../src/game/data/items.ts';
 import { parseRecipeCsv, buildRecipeIndex } from '../src/game/data/recipes.ts';
-import { BUILDING_DEFINITIONS, createOutputPollQueue } from '../src/game/data/buildings.ts';
+import { BUILDING_DEFINITIONS } from '../src/game/data/buildings.ts';
 import { createBufferSlots } from '../src/game/systems/machine/BufferOps.ts';
 import { buildBeltCellIndex } from '../src/game/systems/machine/IntakeOps.ts';
 import {
@@ -171,8 +171,8 @@ const DT = 50;
 const world = new World();
 const beltSys = new BeltSystem();
 const machineSys = new MachineSystem(recipeIndex, registry);
-const log: Array<{ type: string; message: string }> = [];
-machineSys.onEvent = (e) => log.push({ type: e.type, message: e.message });
+const log: Array<{ type: string; message: string; portIndex?: number }> = [];
+machineSys.onEvent = (e) => log.push({ type: e.type, message: e.message, portIndex: e.portIndex });
 
 const place = (gx: number, gy: number, dir: 0 | 90 | 180 | 270 = 0): BuildingComp => {
   const def = BUILDING_DEFINITIONS.refining_unit;
@@ -182,7 +182,7 @@ const place = (gx: number, gy: number, dir: 0 | 90 | 180 | 270 = 0): BuildingCom
     definitionId: 'refining_unit', direction: dir, state: 'idle',
     bufferInput: createBufferSlots(def.inputSlotCount),
     bufferOutput: createBufferSlots(def.outputSlotCount),
-    inputPollIndex: 0, outputPollQueue: createOutputPollQueue(def), // T2.10
+    inputPollIndex: 0, outputPollQueue: [], // T2.10 →T2.21 队列=接收带 handle，出料时发现填入
     currentRecipeId: null, progress: 0, elapsed: 0,
   };
   world.addComponent(handle, 'BuildingComp', comp);
@@ -274,17 +274,25 @@ assertEq(f90.bufferOutput[0].count, 0, '11a. 90° 精炼炉（输出在右列）
 assertEq(f180.bufferOutput[0].count, 0, '11b. 180° 精炼炉（输出在底排）→ 下方背离带出货');
 assertEq(f270.bufferOutput[0].count, 0, '11c. 270° 精炼炉（输出在左列）→ 左侧背离带出货');
 
-// 12: 每端口每 Tick 至多 1 件（3 输出端口 × 各 1 条接收带 → 同 Tick 共 3 件；单输出槽供 3 端口）
-BeltSystem.beltPhase = 0.4; // 下一 Tick beltPhase=0.425 ≤ 0.5，窗口内
+// 12: 设备级输出节拍 + 创建序轮询（T2.21，2026-09-05 用户拍板）: 每台设备每 40 Tick
+//     至多成功 1 件——多带只分摊不提速（不再是"同 Tick 3 口各出 1 件"）；轮询按传送带
+//     创建顺序（左→中→右）。beltPhase 置高位验证相位窗口闸门已退役（出货只看设备节拍）
+BeltSystem.beltPhase = 0.7; // 旧窗口外——闸门已移除，不应阻拦出货
 const fD = place(5, 20); // 输出端口顶排 (5,20)(6,20)(7,20)
 belt(5, 19, 270);
 belt(6, 19, 270);
 belt(7, 19, 270);
 fD.bufferOutput[0] = { itemId: 'origocrust', count: 5 };
+const outPorts12 = (): number[] => log
+  .filter((e) => e.type === 'output' && e.message.includes('输出口'))
+  .slice(-3).map((e) => e.portIndex ?? -1);
 tick(1);
-assertEq(fD.bufferOutput[0].count, 2, '12a. 同 Tick 3 个端口各出 1 件（5→2）');
+assertEq(fD.bufferOutput[0].count, 4, '12a. 设备级节拍: 首件立即出（5→4），余 2 件本节拍内不再出');
+tick(39);
+assertEq(fD.bufferOutput[0].count, 4, '12b. 节拍窗口内（+39 Tick，beltPhase 高位）不再出货');
 tick(1);
-assertEq(fD.bufferOutput[0].count, 2, '12b. 次 Tick 不再出（带上物品@0.425 占住入口间距，等其离开）');
+assertEq(fD.bufferOutput[0].count, 3, '12c. 第 40 Tick 节拍到 → 出第 2 件（4→3）');
+assertEq(outPorts12().slice(-2), [0, 1], '12d. 轮询按创建序: 第 1 件给左口、第 2 件轮到中口');
 
 // 13: 全链路 —— A 注矿生产 → 产物上带 → 上升两段 → B 输入端口吸入
 BeltSystem.beltPhase = 0;

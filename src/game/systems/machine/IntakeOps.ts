@@ -120,6 +120,8 @@ export function releaseArrivedItems(seg: BeltSegmentComp): string[] {
   const released: string[] = [];
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
+
+
     if (it.entering && it.progress >= PORT_RELEASE_PROGRESS) {
       released.push(it.itemId);
       items.splice(i, 1);
@@ -141,6 +143,8 @@ export function doorHeadItem(seg: BeltSegmentComp): BeltSegmentComp['items'][num
     if (it.entering) continue;
     if (head === null || it.progress > head.progress) head = it;
   }
+
+
   if (head === null || head.progress < PORT_ENTER_PROGRESS) return null;
   return head;
 }

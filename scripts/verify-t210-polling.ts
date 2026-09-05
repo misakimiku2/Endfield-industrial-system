@@ -14,13 +14,14 @@
 //     I3. 中间端口无供给带 → 跳过不卡住: 补货序列 左→右
 //     I4. 中间端口类型不符 → 跳过: 槽锁晶体外壳、中带源矿 → 补货序列 左→右，
 //         中带物品留在门口
-//   输出轮询 (A8 §4.2):
-//     O1. 同 Tick 多口各出 1 件按 左→中→右、成功者移队尾；货尽停发不误标堵塞
-//         （剩余端口保留在队列中，补货后从队首继续）
-//     O2. 无接收带/满带的端口移出队列（堵塞集=全部−队列），货物留槽
-//     O3. 相位窗口外(beltPhase > STOP_MAX)整步跳过且**不动队列**
-//     O4. 堵塞端口恢复探测成功 → 出货并回到活跃队列（恢复前活跃口优先于恢复口，
-//         即"追加到当前轮询顺序末尾"的次序语义）
+//   输出轮询 (A8 §4.2，T2.21 修订 2026-09-05 用户重定语义——轮询单元=接收传送带
+//   按创建序、设备级节拍每 40 Tick 至多 1 件):
+//     O1. 创建序轮询 左→中→右、成功者移队尾；货尽停发不误标堵塞（队列保留，
+//         补货后从队首继续）；节拍: 相邻两次出货恰隔 40 Tick
+//     O2. 无接收带/满带的带移出轮询（本 Tick），下一 Tick 同步按创建序追加队尾；
+//         全部候选满带 → 停发不出货、货物留槽
+//     O3. 相位窗口闸门退役: beltPhase 高位不再阻拦出货（节拍由设备计时器承担）
+//     O4. 堵塞带恢复 → 重新进入轮询且排在既有活跃带之后（追加队尾语义）
 import { readFileSync } from 'node:fs';
 import { World } from '../src/game/ECS.ts';
 import {
@@ -32,7 +33,6 @@ import {
 import { parseRecipeCsv, buildRecipeIndex } from '../src/game/data/recipes.ts';
 import {
   BUILDING_DEFINITIONS,
-  createOutputPollQueue,
 } from '../src/game/data/buildings.ts';
 import { createBufferSlots, consumeFromSlot } from '../src/game/systems/machine/BufferOps.ts';
 import { BeltSystem } from '../src/game/systems/BeltSystem.ts';
@@ -93,7 +93,7 @@ function makeScene(): {
       paused: false,
       bufferInput: createBufferSlots(def.inputSlotCount),
       bufferOutput: createBufferSlots(def.outputSlotCount),
-      inputPollIndex: 0, outputPollQueue: createOutputPollQueue(def),
+      inputPollIndex: 0, outputPollQueue: [],
       currentRecipeId: null, progress: 0, elapsed: 0,
     };
     world.addComponent(handle, 'BuildingComp', comp);
@@ -118,8 +118,16 @@ function makeScene(): {
       machineSys.update(world, DT);
     }
   };
+  /** 按格坐标取传送带段实体 handle（T2.21: 输出轮询队列元素是带 handle，断言用）。 */
+  const handleAt = (gx: number, gy: number): number => {
+    for (const h of world.query('BeltSegmentComp')) {
+      const pos = world.getComponent<{ x: number; y: number }>(h, 'Position');
+      if (pos && Math.round(pos.x / CELL_SIZE) === gx && Math.round(pos.y / CELL_SIZE) === gy) return h;
+    }
+    return -1;
+  };
   return {
-    world, place, belt, tick,
+    world, place, belt, tick, handleAt,
     clearBelts: () => {
       for (const h of world.query('BeltSegmentComp')) {
         const seg = world.getComponent<BeltSegmentComp>(h, 'BeltSegmentComp');
@@ -139,6 +147,7 @@ const receiveCells = (gx: number, gy: number): Array<[number, number]> =>
   [[gx, gy - 1], [gx + 1, gy - 1], [gx + 2, gy - 1]];
 /** 用晶体外壳作"原料"——精炼炉无以它为原料的配方 → 设备恒 idle，排除生产结算干扰。 */
 const ITEM = 'origocrust';
+
 
 // ═══════════════════ 输入轮询 ═══════════════════
 console.log('[I1. 同刻到达并列定义序: 补货顺序 左→中→右 轮转（满槽每次腾 1 位）]');
@@ -307,82 +316,80 @@ console.log('[I6. 迟到的新带追加轮询末尾]');
 }
 
 // ═══════════════════ 输出轮询 ═══════════════════
-console.log('[O1. 成功者移队尾；货尽停发不误标堵塞]');
+console.log('[O1. 创建序轮询 + 成功移队尾 + 货尽停发不误标堵塞 + 设备级节拍]');
 {
   const sc = makeScene();
-  BeltSystem.beltPhase = 0.4; // tick 内 beltSys 推进后 0.425 ≤ STOP_MAX，窗口内
   const f = sc.place(80, 12);
   f.bufferOutput[0] = { itemId: ITEM, count: 2 }; // 只有 2 件货
-  receiveCells(80, 12).forEach(([x, y]) => sc.belt(x, y, 270));
+  const cells = receiveCells(80, 12);
+  cells.map(([x, y]) => sc.belt(x, y, 270)); // 创建序 左→中→右（x 递增 = chainId 时间戳递增）
+  const [lh, mh, rh] = cells.map(([x, y]) => sc.handleAt(x, y));
   sc.tick(1);
-  assertEq(sc.outputPortEvents(), [0, 1], 'O1-a. 前 2 件按 左→中→右 出货，第 3 口轮到时货尽停发');
-  // 成功者移队尾 ×2 → 队列旋转两位；轮空的 idx2 保留活跃（槽空≠端口堵塞）
-  assertEq(f.outputPollQueue, [2, 0, 1], 'O1-b. 队列 [2,0,1]: 成功者移队尾、轮空的口未被移出');
+  assertEq(sc.outputPortEvents(), [0], 'O1-a. 首件给创建序最前带（左口）——设备级节拍每 Tick 至多 1 件');
+  sc.tick(39);
+  assertEq(sc.outputPortEvents(), [0], 'O1-b. 节拍窗口内（39 Tick）不出货（相邻成功出货恰隔 40 Tick）');
+  sc.tick(1);
+  assertEq(sc.outputPortEvents(), [0, 1], 'O1-c. 节拍到 → 第 2 件轮到中口（货尽停发不误标堵塞）');
+  assertEq(f.outputPollQueue, [rh, lh, mh], 'O1-d. 队列 [右,左,中]: 成功者移队尾、未轮到的右带保持活跃（槽空≠带堵塞）');
   f.bufferOutput[0] = { itemId: ITEM, count: 1 }; // 补 1 件货
-  sc.clearBelts(); // 清空带上物品（模拟下游全部取走）
-  BeltSystem.beltPhase = 0.4;
-  sc.tick(1);
-  assertEq(sc.outputPortEvents().slice(-1), [2], 'O1-c. 补货后从队列队首 idx2 继续（轮询次序记忆保持）');
+  sc.clearBelts(); // 清空带上物品（模拟下游全部取走，左/中带头腾位）
+  sc.tick(40);
+  assertEq(sc.outputPortEvents().slice(-1), [2], 'O1-e. 补货后从队列队首（右带）继续——轮询次序记忆保持');
 }
 
-console.log('[O2. 无接收带/满带 → 移出队列（堵塞集=全部−队列）]');
+console.log('[O2. 无接收带/满带 → 本 Tick 移出轮询；全部候选满带 → 停发货物留槽]');
 {
   const sc = makeScene();
-  BeltSystem.beltPhase = 0.4;
   const f = sc.place(90, 12);
   f.bufferOutput[0] = { itemId: ITEM, count: 5 };
   const cells = receiveCells(90, 12);
   sc.belt(cells[0][0], cells[0][1], 270); // 只有左、右有接收带，中间悬空
   sc.belt(cells[2][0], cells[2][1], 270);
-  sc.tick(1);
-  assertEq(sc.outputPortEvents(), [0, 2], 'O2-a. 中间口无接收带被跳过，左右各出 1 件');
-  assertEq(f.outputPollQueue, [0, 2], 'O2-b. 中间口已移出活跃队列（保持引用待恢复探测）');
-  sc.tick(60); // 断头带 1 件即满 → 下个窗口两侧也进堵塞集
-  assertEq(f.outputPollQueue, [], 'O2-c. 侧口满带后同样移出 → 队列清空（全部堵塞）');
-  assertEq(f.bufferOutput[0].count, 3, 'O2-d. 共出货 2 件，其余 3 件留在输出槽');
+  sc.tick(80); // 两个节拍窗: 左@t1、右@t41；断头带 1 件即满
+  assertEq(sc.outputPortEvents(), [0, 2], 'O2-a. 中间无接收带被跳过，左右各出 1 件（中间永不入队）');
+  assertEq(f.bufferOutput[0].count, 3, 'O2-b. 第三窗起左右带均满 → 停发，其余 3 件留在输出槽');
+  const cand = new Set(cells.map(([x, y]) => sc.handleAt(x, y)));
+  assert(f.outputPollQueue.every((h) => cand.has(h)),
+    `O2-c. 队列只含候选带 handle（无端口下标残留；当前 ${JSON.stringify(f.outputPollQueue)}）`);
+  sc.clearBelts(); // 全部疏通
+  sc.tick(40);
+  assertEq(sc.outputPortEvents().slice(-1), [0], 'O2-d. 腾位即恢复: 疏通后下一节拍出货（左带重新追加队尾后轮到）');
 }
 
-console.log('[O3. 相位窗口外整步跳过且不动队列]');
+console.log('[O3. 相位窗口闸门退役: beltPhase 高位不阻拦出货（节拍由设备计时器承担）]');
 {
   const sc = makeScene();
-  BeltSystem.beltPhase = 0.7; // > STOP_MAX 窗口外
+  BeltSystem.beltPhase = 0.7; // 旧"窗口外"高位——闸门已移除，不应阻拦
   const f = sc.place(100, 12);
   f.bufferOutput[0] = { itemId: ITEM, count: 3 };
   const cells = receiveCells(100, 12);
-  sc.belt(cells[1][0], cells[1][1], 270); // 只有中、右有接收带（若误处理会把 idx0 移出队列）
+  sc.belt(cells[1][0], cells[1][1], 270); // 只有中、右有接收带
   sc.belt(cells[2][0], cells[2][1], 270);
-  sc.tick(2);
-  assertEq(sc.outputPortEvents(), [], 'O3-a. 窗口外零出货');
-  assertEq(f.outputPollQueue, [0, 1, 2], 'O3-b. 队列原封不动（相位关闭是全局节奏而非端口故障）');
-  BeltSystem.beltPhase = 0.4;
   sc.tick(1);
-  assertEq(sc.outputPortEvents(), [1, 2], 'O3-c. 窗口内恢复: idx0 移出、idx1/idx2 依次出货');
-  assertEq(f.outputPollQueue, [1, 2], 'O3-d. idx0 移出、idx1/idx2 各自轮转到队尾');
+  assertEq(sc.outputPortEvents(), [1], 'O3-a. beltPhase=0.7 高位仍出货（首件给创建序首带=中口）');
+  sc.tick(39);
+  assertEq(sc.outputPortEvents(), [1], 'O3-b. 设备节拍窗口内不再出（与 beltPhase 无关）');
+  sc.tick(1);
+  assertEq(sc.outputPortEvents(), [1, 2], 'O3-c. 第 40 Tick 节拍到 → 第 2 件轮到右口');
 }
 
-console.log('[O4. 堵塞恢复 → 回到活跃队列且排在既有活跃口之后]');
+console.log('[O4. 堵塞带恢复 → 重新入轮询且排在既有活跃带之后（追加队尾语义）]');
 {
   const sc = makeScene();
-  BeltSystem.beltPhase = 0.4;
   const f = sc.place(120, 12);
   f.bufferOutput[0] = { itemId: ITEM, count: 4 };
   const c = receiveCells(120, 12);
-  const bLeft = sc.belt(c[0][0], c[0][1], 270, [[ITEM, 0.5]]);   // 左: 预置满带（堵塞集）
-  const bMid = sc.belt(c[1][0], c[1][1], 270, [[ITEM, 0.5]]);    // 中: 预置满带（堵塞集）
-  sc.belt(c[2][0], c[2][1], 270);                                 // 右: 空（唯一活跃口）
-  f.outputPollQueue = [2]; // 现场: 只有右口活跃
+  const bLeft = sc.belt(c[0][0], c[0][1], 270, [[ITEM, 0.5]]); // 左: 预置满带（堵塞）
+  sc.belt(c[1][0], c[1][1], 270);                              // 中: 空
+  sc.belt(c[2][0], c[2][1], 270);                              // 右: 空
   sc.tick(1);
-  assertEq(sc.outputPortEvents(), [2], 'O4-a. 初始只有右口活跃并出货');
-  bLeft.items.length = 0; // 同时疏通左、中（模拟下游取走）
-  bMid.items.length = 0;
-  f.bufferOutput[0].count = 3; // 保证货量充足
-  BeltSystem.beltPhase = 0.4;
-  sc.tick(1);
-  // 右口已被阶段1 的货占满 → 本 Tick 移出；恢复探测按下标序找到左、中 → 依次出货并追加队尾。
-  // 若实现是"插回原位/重置定义序"，恢复口不会稳定地以 下标序 追加在轮空判断之后出现。
-  assertEq(sc.outputPortEvents(), [2, 0, 1], 'O4-b. 完整出货序 右→左→中: 先活跃口吃满本轮，恢复口随后按探测序补上');
-  assert(f.outputPollQueue.includes(0) && f.outputPollQueue.includes(1),
-    `O4-c. 恢复端口回到活跃队列（当前队列 ${JSON.stringify(f.outputPollQueue)}）`);
+  assertEq(sc.outputPortEvents(), [1], 'O4-a. 队首左带满 → 跳过，中带出货（走访继续找可写带）');
+  sc.tick(40);
+  assertEq(sc.outputPortEvents(), [1, 2], 'O4-b. 下一节拍轮到右带（左带移出后由同步追加队尾等待恢复）');
+  bLeft.items.length = 0; // 疏通左带（模拟下游取走）
+  sc.tick(40);
+  // 本窗中带满带移出、走访继续；左带恢复后按"同步追加队尾"的位置轮到 → 排在右带之后出货
+  assertEq(sc.outputPortEvents(), [1, 2, 0], 'O4-c. 恢复出货序 中→右→左: 恢复带排在既有活跃带之后（追加队尾）');
 }
 
 console.log(`\n结果: ${passed} 通过, ${failed} 失败`);

@@ -21,7 +21,7 @@ import { GridRenderer } from './game/render/GridRenderer';
 import { loadAllAssets, getTexture } from './game/render/AssetsLoader';
 import { InventoryUI } from './game/ui/InventoryUI';
 import { deviceReadoutText } from './game/ui/DeviceReadout';
-import { BUILDING_DEFINITIONS, getBuildingDefinition, createOutputPollQueue, effectiveFootprint, type BuildingDefinition } from './game/data/buildings';
+import { BUILDING_DEFINITIONS, getBuildingDefinition, effectiveFootprint, type BuildingDefinition } from './game/data/buildings';
 import type { BuildingComp, BufferSlot, Direction } from './game/components/BuildingComp';
 import { loadItemRegistry } from './game/data/items';
 import { parseRecipeCsv, buildRecipeIndex, formatRecipeSummary } from './game/data/recipes';
@@ -46,6 +46,7 @@ import type { BeltSegmentComp } from './game/components/BeltSegmentComp';
 // BeltSystem 由 GameLoop 注册驱动（ticker 注释见 324 行），main.ts 不再直接引用其静态成员
 import { CELL_SIZE } from './game/render/constants';
 import type { EntityHandle } from './game/ECS';
+import { compareBeltCreation } from './game/systems/machine/OutputOps';
 
 async function main() {
   const app = new Application();
@@ -471,7 +472,7 @@ async function main() {
       bufferInput: createBufferSlots(def.inputSlotCount), // T2.4: 放置即建输入缓冲区
       bufferOutput: createBufferSlots(def.outputSlotCount), // T2.5: 输出缓冲区（一槽一物）
       inputPollIndex: 0, // T2.10: 输入轮询指针从定义序首口（左）开始
-      outputPollQueue: createOutputPollQueue(def), // T2.10: 输出轮询队列=全部输出端口按定义序
+      outputPollQueue: [], // T2.21: 输出轮询队列=接收传送带 handle，首次有货出料时按创建序发现填入
       currentRecipeId: null, progress: 0, elapsed: 0, // T2.5: 生产计时字段（放置时无任务）
     });
     game.world.addComponent(handle, 'SpriteComp', {
@@ -1024,10 +1025,18 @@ async function main() {
           return order.map((i) => `输入口${i + 1}`).join('→');
         })()}（先到先得；从未到货的口排末尾）`
       : '  输入先到排名: (无输入口)';
+    // T2.21 修订(2026-09-05): 轮询单元 = 接收传送带（按 chainId 创建序）——队列元素
+    // 是带 handle，显示为"第 N 条创建的传送带"（全场创建序名），供按创建顺序轮询肉眼校验。
     const queueLine = st.output.length > 0
-      ? `  输出轮询队列: ${comp.outputPollQueue.length > 0
-        ? comp.outputPollQueue.map((i) => `输出口${i + 1}`).join('→')
-        : '(空——全部输出口堵塞，恢复后追加队尾)'}`
+      ? `  输出轮询队列: ${(() => {
+          if (comp.outputPollQueue.length === 0) return '(空——无接收带或全部堵塞，接入/腾位后按创建序追加)';
+          const ranked = game.world.query('BeltSegmentComp')
+            .map((h) => ({ h, seg: game.world.getComponent<BeltSegmentComp>(h, 'BeltSegmentComp') }))
+            .filter((x): x is { h: EntityHandle; seg: BeltSegmentComp } => x.seg !== null)
+            .sort((a, b) => compareBeltCreation(a.seg, b.seg));
+          const rankOf = new Map(ranked.map((x, i) => [x.h, i + 1]));
+          return comp.outputPollQueue.map((h) => `带#${rankOf.get(h) ?? '?'}`).join('→');
+        })()}（按传送带创建顺序轮询）`
       : '  输出轮询队列: (无输出口)';
     return [
       `${def.name} 端口状态（画面: 黄=已连接 红=堵塞; paused=${comp.paused}）:`,
@@ -1510,6 +1519,15 @@ async function main() {
     }
     return null;
   };
+  /** 按格坐标取传送带段实体 handle（demoT210 步骤8 重置输出轮询队列用——T2.21 起队列元素是带 handle）。 */
+  const beltHandleAtCell = (gx: number, gy: number): EntityHandle | null => {
+    for (const h of game.world.query('BeltSegmentComp')) {
+      const pos = game.world.getComponent<Position>(h, 'Position');
+      if (!pos) continue;
+      if (Math.round(pos.x / CELL_SIZE) === gx && Math.round(pos.y / CELL_SIZE) === gy) return h;
+    }
+    return null;
+  };
   /** 移除指定格传送带段上的队首物品（demoT210 定向疏通用，consumeBeltTailItem 是全链扫射）。 */
   const takeBeltItemAtCell = (gx: number, gy: number): boolean => {
     const seg = beltAtCell(gx, gy);
@@ -1524,10 +1542,10 @@ async function main() {
    *   轮询指针按先到排名序决定哪条带的门口件被吸入（排名序随首次到货先后），其余门口件排队等待；
    *   顶部存货口排产物防 blocked。稳态下连续 6 次吸入构成循环（起点随过渡浮动）。
    * 场景B（输出轮转·可见版）: 预注源矿连续生产（1件/2秒），三个输出口各接 3 格
-   *   传送带汇入顶部存货口 → 产物每 2 秒出现在下一条带首（输出口1→2→3 循环），
-   *   沿带流动 3 格消失——轮询次序肉眼可辨。
+   *   传送带汇入顶部存货口 → 产物每 2 秒出现在下一条带首（带按创建序 左→中→右
+   *   = 输出口1→2→3 循环），沿带流动 3 格消失——轮询次序肉眼可辨。
    * 场景C（堵塞跳过+恢复·可见版）: 中带截短 2 格断头并预置满（永久堵塞）→ 产物
-   *   只在左/右带交替出现；等左右带首腾空后注 3 件 → 左→右→中（恢复探测追加队尾）。 */
+   *   只在左/右带交替出现；等左右带首腾空后注 3 件 → 左→右→中（队列同步追加队尾）。 */
   const demoT210 = async (): Promise<string> => {
     console.log(`[${ts()}] ════ T2.10 一键测试: 端口轮询系统 ════`);
     const inputPortsOf = (): number[] =>
@@ -1586,10 +1604,10 @@ async function main() {
 
     // ── 场景B: 输出轮转（连续生产·可见版）──
     // 预注源矿让设备 1 件/2 秒稳定产出 → 每次只有 1 件产物待出货 → 轮询严格逐件
-    // 轮转: 晶体外壳每 2 秒出现在**下一条**带首（输出口1→2→3 循环），沿 3 格带
-    // 流动走进顶部存货口。三条带对称全空时同 Tick 多口齐出的"爆发"在这里不会
-    // 发生——轮询次序因此肉眼可辨（用户 2026-08-25 反馈: 1 格断头带场景两端口
-    // 同 Tick 齐出，看不出轮询；节流是每端口每 Tick 1 件，不是每设备 1 件）。
+    // 轮转: 晶体外壳每 2 秒出现在**下一条**带首（带按创建序 左→中→右 = 输出口
+    // 1→2→3 循环），沿 3 格带流动走进顶部存货口。T2.21 起节流是**设备级**每
+    // 40 Tick 至多 1 件（2026-09-05 用户拍板: 多带只分摊不提速）——轮询次序肉眼
+    // 可辨（用户 2026-08-25 反馈的"两端口同 Tick 齐出"由此根除）。
     console.log(`[${ts()}] [步骤4] 切换场景B: 预注源矿连续生产（1件/2秒），三个输出口各接 3 格传送带；顶部存货口只接中带（T2.18: 存货口仅中间口收料），左右带 3 格满后即暂满堵停 → 前 6 件出货观察产物轮流出现在左/中/右带首`);
     clearAllPlaced();
     if (!placeAt('refining_unit', 5, 5)) return 'T2.10 测试失败: 场景B 精炼炉放置失败';
@@ -1621,8 +1639,8 @@ async function main() {
 
     // ── 场景C: 堵塞跳过 + 恢复追加队尾（可见版）──
     // 中带截短为 2 格断头带并预置满（永久堵塞）→ 产物只在左/右带交替出现；
-    // 等左右带首都腾空后一次性注 3 件货 → 依次 左→右→（恢复探测）中，中口排在
-    // 最后 = "恢复追加到当前轮询顺序末尾"的可见形态。
+    // 等左右带首都腾空后一次性注 3 件货 → 依次 左→右→（队列同步重新追加）中，
+    // 中带排在最后 = "恢复追加到当前轮询顺序末尾"的可见形态。
     console.log(`[${ts()}] [步骤6] 切换场景C: 左/右 3 格带暂存排货，中带截短为 2 格断头带并预置满（永久堵塞）→ 产物应只在左右带交替出现`);
     clearAllPlaced();
     if (!placeAt('refining_unit', 5, 5)) return 'T2.10 测试失败: 场景C 精炼炉放置失败';
@@ -1649,14 +1667,20 @@ async function main() {
     // 确定性恢复演示: 连续供给下链条临界负载，"等左右带首自然同时腾空"不可靠
     // （排队停格中心修订后带首几乎常驻占用）。直接清空三条带头 + 中带 2 格、
     // 重置轮询队列为 [左,右]、注 3 件 → 下一 Tick 依次 左→右→（恢复探测）中。
-    console.log(`[${ts()}] [步骤8] 清空三条带头与中带、重置轮询队列 [左,右]、注 3 件产物 → 预期出货 左→右→中（中口恢复探测追加队尾）`);
+    console.log(`[${ts()}] [步骤8] 清空三条带头与中带、重置轮询队列 [左,右]、注 3 件产物 → 预期出货 左→右→中（中带队列同步追加队尾）`);
     const fHandle = firstBuildingHandle();
     const fComp = fHandle !== null ? game.world.getComponent<BuildingComp>(fHandle, 'BuildingComp') : null;
     if (!fComp) return 'T2.10 测试失败: 场景C 找不到精炼炉';
     for (const [x, y] of [[5, 4], [7, 4], [6, 4], [6, 3]] as Array<[number, number]>) {
       takeBeltItemAtCell(x, y);
     }
-    fComp.outputPollQueue = [0, 2]; // 现场: 左、右活跃（中带已清空，恢复探测即将接管）
+    // T2.21: 队列元素 = 接收带 handle（左带头 (5,4)、右带头 (7,4)；中带不在队列，
+    // 下一 Tick 队列同步时按创建序重新追加 → 排在队尾）；节拍计时器清零让出货立即开始
+    const leftHead = beltHandleAtCell(5, 4);
+    const rightHead = beltHandleAtCell(7, 4);
+    if (leftHead === null || rightHead === null) return 'T2.10 测试失败: 场景C 找不到左/右带首段';
+    fComp.outputPollQueue = [leftHead, rightHead]; // 现场: 左、右活跃（中带已清空，队列同步即将接管）
+    fComp.outputNextEmitTick = 0;
     injectOutput('origocrust', 3);
     const recBase = outputPortsOf().length;
     const threeOut = await waitFor(() => outputPortsOf().length - recBase >= 3, 30000);

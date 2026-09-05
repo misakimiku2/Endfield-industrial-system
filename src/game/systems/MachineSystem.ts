@@ -1,6 +1,6 @@
 // 机器系统 — T2.5 生产计时与生产循环 + T2.6 传送带→设备输入对接 + T2.7 设备→传送带输出对接
-//           + T2.10 端口轮询（输入指针轮询 / 输出队列轮转）
-// 依据: implementation-phase-2.md T2.5/T2.6/T2.7/T2.10、A8 §3 (生产计时系统)、§6 (状态机)、
+//           + T2.10 端口轮询（输入指针轮询）+ T2.21 输出传送带轮询（输出队列轮转修订）
+// 依据: implementation-phase-2.md T2.5/T2.6/T2.7/T2.10/T2.21、A8 §3 (生产计时系统)、§6 (状态机)、
 //       §7 (Tick 内执行顺序)、§4.1 (输入轮询)、§4.2 (输出轮询)、A9 §2.3(最小间距)/§6.7
 //       (端口连接判定)、A3 §3.2 (轮询规则)、精炼炉设备说明.md（轮询次序示例）、A5 §5/DD-010
 //
@@ -18,11 +18,15 @@
 //       则冻结不重置（A8 §4.1；每端口每走访至多预约 1 件；未满载时每 Tick 走访全部口，
 //       同 Tick 可多口齐吸）。吸入不依赖配方——仓库类设备（T2.12）同走物流路径
 //       （仓库口自身走 def.depot 分支，无限源/汇无公平性诉求，保持定义序）。
-//   3. 输出物流 (T2.7 注入纪律 + T2.10 轮询): 相位窗口（beltPhase ≤ STOP_MAX）为全局
-//       闸门，窗口外整步跳过且不动 outputPollQueue；窗口内按活跃队列轮转出货——成功
-//       移队尾、失败移出（堵塞集=全部端口−队列），堵塞端口每 Tick 探测真实出货，
-//       恢复追加队尾（A8 §4.2"顺序 1-2-3-1-2-3…；堵塞跳过；恢复追加到末尾"）。
-//       每端口每 Tick 至多 1 件 (A8 §4.2)；注入相位 = beltPhase（物品=实体 pointer）。
+//   3. 输出物流 (T2.7 注入纪律 + T2.21 传送带轮询，2026-09-05 用户重定语义):
+//      轮询单元 = **接收传送带**（按 chainId 创建顺序，不再按端口定义序）；节拍 = **设备级**
+//      每 OUTPUT_EMIT_INTERVAL_TICKS(=40，一格传送带时长) 至多成功 1 件——多带只分摊
+//      不提速（1 条带 1-1-1 / 2 条各 1-0-1 / 3 条各 1-0-0）。每 Tick: 候选带邻接重发现并
+//      同步队列（新带按创建序追加队尾，A 独跑中接入 B → 自动 A-B 轮询且下一件先 A 后 B）；
+//      节拍未到只同步不出货；节拍到则从队头走访（OutputOps.pollOutputBelt）——可写带出
+//      1 件移队尾，不可写带移出、下一 Tick 同步重新追加队尾（≈ A8 §4.2 堵塞跳过/恢复
+//      追加队尾）。旧 beltPhase 相位窗口闸门退役（与 OutputOps/BeltSystem 头注释对齐；
+//      仓库取货口路径本就无此闸门）。
 //
 // 状态机 (A8 §6): idle ↔ working ↔ blocked，转换全部由本系统驱动：
 //   idle→working 启动计时；working→idle 结算后无后续配方；working→blocked 计时完成但输出满；
@@ -43,7 +47,7 @@ import { formatRecipeSummary } from '../data/recipes.ts';
 import type { ItemRegistry } from '../data/items.ts';
 import { getBuildingDefinition, type BuildingDefinition } from '../data/buildings.ts';
 import { CELL_SIZE } from '../render/constants.ts';
-import { STOP_MAX, BeltSystem } from './BeltSystem.ts';
+import { ITEM_PROGRESS_PER_TICK } from './BeltSystem.ts';
 import {
   findMatchingRecipe,
   planRecipeInputs,
@@ -64,6 +68,9 @@ import {
   outputPortCells,
   findReceiverBelt,
   tryEmitToBelt,
+  collectReceiverBelts,
+  syncOutputBeltQueue,
+  pollOutputBelt,
 } from './machine/OutputOps.ts';
 import {
   emitSourceToBelt,
@@ -94,6 +101,14 @@ export interface ProductionEvent {
  *  吸入/出货事件每 2 秒持续产生，总事件 ~120+），100 会中途淘汰最早事件、导致
  *  productionLog() 覆盘与 demo 绝对下标采样漂移——提到 400 覆盖全场景覆盘。 */
 const MAX_RECENT_EVENTS = 400;
+
+/**
+ * 设备级输出节拍间隔 (T2.21，2026-09-05 用户拍板): = 1/ITEM_PROGRESS_PER_TICK
+ * = 40 Tick = 一格传送带时长 = 单条传送带吞吐上限。每台设备**每 40 Tick 至多成功
+ * 输出 1 件**，与接收传送带条数无关——多带只分摊不提速（1 条带 1-1-1 / 2 条各
+ * 1-0-1 / 3 条各 1-0-0），轮询只决定"下一件给哪条带"。
+ */
+const OUTPUT_EMIT_INTERVAL_TICKS = Math.round(1 / ITEM_PROGRESS_PER_TICK);
 
 /**
  * 生产系统。处理所有带 BuildingComp 设备的生产计时、原子结算与状态机。
@@ -499,17 +514,23 @@ export class MachineSystem implements SimulationSystem {
   }
 
   /**
-   * A8 §7 步骤3 (T2.7 注入纪律 + T2.10 输出轮询)。
-   * 输出轮询队列 comp.outputPollQueue（活跃端口按轮询序；堵塞集=全部端口−队列，派生不落盘）:
-   *   - 全局闸门: 全空输出槽早退（队列零维护——无货可分时"失败"不是端口堵塞）；
-   *     相位窗口外（beltPhase > STOP_MAX）整步跳过且**不动队列**——窗口关闭是全局节奏
-   *     而非端口故障，若按端口失败处理会把队列每秒两次清空重建、丢失轮询序记忆
-   *     （T2.7: 空带吞吐 1 件/2 秒的相位窗口纪律不变）。
-   *   - 活跃轮转（A8 §4.2）: 按队列序逐口尝试出货——成功移到队尾（1→2→3→1…轮转）；
-   *     失败（无接收带 / 接收带被占——一格一物品满带）移出队列进入堵塞集。
-   *     分发中途货物耗尽即停，剩余端口保留在队列中（槽空≠端口堵塞）。
-   *   - 恢复探测（A8 §4.2"恢复追加队尾"）: 堵塞端口每 Tick 按下标序尝试真实出货，
-   *     成功即追加到当前轮询队尾（不插回原位）；仍堵则保持引用等待。
+   * A8 §7 步骤3 (T2.7 注入纪律 + T2.21 输出传送带轮询，2026-09-05 用户重定语义)。
+   * 轮询单元 = **接收传送带**（comp.outputPollQueue 存带 handle，按 chainId 创建序，
+   * 不再存端口下标）；输出节拍 = **设备级**每 OUTPUT_EMIT_INTERVAL_TICKS(=40) 至多
+   * 成功 1 件（comp.outputNextEmitTick 计时器）——多带只分摊不提速:
+   *   - 全局闸门: 全空输出槽早退（队列零维护——无货可分时"失败"不是带堵塞）。
+   *   - 队列同步 (OutputOps.syncOutputBeltQueue): 候选带每 Tick 邻接重发现
+   *     （collectReceiverBelts 收集全部输出端口 4 邻格、按创建序排序）；队列中
+   *     失效 handle 移除，新带按创建序追加队尾——动态接入自动加入轮询（A 独跑中
+   *     接入 B → 自动 A-B 轮询，下一件先 A 后 B，用户 2026-09-05 动态示例相位）。
+   *   - 节拍闸门（队列同步**之后**）: simTick < outputNextEmitTick → 只同步队列
+   *     不出货（等待节拍期间新接入的带仍须登记进轮询序）。成功出货后计时器 =
+   *     simTick + 40；无可写带不推进计时器——带腾位即恢复。
+   *     旧 beltPhase 相位窗口闸门随之退役（OutputOps/BeltSystem 头注释 2026-08-25
+   *     已声明退役，本次移除残留在代码里的最后一处；仓库取货口路径本就无此闸门）。
+   *   - 轮转 (OutputOps.pollOutputBelt): 从队头走访最多一轮，首条可写带出 1 件
+   *     并移到队尾（轮转）；不可写带（无接收带/满带一格一物品）移出队列，下一
+   *     Tick 同步时按创建序重新追加队尾 ≈ A8 §4.2"堵塞跳过、恢复追加队尾"。
    */
   private emitBeltOutputs(
     world: World,
@@ -525,62 +546,34 @@ export class MachineSystem implements SimulationSystem {
     const gx = Math.round(pos.x / CELL_SIZE);
     const gy = Math.round(pos.y / CELL_SIZE);
     const cells = outputPortCells(gx, gy, def, comp.direction);
-    const n = cells.length;
-    if (n === 0) return;
-    // 相位窗口全局闸门（必须在任何队列变动之前）
-    if (BeltSystem.beltPhase > STOP_MAX) return;
+    if (cells.length === 0) return;
 
-    const hasGoods = (): boolean => comp.bufferOutput.some((s) => s.count > 0);
-    // 队列卫生: 过滤越界/重复项（存档迁移/手改防御），保持既有轮询次序
-    const seen = new Set<number>();
-    const active = comp.outputPollQueue.filter((i) => {
-      if (i < 0 || i >= n || seen.has(i)) return false;
-      seen.add(i);
-      return true;
+    // ── 队列同步: 候选带邻接重发现（创建序升序），失效移除、新带追加队尾 ──
+    const candidates = collectReceiverBelts(world, beltAt, cells);
+    if (candidates.length === 0) {
+      if (comp.outputPollQueue.length > 0) comp.outputPollQueue = [];
+      return;
+    }
+    // 节拍闸门（在同步之后: 等待节拍期间新接入的带也要登记进轮询序）
+    if (this.simTick < (comp.outputNextEmitTick ?? 0)) {
+      comp.outputPollQueue = syncOutputBeltQueue(comp.outputPollQueue, candidates);
+      return;
+    }
+    const byHandle = new Map(candidates.map((c) => [c.handle, c]));
+    const { queue, chosen } = pollOutputBelt(
+      comp.outputPollQueue,
+      candidates,
+      (h) => byHandle.get(h)?.seg.items.length === 0, // 一格一物品: 段空才可写
+    );
+    comp.outputPollQueue = queue;
+    if (chosen === null) return; // 全堵（无可写带）——不重置节拍，带腾位即恢复
+    const receiver = byHandle.get(chosen)!;
+    const itemId = tryEmitToBelt(receiver.seg, comp); // 段空+有货 → 必成功
+    if (itemId === null) return; // 防御（正常不可达）: 走访到注入之间货被外部取走
+    comp.outputNextEmitTick = this.simTick + OUTPUT_EMIT_INTERVAL_TICKS;
+    this.emit({
+      type: 'output', handle, portIndex: receiver.portIndex,
+      message: `${def.name}: 输出 ${this.nameOf(itemId)} ×1（输出口${receiver.portIndex + 1} → 传送带）`,
     });
-
-    /** 尝试从输出槽放 1 件到端口 idx 的接收带。成功返回 itemId；端口不可写返回 null。 */
-    const tryEmitAt = (idx: number): string | null => {
-      const receiver = findReceiverBelt(world, beltAt, cells[idx]);
-      if (receiver === null) return null;
-      const seg = world.getComponent<BeltSegmentComp>(receiver, 'BeltSegmentComp');
-      if (!seg || seg.items.length > 0) return null; // 无段 / 满带（一格一物品）
-      return tryEmitToBelt(seg, comp); // 空段+有货+窗口内必成功
-    };
-    const emitOut = (idx: number, itemId: string): void => {
-      this.emit({
-        type: 'output', handle, portIndex: idx,
-        message: `${def.name}: 输出 ${this.nameOf(itemId)} ×1（输出口${idx + 1} → 传送带）`,
-      });
-    };
-
-    // ── 活跃队列轮转（恰好走访初始队列一轮）──
-    // 成功 → 移队尾；失败 → 移出。两种情形都让"下一个未处理端口"落进 qi 位
-    // （qi 不递增），以 visited 计数保证只走访初始元素一遍——轮转到队尾的
-    // 端口本轮不再回头（它刚出过货/刚被判堵，重访会误伤队列状态）。
-    let qi = 0;
-    for (let visited = 0, total = active.length;
-      visited < total && qi < active.length && hasGoods();
-      visited++) {
-      const idx = active[qi];
-      const itemId = tryEmitAt(idx);
-      if (itemId !== null) {
-        active.splice(qi, 1);
-        active.push(idx);
-        emitOut(idx, itemId);
-      } else {
-        active.splice(qi, 1); // 失败 → 移出队列（堵塞集成员）
-      }
-    }
-
-    // ── 堵塞恢复探测: 堵塞端口按下标序尝试真实出货，成功 → 追加队尾 ──
-    for (let idx = 0; idx < n && hasGoods(); idx++) {
-      if (active.includes(idx)) continue; // 活跃端口本轮已处理
-      const itemId = tryEmitAt(idx);
-      if (itemId === null) continue; // 仍堵（无接收带/满带），保持引用等待
-      active.push(idx); // 恢复 → 追加到当前轮询顺序末尾（A8 §4.2，不插回原位）
-      emitOut(idx, itemId);
-    }
-    comp.outputPollQueue = active;
   }
 }

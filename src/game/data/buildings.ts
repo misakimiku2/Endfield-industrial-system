@@ -486,20 +486,12 @@ export function getBuildingDefinition(id: string): BuildingDefinition | undefine
 }
 
 /**
- * 设备的输出端口数量 (T2.10)。输出轮询队列 outputPollQueue 的容量基准——
- * 队列元素是"过滤后输出端口列表"（type==='output'，按 ports 定义序）中的下标。
+ * 设备的输出端口数量。调试显示/端口状态（portStatus 的"输出"行）的容量基准
+ * ——T2.21 起输出轮询队列元素是接收传送带 handle（不再按下标容量初始化），
+ * 本函数仅保留端口计数语义。
  */
 export function outputPortCount(def: BuildingDefinition): number {
   let n = 0;
   for (const p of def.ports) if (p.type === 'output') n++;
   return n;
-}
-
-/**
- * 创建初始输出轮询队列 (T2.10)：全部输出端口按定义序（左→中→右）活跃。
- * 放置设备时初始化 BuildingComp.outputPollQueue 用；后续轮转/堵塞/恢复由
- * MachineSystem 维护（A8 §4.2）。
- */
-export function createOutputPollQueue(def: BuildingDefinition): number[] {
-  return Array.from({ length: outputPortCount(def) }, (_, i) => i);
 }

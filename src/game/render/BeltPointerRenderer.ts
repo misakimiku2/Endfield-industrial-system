@@ -30,6 +30,13 @@
 //     本链领头物品**（相位 = max(段序号+进度+alpha*delta)，本格偏移 = (相位−段序号)
 //     mod 1，领头换位按整格平移无跳变）；链上无物品回退自由时钟（空带继续流动）。
 //     队列停 → 箭头停（真实传送带观感）；队列进 → 箭头随行。
+//   - 2026-09-05 T2.22（用户实测"指针闪烁位移"）: v11 的相位计算有两处不连续——
+//     ① 领头↔自由时钟模式切换（带清空跳到哈希时钟、注入跳回 0; T2.21 稀疏输出让
+//     短带周期性清空 → 周期性双跳变）② 领头插值 progress+alpha·delta 外推在停走
+//     Tick 边界回跳 ~0.025。相位计算抽为纯逻辑 PointerPhaseClock（本文件同目录）:
+//     每链连续相位载体 virt 跟随领头内插位移（回退钳 0）、空带从领头离开位置无缝
+//     续流、领头出现不跳变（≤10% 带速微漂移缓慢回到 v11 精确对齐）。node 诊断:
+//     scripts/diagnose-pointer-flicker.ts（修复前 S2 每 61Tick 一对跳变，修复后 0）。
 //
 // PixiJS v8 注意：Graphics 作为 StencilMask，clear()+redraw 后模板缓冲不更新（github #10290）。
 //   drawEndpointMask 重画后必须 cellWrap.mask=null 再绑回，否则蒙版形同虚设——曾导致起点
@@ -47,7 +54,8 @@ import type { TextureLookup } from '../systems/RenderSystem';
 import type { BeltSelection } from '../systems/belt/BeltSelection';
 import { CELL_SIZE } from './constants';
 import { turnInfoFromDirections } from '../systems/belt/BeltPathGeometry';
-import { BeltSystem } from '../systems/BeltSystem';
+import { BeltSystem } from '../systems/BeltSystem';
+import { PointerPhaseClock } from './BeltPointerPhase';
 import { lerpColor, BLOCKED_BLEND_MS } from './BeltVectorGeometry';
 
 /** pointer 在格内的视觉尺寸（相对 CELL_SIZE）。与旧项目 cellSize*0.25 一致（按 pointer 高度）。 */
@@ -65,19 +73,6 @@ function directionToIndex(dir: Direction): number {
     case 90:  return 2; // down
     case 180: return 3; // left
   }
-}
-
-/**
- * 链相位偏移（[0,1)）——从 chainId 确定性派生（无状态、每帧一致）。
- * 同链各段同偏移（扶梯连续）；不同链偏移不同（并行带指针互相独立）。
- * 传送带编辑（链合并/拆分重建 chainId）时相位会变，指针跳一次——低频可接受。
- */
-function chainPhaseOf(chainId: string): number {
-  let h = 0;
-  for (let i = 0; i < chainId.length; i++) {
-    h = (h * 31 + chainId.charCodeAt(i)) % 997;
-  }
-  return h / 997;
 }
 
 /** 方向对应的角度（弧度），right=0, down=π/2, left=π, up=3π/2。 */
@@ -135,6 +130,9 @@ export class BeltPointerRenderer {
 
   /** handle → entry 映射，用于 diff。 */
   private entries = new Map<EntityHandle, PointerEntry>();
+  /** 指针相位时钟（T2.22）: 领头跟随/空带续流/注入不跳变的连续相位计算（纯逻辑）。 */
+  private readonly phaseClock = new PointerPhaseClock();
+
   /** 选中态（SelectionSystem 写）；选中段叠加白色 pointer（whiteSprite alpha 渐变）。 */
   private beltSelection: BeltSelection | null = null;
   /** 延长预览中被隐藏的原尾格（该格带身+箭头由创建系统预览接管渲染）。 */
@@ -197,32 +195,19 @@ export class BeltPointerRenderer {
     // 懒解析纹理：assets 在 Game 构造之后才加载完，首次有传送带段时取真实纹理。
     if (!this.resolveTexture()) return;
 
-    // 2. 全局相位（空链回退时钟源）+ 帧间 alpha 插值。有物品的链改用领头物品相位
-    //    （见下方 v11 注释）；链上无物品时回退: 全局时钟 + chainId 派生偏移（空带
-    //    箭头继续流动，且并行空带互相独立）。
+    // 2. 全局相位 + 帧间 alpha 插值（时钟的流动量基准）；每段箭头相位由纯逻辑
+    //    PointerPhaseClock 计算（T2.22: 领头跟随/空带无缝续流/注入不跳变——见文件头）。
     const globalPhase = BeltSystem.beltPhase + alpha * BeltSystem.beltPhaseDelta;
+    const segsList: Array<{ handle: EntityHandle; seg: BeltSegmentComp }> = [];
+    for (const handle of visible) {
+      const seg = this.world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp');
+      if (seg) segsList.push({ handle, seg });
+    }
+    const phases = this.phaseClock.computePhases(segsList, globalPhase, alpha);
     // 堵塞渐变步长（线性插值，固定时长；deltaMS=0 时瞬间到位，兼容旧调用）
     const blendStep = deltaMS > 0 ? deltaMS / BLOCKED_BLEND_MS : 1;
     // 延长预览中被隐藏的原尾格（每帧取一次，段循环内比对格坐标）
     const hiddenCell = this.getHiddenCell?.() ?? null;
-
-    // 2.5 v11: 每链领头物品的连续位置 = max(段序号 + 进度 + alpha*delta)。
-    //     含 entering 行走中（p 可到 1.5）——领头走进设备时相位继续前移，队列
-    //     "跟进去"的观感自然。物品离开链（被吸收）后领头按整格回退，mod 1 后
-    //     箭头无跳变。
-    const leaderByChain = new Map<string, number>();
-    for (const handle of visible) {
-      const seg = this.world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp');
-      if (!seg) continue;
-      const items = seg.items ?? [];
-      if (items.length === 0) continue;
-      const idx = seg.segmentIndex ?? 0;
-      for (const it of items) {
-        const total = idx + it.progress + alpha * (it.delta || 0);
-        const cur = leaderByChain.get(seg.chainId);
-        if (cur === undefined || total > cur) leaderByChain.set(seg.chainId, total);
-      }
-    }
 
     // 3. 新增 + 同步
     for (const handle of visible) {
@@ -287,11 +272,7 @@ export class BeltPointerRenderer {
       // entering 行走中的 p>1——领头走进设备时相位继续前移，队列"跟进去"的观感自然）；
       // 本格箭头相对偏移 = (领头总位置 − 本段序号) mod 1（mod 1 保证领头换位时按整格
       // 平移，视觉无跳变）。链上无物品 → 回退自由时钟（空带箭头继续流动，同旧项目）。
-      const segIdx = seg.segmentIndex ?? 0;
-      const leaderTotal = leaderByChain.get(seg.chainId);
-      const phase = leaderTotal !== undefined
-        ? (((leaderTotal - segIdx) % 1) + 1) % 1
-        : (globalPhase + chainPhaseOf(seg.chainId)) % 1;
+      const phase = phases.get(handle)!;
 
       // 链端点格启用单元蒙版，pointer 从传送带边界出现/消失，不溢出到传送带之外：
       //  - head（链首）：裁起点侧（背向 direction），pointer 从起点边界出现。
