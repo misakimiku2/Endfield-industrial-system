@@ -30,7 +30,7 @@ import type { Direction } from '../components/BuildingComp';
 import { CELL_SIZE } from './constants';
 import { turnInfoFromDirections } from '../systems/belt/BeltPathGeometry';
 import { BeltSystem, ITEM_PROGRESS_PER_TICK } from '../systems/BeltSystem';
-import { ChainPointerQueue, ARROW_WINDOW_MARGIN, type QueueItemRef } from './BeltPointerQueue';
+import { ChainPointerQueue, chainCreationClass, ARROW_WINDOW_MARGIN, type QueueItemRef } from './BeltPointerQueue';
 import { lerpColor, BLOCKED_BLEND_MS } from './BeltVectorGeometry';
 
 /** pointer 在格内的视觉尺寸（相对 CELL_SIZE）。与旧项目 cellSize*0.25 一致（按 pointer 高度）。 */
@@ -77,14 +77,10 @@ interface ArrowEntry {
 
 /** 单链的箭头池 + 队列真值 + 几何缓存 + 遮罩。 */
 interface ChainRuntime {
-  /** 指针队列真值（位置/阻挡/击杀/循环/补充/重相位）。 */
+  /** 指针队列真值（位置/阻挡/击杀/循环/补充/重相位; 逐 Tick 编排在 queue.tick）。 */
   queue: ChainPointerQueue;
-  /** 队列是否已播种（链首次可见时一次）。 */
-  seeded: boolean;
-  /** 上一帧链上物品数——**增加（= 注入事件）**时全链一次性重相位到新物品
-   * （=最末物品）格网：正常流动 δ=0 零开销；停走恢复后新注入与旧队列相位
-   * 分裂时，≤半格刚体平移把后方指针队拉回新物品格网（旧相位物品随吸收排出）。 */
-  lastItemCount: number;
+  /** 创建相位（chainId 时间戳派生）——空带图案各链各异的锚。 */
+  creationClass: number;
   /** 指针 id → 箭头精灵（击杀/链销毁时回收）。 */
   arrows: Map<number, ArrowEntry>;
   /** 本链可见段（按 segmentIndex 升序）。 */
@@ -186,7 +182,8 @@ export class BeltPointerRenderer {
       let rt = this.chains.get(seg.chainId);
       if (!rt) {
         rt = {
-          queue: new ChainPointerQueue(), seeded: false, lastItemCount: 0,
+          queue: new ChainPointerQueue(),
+          creationClass: chainCreationClass(seg.chainId, ((BeltSystem.beltPhase % 1) + 1) % 1),
           arrows: new Map(), segs: [], chainLen: 1, blockedBlend: 0, mask: null, maskKey: '',
         };
         this.chains.set(seg.chainId, rt);
@@ -229,36 +226,20 @@ export class BeltPointerRenderer {
 
       // 物品快照（非 entering；stopped = 本 Tick 停走）——击杀/钳制的判定源
       const items: QueueItemRef[] = [];
-      let rearmost = Infinity;
       for (const { seg } of rt.segs) {
         const idx = seg.segmentIndex ?? 0;
         for (const it of seg.items ?? []) {
           if (it.entering === true) continue; // 走进设备的过客: 不挡 0、不被 0 阻挡
           items.push({ total: idx + it.progress, stopped: (it.delta ?? 0) === 0 });
-          if (idx + it.progress < rearmost) rearmost = idx + it.progress;
         }
       }
 
       if (advance) {
-        // Tick 边界: 内插起点前移 + 播种（首见）+ 队列推进 + 注入重相位。
-        // 顺序必须是"先推进后重相位"——注入 Tick 物品不推进（注入发生在
-        // BeltSystem 之后）而指针推进，先重相位会把目标错开一个流动量。
+        // Tick 边界: 内插起点前移 + 队列 Tick 编排（播种/击杀/前进/循环/注入格
+        // 击杀/注入重相位/空带回归创建相位——单一事实来源 ChainPointerQueue.tick，
+        // 诊断脚本直跑同入口）+ 精灵插值锚更新。
         for (const entry of rt.arrows.values()) entry.prevD = entry.lastD;
-        if (!rt.seeded) {
-          rt.queue.seed(rt.chainLen, ((BeltSystem.beltPhase % 1) + 1) % 1);
-          rt.seeded = true;
-          for (const a of rt.queue.arrows) {
-            const entry = rt.arrows.get(a.id) ?? this.createEntry(rt, a);
-            entry.prevD = entry.lastD = a.pos;
-          }
-        }
-        const hadItemCount = rt.lastItemCount;
-        rt.lastItemCount = items.length;
-        rt.queue.advance(rt.chainLen, ticks, items);
-        if (items.length > hadItemCount && rearmost < Infinity) {
-          // 注入重相位: ≤半格刚体平移到新物品（=最末物品）格网（正常流动 δ=0）
-          rt.queue.rephase(((rearmost % 1) + 1) % 1);
-        }
+        for (let i = 0; i < ticks; i++) rt.queue.tick(rt.chainLen, items, rt.creationClass);
         for (const a of rt.queue.arrows) {
           const entry = rt.arrows.get(a.id) ?? this.createEntry(rt, a);
           // 循环瞬移不得内插——prev→last 横跨整条带（尾→首），α 扫过中段会让

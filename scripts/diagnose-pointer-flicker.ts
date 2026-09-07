@@ -27,7 +27,7 @@ import { BUILDING_DEFINITIONS } from '../src/game/data/buildings.ts';
 import { BeltSystem, ITEM_PROGRESS_PER_TICK } from '../src/game/systems/BeltSystem.ts';
 import { MachineSystem } from '../src/game/systems/MachineSystem.ts';
 import { createBufferSlots } from '../src/game/systems/machine/BufferOps.ts';
-import { ChainPointerQueue, CONTACT_KILL_DIST, type QueueItemRef } from '../src/game/render/BeltPointerQueue.ts';
+import { ChainPointerQueue, chainCreationClass, CONTACT_KILL_DIST, type QueueItemRef } from '../src/game/render/BeltPointerQueue.ts';
 import type { BuildingComp } from '../src/game/components/BuildingComp.ts';
 import type { BeltSegmentComp } from '../src/game/components/BeltSegmentComp.ts';
 import { CELL_SIZE } from '../src/game/render/constants.ts';
@@ -111,12 +111,11 @@ function chainLenOf(world: World, chainId: string): number {
 }
 
 /**
- * 渲染器逐 Tick 逻辑的镜像（与 BeltPointerRenderer 同序同公式）:
- * 播种 → 注入重相位（物品数增加）→ advance(整数 Tick)。指针真值恒在 1/40 格栅
- * 上（渲染层再用与物品相同的 prev+α×Δ 内插，Tick 位同余 ⟹ 逐帧渲染同余）。
+ * 队列驱动镜像: 直接调用 ChainPointerQueue.tick（与渲染器同一入口、零漂移——
+ * 播种/击杀/前进/循环/注入格击杀/注入重相位/空带回归创建相位全在其内）。
  */
 class QueueMirror {
-  states = new Map<string, { q: ChainPointerQueue; seeded: boolean; lastItemCount: number }>();
+  states = new Map<string, { q: ChainPointerQueue }>();
   private prevPos = new Map<string, Map<number, number>>(); // chainId → (arrowId → pos)
 
   tick(world: World, t: number, opts: { check: boolean }): void {
@@ -128,26 +127,12 @@ class QueueMirror {
     for (const chainId of seen) {
       let st = this.states.get(chainId);
       if (!st) {
-        st = { q: new ChainPointerQueue(), seeded: false, lastItemCount: 0 };
+        st = { q: new ChainPointerQueue() };
         this.states.set(chainId, st);
       }
       const len = chainLenOf(world, chainId);
       const items = itemsOf(world, chainId);
-      let rearmost = Infinity;
-      for (const it of items) if (it.total < rearmost) rearmost = it.total;
-      let rephased = false;
-      if (!st.seeded) {
-        st.q.seed(len, ((BeltSystem.beltPhase % 1) + 1) % 1);
-        st.seeded = true;
-      }
-      const hadItemCount = st.lastItemCount;
-      st.lastItemCount = items.length;
-      // 先推进后重相位（注入 Tick 物品不推进而指针推进，先重相位会错开一个流动量）
-      st.q.advance(len, 1, items);
-      if (items.length > hadItemCount && rearmost < Infinity) {
-        st.q.rephase(((rearmost % 1) + 1) % 1);
-        rephased = true;
-      }
+      const slid = st.q.tick(len, items, chainCreationClass(chainId, 0));
 
       if (!opts.check) {
         this.record(chainId, st.q);
@@ -155,7 +140,7 @@ class QueueMirror {
       }
       const prev = this.prevPos.get(chainId) ?? new Map<number, number>();
       // ① Tick 间连续性: |Δ| ∈ {0(被钳)} ∪ [0.025±余量] ∪ 循环瞬移(Δ ≤ 0.075−链长)
-      //    ∪ 注入重相位(|Δ| ≤ 0.5+0.025)
+      //    ∪ 重相位类刚体平移（注入重相位 / 空带回归创建相位, slid 且 ≤0.525）
       for (const a of st.q.arrows) {
         const p = prev.get(a.id);
         if (p === undefined) continue;
@@ -164,7 +149,7 @@ class QueueMirror {
           Math.abs(delta) < 1e-9 ||
           Math.abs(delta - ITEM_PROGRESS_PER_TICK) <= 0.002 ||
           delta <= 0.075 - len + 1e-6 || // 循环 re-entry（尾→首瞬移）
-          (rephased && Math.abs(delta) <= 0.5 + ITEM_PROGRESS_PER_TICK + 1e-9)
+          (slid && Math.abs(delta) <= 0.5 + ITEM_PROGRESS_PER_TICK + 1e-9);
         if (!legal) {
           console.log(`  [tick ${t}] ${chainId.slice(-1)}带 指针#${a.id} d=${a.pos.toFixed(3)} Δ=${delta.toFixed(3)}【指针跳变】`);
           arrowJumps++;
@@ -173,8 +158,7 @@ class QueueMirror {
       // ② 0-1 局部对齐（有界）: 指针与其前方最近物品 mod 1 偏差 ≤ 0.55。
       //    稳态流动/停走队列下指针与物品格网精确同余（注入重相位 + 循环新鲜锚定
       //    + 钳位自愈的推论，图1 的根治）; 残差 = 停走带等待区/列车混合相位的
-      //    瞬态扫动（≤半格，循环一圈或首个钳位自愈），图1 的"半格级恒定错开"
-      //    结构上已不可能。S11 承担跨带棋盘的精确断言。
+      //    瞬态扫动（≤半格，循环一圈或首个钳位自愈）。S11 承担跨带棋盘的精确断言。
       for (const a of st.q.arrows) {
         const p = prev.get(a.id);
         const arrowMoved = p !== undefined && a.pos - p > 1e-9;
@@ -199,9 +183,8 @@ class QueueMirror {
           alignFails++;
         }
       }
-      // ③ 无重叠（指针间）+ ④ 密度。指针-物品距离不判定: 接近/骑行的半重叠是
-      //    用户模型内的合法状态（"1 走过来盖住 0，停稳后 0 才消失"），阻挡/击杀
-      //    规则已由 ②与 S5/S12 覆盖。
+      // ③ 无重叠（指针间）+ ④ 密度。指针-物品距离不判定: 覆盖接近由击杀规则收尾
+      //    （注入格击杀/流动覆盖击杀/停稳击杀），接近走廊是用户模型内的合法瞬态。
       const arrows = st.q.arrows;
       for (let i = 0; i < arrows.length; i++) {
         for (let j = i + 1; j < arrows.length; j++) {
@@ -699,6 +682,124 @@ runScenario('S4 不延长(对照)', { aLen: 3, bLen: 3, extendAt: 1 << 30, exten
     }
     assertOk(countBad === 0 && worstGap < 1e-6 && frozenTicks === 0 && worstSpan < 0.53,
       `S14-${len}格带. ${checked} Tick 空带连续流: 指针数恒 ${len + 1}（违例 ${countBad}）、间距恒 1.0（峰值偏差 ${worstGap.toExponential(2)}——移动空洞"0-0-0-空"根除）、零停顿 Tick（${frozenTicks}）、渲染内插跨度 ≤0.53（峰值 ${worstSpan.toFixed(3)}，循环瞬移已中和 = 无横扫双影）`);
+  }
+}
+
+// ═══ S15 满载流无下骑（一格只能 0 或 1）═══
+{
+  console.log('\n═══ S15 满载流无下骑 ═══');
+  const { world, beltSys, machineSys, place } = makeWorld();
+  const f = place('refining_unit', 5, 5);
+  placeSinkAt(world, 4, 1); // 端口格 (5,1) = A 链尾 (5,2) 出口
+  const idA = 'chain-1754000000980-A';
+  for (let i = 0; i < 3; i++) {
+    const h = world.createEntity();
+    world.addComponent(h, 'Position', { x: 5 * CELL_SIZE, y: (4 - i) * CELL_SIZE });
+    world.addComponent(h, 'BeltSegmentComp', {
+      chainId: idA, direction: 270, isCorner: false, isTail: i === 2,
+      segmentIndex: i, phaseOffset: 0, items: [], blocked: false,
+    } as BeltSegmentComp);
+  }
+  f.bufferInput[0] = { itemId: 'originium_ore', count: 500 };
+  const mirror = new QueueMirror();
+  let minDist = Infinity;
+  let sameCell = 0;
+  let checked = 0;
+  for (let t = 1; t <= 1200; t++) {
+    beltSys.update(world, 50);
+    machineSys.update(world, 50);
+    mirror.tick(world, t, { check: false });
+    if (t <= 500) continue; // 暖机至稳态满载流（单带 40-Tick 节拍 = 1-1-1 密集）
+    const st = mirror.states.get(idA)!;
+    const items = itemsOf(world, idA);
+    checked++;
+    for (const a of st.q.arrows) {
+      for (const it of items) {
+        const d = Math.abs(it.total - a.pos);
+        minDist = Math.min(minDist, d);
+        if (Math.floor(a.pos + 1e-9) === Math.floor(it.total + 1e-9)) sameCell++;
+      }
+    }
+  }
+  assertOk(minDist >= 1 - 1e-6 && sameCell === 0,
+    `S15. ${checked} Tick 满载流: 指针-物品最小距离 ${minDist.toFixed(4)}（期望 ≥1.0）、同格共存 ${sameCell} 次（期望 0——物品下方永久跟针/亚格间距同行已根除，注入格上的 0 让位）`);
+}
+
+// ═══ S16 空带相位独立（每条带 = 自己的创建时刻）═══
+{
+  console.log('\n═══ S16 空带相位独立 ═══');
+  // a) 纯队列: 两条链不同创建相位 → 各自保持、互不同步
+  {
+    const qA = new ChainPointerQueue();
+    const qB = new ChainPointerQueue();
+    const cA = chainCreationClass('chain-1754000000101-A', 0);
+    const cB = chainCreationClass('chain-1754000000137-B', 0);
+    assertOk(Math.abs(cA - cB) > 0.01, `S16-a前置. 两条链创建相位不同（${cA.toFixed(3)} vs ${cB.toFixed(3)}）`);
+    for (let t = 0; t < 800; t++) {
+      qA.tick(3, [], cA);
+      qB.tick(3, [], cB);
+    }
+    const kA = ((qA.arrows[0]!.pos % 1) + 1) % 1;
+    const kB = ((qB.arrows[0]!.pos % 1) + 1) % 1;
+    const eA = (cA + 800 * ITEM_PROGRESS_PER_TICK) % 1;
+    const eB = (cB + 800 * ITEM_PROGRESS_PER_TICK) % 1;
+    const near = (a: number, b: number): boolean => Math.abs(((a - b) % 1 + 1.5) % 1 - 0.5) < 1e-7;
+    assertOk(near(kA, eA) && near(kB, eB) && near(qA.freeRunClass, eA),
+      `S16-a. 800 Tick 空带流动且相位 = 创建时刻时钟（A ${kA.toFixed(4)}→${eA.toFixed(4)}, B ${kB.toFixed(4)}→${eB.toFixed(4)}——指针在流（非静止），各链相位 = 创建相位+流逝，互不同步）`);
+    // a2) 错时刻播种: B 在 A 跑了 100 Tick 后才出现（不同全局时刻播种）——相位差
+    //     必须保持 ≠ 0（ frac(ts/周期) 派生会被流动量精确抵消 → 全局同相，
+    //     浏览器像素实测暴露，T2.29-c 代理验证发现; 哈希序位与时钟不相关故免疫）
+    const qC = new ChainPointerQueue();
+    const idC = 'chain-1754000000199-C';
+    const cC = chainCreationClass(idC, 0);
+    for (let t = 0; t < 100; t++) qA.tick(3, [], cA);
+    for (let t = 0; t < 300; t++) qA.tick(3, [], cA);
+    for (let t = 0; t < 300; t++) qC.tick(3, [], cC);
+    const kA2 = ((qA.arrows[0]!.pos % 1) + 1) % 1;
+    const kC = ((qC.arrows[0]!.pos % 1) + 1) % 1;
+    let dAC = (((kC - kA2) % 1) + 1) % 1;
+    assertOk(Math.min(dAC, 1 - dAC) > 0.01,
+      `S16-a2. 错时刻播种的两链相位差 ${Math.min(dAC, 1 - dAC).toFixed(4)} 恒 ≠ 0（A ${kA2.toFixed(4)} vs C ${kC.toFixed(4)}——创建时刻偏移不被流动量抵消）`);
+  }
+  // b) 带过物品 → 排空 → 回归创建相位
+  {
+    const { world, beltSys, machineSys, place } = makeWorld();
+    const f = place('refining_unit', 5, 5);
+    placeSinkAt(world, 4, 1);
+    const idA = 'chain-1754000000203-A';
+    for (let i = 0; i < 3; i++) {
+      const h = world.createEntity();
+      world.addComponent(h, 'Position', { x: 5 * CELL_SIZE, y: (4 - i) * CELL_SIZE });
+      world.addComponent(h, 'BeltSegmentComp', {
+        chainId: idA, direction: 270, isCorner: false, isTail: i === 2,
+        segmentIndex: i, phaseOffset: 0, items: [], blocked: false,
+      } as BeltSegmentComp);
+    }
+    f.bufferInput[0] = { itemId: 'originium_ore', count: 30 };
+    const mirror = new QueueMirror();
+    const cA = chainCreationClass(idA, 0);
+    let carried = false;
+    let restoredAt = -1;
+    for (let t = 1; t <= 1600 && restoredAt < 0; t++) {
+      beltSys.update(world, 50);
+      machineSys.update(world, 50);
+      mirror.tick(world, t, { check: false });
+      if (itemsOf(world, idA).length > 0) carried = true;
+      if (carried && itemsOf(world, idA).length === 0 && t > 200) {
+        for (let k = 0; k < 3; k++) {
+          beltSys.update(world, 50);
+          machineSys.update(world, 50);
+          mirror.tick(world, t + 1 + k, { check: false });
+        }
+        const q = mirror.states.get(idA)!.q;
+        const klass = ((q.arrows[0]!.pos % 1) + 1) % 1;
+        // 回归目标 = 虚拟创建时钟（持续前进），不是静态创建相位
+        const d = (((q.freeRunClass - klass) % 1) + 1) % 1;
+        if (Math.min(d, 1 - d) < 1e-9) restoredAt = t;
+      }
+    }
+    assertOk(carried && restoredAt > 0,
+      `S16-b. 带过物品排空后回归虚拟创建时钟（携带 ✓，回归 @tick ${restoredAt}，时钟锚 ${cA.toFixed(4)}——被设备节拍对齐后不再残留同相，且回归后随时钟继续流动非静止）`);
   }
 }
 
