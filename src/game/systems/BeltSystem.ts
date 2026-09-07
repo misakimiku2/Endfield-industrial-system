@@ -39,7 +39,7 @@ import type { BuildingComp, Direction } from '../components/BuildingComp.ts';
 import { getBuildingDefinition, type BuildingDefinition } from '../data/buildings.ts';
 import { directionVector } from './belt/BeltPathGeometry.ts';
 import { inputPortCells } from './PortGeometry.ts';
-import { logisticsDebug } from './machine/LogisticsDebug.ts';
+import { logisticsDebug } from './machine/LogisticsDebug.ts';
 import { CELL_SIZE } from '../render/constants.ts';
 
 /**
@@ -49,6 +49,21 @@ import { CELL_SIZE } from '../render/constants.ts';
  * 导出供 MachineSystem 复用（T2.21 设备级输出节拍 = 1/速度 = 40 Tick/件）。
  */
 export const ITEM_PROGRESS_PER_TICK = 0.025;
+
+/**
+ * progress 网格对齐（T2.29）。0.025 是二进制无限小数，逐 Tick 累加会在 1.0 跨格
+ * 边界下欺（0.975+0.025 = 0.9999…9 < 1.0）→ 跨格晚 1 Tick → 段首在出货节拍 Tick
+ * 上仍被占用 → 轮询成功时刻偏离 40-Tick 网格 → 注入相位永久漂移（双带轮询棋盘
+ * "跑久了又变正常"的玄学自愈 = 这些罕见事件的慢速随机游走）。每次推进后对齐到
+ * 1/40 格栅（Math.round 幂等于格点值），跨格/节拍/门口判定全部精确:
+ * 跨格恰在注入后 40 Tick、相邻成功出货间隔恰 40 Tick、物品相位永不漂移。
+ */
+const PROGRESS_GRID_STEPS = Math.round(1 / ITEM_PROGRESS_PER_TICK); // 40
+
+/** 对齐到 1/40 格栅（格点值幂等）。 */
+export function snapProgress(p: number): number {
+  return Math.round(p * PROGRESS_GRID_STEPS) / PROGRESS_GRID_STEPS;
+}
 
 /**
  * 相邻物品的最小世界间距（格）。一格一物品（用户 2026-08-17 澄清，修订 A9 §2.3 的
@@ -93,7 +108,7 @@ export class BeltSystem implements SimulationSystem {
    */
   static beltPhase = 0;
   /** 本 tick 的 beltPhase 增量，渲染层帧间插值用（正常=0.025，重置 tick=0 避免倒退跳跃）。 */
-  static beltPhaseDelta = ITEM_PROGRESS_PER_TICK;
+  static beltPhaseDelta = ITEM_PROGRESS_PER_TICK;
 
   update(world: World, _dt: number): void {
     // 反向遍历（链尾→链头）：跨段物品 push 到下游段时，下游已处理 → 本 tick 不推进新物品，
@@ -249,7 +264,9 @@ export class BeltSystem implements SimulationSystem {
     // === 队首：跨段 / 间距钳制 / 段尾停止 ===
     const head = ordered[0];
     const oldHead = head.progress;
-    const headAdvanced = oldHead + ITEM_PROGRESS_PER_TICK;
+    // T2.29: 推进后即对齐 1/40 格栅——跨格判定 headAdvanced >= 1.0 因此精确
+    // （旧版浮点累加在 0.975+0.025 处下欺 → 晚 1 Tick 跨格 → 节拍错位）。
+    const headAdvanced = snapProgress(oldHead + ITEM_PROGRESS_PER_TICK);
     // 物流调试: 记住本 Tick 前的 delta，分支结束后按 跳变 记录 停止/恢复
     const prevHeadDelta = head.delta;
     /** 后方物品的限制基准（前方物品的 progress）；队首跨段离开后用 1.0=段尾边界(=下游段首)。 */
@@ -304,11 +321,18 @@ export class BeltSystem implements SimulationSystem {
         logisticsDebug.log(`▶ 物品前进: 段(${gx},${gy}) ${head.itemId}@${stopAt.toFixed(2)}（原断头钳制解除）`);
       }
     } else if (headAdvanced >= 1.0 && downMin === Infinity) {
-      // 跨段: 下游空，队首离开本段进入下游段首 progress=0（A9 §2 "重新走"）。
-      // 段尾边界与下游段首边界在世界坐标重合 → 视觉无跳跃。
+      // 跨段: 下游无非 entering 物品（空段，或仅有 entering 过客——2026-09-02 修订）。
+      // 落点 = headAdvanced − 1.0（越过边界的余量，∈[0, 0.025)）而非 0（T2.26）:
+      // 浮点累加在 1.0 阈值处下欺（…0.9999…9 + 0.025 = 1.0249…）会让跨段晚 1 Tick，
+      // 落点 0 会让与 entering 领头的间距变 1.025 → 物品离格 −0.025（≈1.6px）、
+      // 领头移除时全链箭头回跳 ~0.025 格（浏览器日志 65 次跳变/56 次离格的根源）。
+      // 落点带余量 → 逻辑 total 连续（1 + 落点 == headAdvanced，无位置跳变），且与
+      // 领头的间距**精确** 1.0（后件与领头的行进是同一浮点序列）；门口格的
+      // Math.min 常量钳制（0.5/1.5）随后抹平残差，网格自愈。
       if (downSeg) {
         const downItems = downSeg.items ?? (downSeg.items = []);
-        downItems.push({ itemId: head.itemId, progress: 0, delta: ITEM_PROGRESS_PER_TICK }); // delta=流动量，渲染插值连续（避免跨段顿）
+        // 落点 = 越界余量（T2.26），再对齐格栅（headAdvanced 已对齐，差值精确）
+        downItems.push({ itemId: head.itemId, progress: snapProgress(Math.max(0, headAdvanced - 1.0)), delta: ITEM_PROGRESS_PER_TICK }); // delta=流动量，渲染插值连续（避免跨段顿）
         // 从本段 items 移除 head（按引用）
         const idx = items.indexOf(head);
         if (idx >= 0) items.splice(idx, 1);
@@ -347,7 +371,7 @@ export class BeltSystem implements SimulationSystem {
     for (let i = 1; i < ordered.length; i++) {
       const item = ordered[i];
       const old = item.progress;
-      let next = old + ITEM_PROGRESS_PER_TICK;
+      let next = snapProgress(old + ITEM_PROGRESS_PER_TICK); // T2.29 格栅对齐
       const limit = leaderProgress - MIN_ITEM_GAP;
       if (next > limit) next = limit;
       if (next < old) next = old; // 不后退（被前方夹住时保持不动）

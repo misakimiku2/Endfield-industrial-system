@@ -26,6 +26,7 @@ import type { Direction } from '../components/BuildingComp';
 import type { TextureLookup } from '../systems/RenderSystem';
 import { turnInfoFromDirections, directionVector } from '../systems/belt/BeltPathGeometry';
 import { CELL_SIZE } from './constants';
+import { logisticsDebug } from '../systems/machine/LogisticsDebug';
 
 /** 物品视觉边长（世界像素），约占半格。各物品纹理按长边缩放到此尺寸（保持长宽比）。 */
 const ITEM_VISUAL_SIZE = CELL_SIZE * 0.5;
@@ -73,6 +74,13 @@ export class BeltItemRenderer {
   private renderState = new WeakMap<BeltItem, { prevTick: number; lastSeen: number }>();
   /** 上一帧的 alpha。alpha 每 Simulation Tick 回卷变小（accumulator −= SIM_STEP）→ 回卷 = 新 Tick 第一帧。 */
   private lastAlpha = -1;
+  /**
+   * T2.25 物品跳动检测: 物品 → 上一帧渲染 progress（仅 logisticsDebug 开启时写读）。
+   * prev→cur 内插约定下渲染位置**帧间连续**（前进 ≤0.025/Tick、零后退）——越界即
+   * 用户可见的"物品闪烁/微退"取证（首帧不参与：注入/跨段新对象以 progress−delta
+   * 起步是合法重建，非跳动）。
+   */
+  private readonly diagLastRender = new WeakMap<BeltItem, number>();
 
   constructor(world: World, _layer: Container, belowLayer: Container, getTexture: TextureLookup) {
     this.world = world;
@@ -157,6 +165,22 @@ export class BeltItemRenderer {
           st.lastSeen = item.progress;
         }
         const renderProgress = st.prevTick + alpha * (st.lastSeen - st.prevTick);
+        // T2.25 物品跳动检测: 帧间渲染位置越界（后退 >0.004 或前进 >0.03 ≈ 一 Tick
+        // 位移 0.025 的上界+余量）→ 用户可见的闪烁/微退取证。按格节流防刷屏。
+        if (logisticsDebug.enabled) {
+          const lastR = this.diagLastRender.get(item);
+          this.diagLastRender.set(item, renderProgress);
+          if (lastR !== undefined && (renderProgress - lastR < -0.004 || renderProgress - lastR > 0.03)) {
+            const fd = renderProgress - lastR;
+            const gx = Math.round(pos.x / CELL_SIZE);
+            const gy = Math.round(pos.y / CELL_SIZE);
+            logisticsDebug.logThrottled(
+              `item-jump-${gx},${gy}`,
+              `❗ 物品跳动: ${item.itemId} 格(${gx},${gy}) 渲染位置 ${lastR.toFixed(3)}→${renderProgress.toFixed(3)}`
+              + `（帧增量 ${fd.toFixed(3)}，合法 [0, 0.025]±余量）alpha=${alpha.toFixed(2)}${item.entering ? ' entering' : ''}【缺陷信号】`,
+            );
+          }
+        }
         const { x, y, rotation } = this.itemTransform(seg, renderProgress, pos);
         sprite.position.set(x, y);
         sprite.rotation = rotation; // 物品像 pointer 一样旋转（直段朝流向/转角沿切线）

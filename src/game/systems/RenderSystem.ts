@@ -198,7 +198,13 @@ export class RenderSystem {
     this.isBeltCreationActive = isBeltCreationActive;
     this.getHoveredAnyPortCell = getHoveredAnyPortCell;
     // 延长预览隐藏的原尾格：转发给带身/pointer 渲染器（该格由创建系统预览接管）
-    this.pointerRenderer = new BeltPointerRenderer(world, layers.layer3Item, getTexture, getBeltHiddenTailCell);
+    // T2.27 连续箭头流: 指针层移入 layer2Building zIndex=0.4（带身 0 之上、物品
+    // belowItems 0.5 之下、设备 1 之下）——箭头从物品/设备下方连续滑过（旧
+    // layer3Item 上的"有物品隐藏箭头"硬切规则随 mod 1 模型一并退役）。
+    const beltPointers = new Container({ label: 'beltPointers', sortableChildren: true });
+    beltPointers.zIndex = 0.4;
+    layers.layer2Building.addChild(beltPointers);
+    this.pointerRenderer = new BeltPointerRenderer(world, beltPointers, getTexture, getBeltHiddenTailCell);
     // T2.8 层级修订（从下到上: 带身→物品→设备→端口高亮→箭头）:
     // belowItems 挂 layer2Building 且 zIndex=0.5（带身 0 之上、设备 1 之下）→
     // 所有传送带物品在带身上传输，进入设备 footprint 即被设备纹理遮挡（"钻到设备下方"）。

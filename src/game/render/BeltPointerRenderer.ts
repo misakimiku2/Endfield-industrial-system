@@ -1,61 +1,36 @@
-// 传送带 pointer 流动渲染器 — T2.0
+// 传送带 pointer 流动渲染器 — T2.0 → T2.29 指针队列物理（0/1 统一模型完整版）
 // 移植自旧 Flutter 项目 transport_belt_renderer.dart 的 drawItemAt（直段线性 + 转角圆弧）。
 //
 // 职责:
-//   - 每帧查询所有 Position+BeltSegmentComp 实体，为每段维护一个 pointer Sprite + 单元蒙版。
-//   - 传送带单元（正方形）作为 pointer 的蒙版，**仅在链端点格启用**：
-//     链首格(head)裁起点侧、链尾格(tail)裁终点侧、单格链(single)两端都裁——
-//     pointer 从传送带边界出现/消失，不溢出到传送带之外（起点不外飘，终点不走出）；
-//     中间格不蒙版，pointer 可自然跨越格边界，使整链箭头像传送带一样连贯流动、无断层。
-//   - 每链共享一个相位（2 秒一格）：N 格出口边 = N+1 格入口边，相位复位时下一格的
-//     pointer 接管同一世界位置 → 视觉无缝衔接（链内自动扶梯效果）。相位 = 全局时钟
-//     + **按 chainId 确定性派生的偏移**（2026-08-25 用户实测修订: 不同时间创建的传送带
-//     指针动画不应全局锁步，并行带互相独立；同链保持扶梯连续）。物品已与指针解耦
-//     （T2.7 起注入段首独立推进），指针相位只影响箭头动画本身。
-//   - 直段：沿方向轴线性移动；链首/链尾格移动范围在端点侧各扩展半个箭头（滑入/滑出），
-//     越界部分由端点蒙版裁掉（pointer 从边界渐入/渐出，而非硬切或外飘）。
-//   - 转角段：沿四分之一圆弧移动。
-//   - T2.1 起：段上有物品时指针隐藏（A9 §5.2.2 一格一物品: 该格显示指针或物品二选一，
-//     物品替换箭头为硬切）。2026-08-25 相位解耦后曾迭代的变体（相位差渐隐、世界距离
-//     渐隐、占据半径、显隐缓动）均被用户实测否决——队列前方箭头出现各种形式的
-//     alpha 渐变闪动。定稿: **无任何特殊效果**，段上 items 非空即隐藏、空段常显流动，
-//     与其他指针行为完全一致。
-//   - 2026-08-27: v7~v10 五轮重写（邻接隐藏/门口恒隐/全格裁剪/恒显遮挡/带面纹理化）
-//     均被用户实测否决，已回退 v6；随后对齐旧项目 transport_belt_renderer.dart 的
-//     真正机制（v11）。
-//   - 2026-08-27 v11 终稿（旧项目对齐）: 读旧项目源码确认其指针/物品**共用同一个
-//     全局 arrowProgress**——物品在该格内的位置就是箭头相位位置，锁步前进/停止，
-//     "物品替换箭头"天衣无缝。本项目物品是独立逐格进度（T2.7/T2.10，排队/端口轮询
-//     需要），指针自由时钟与队列错位 = 历次视觉问题总根源。v11 修复: **箭头相位跟随
-//     本链领头物品**（相位 = max(段序号+进度+alpha*delta)，本格偏移 = (相位−段序号)
-//     mod 1，领头换位按整格平移无跳变）；链上无物品回退自由时钟（空带继续流动）。
-//     队列停 → 箭头停（真实传送带观感）；队列进 → 箭头随行。
-//   - 2026-09-05 T2.22（用户实测"指针闪烁位移"）: v11 的相位计算有两处不连续——
-//     ① 领头↔自由时钟模式切换（带清空跳到哈希时钟、注入跳回 0; T2.21 稀疏输出让
-//     短带周期性清空 → 周期性双跳变）② 领头插值 progress+alpha·delta 外推在停走
-//     Tick 边界回跳 ~0.025。相位计算抽为纯逻辑 PointerPhaseClock（本文件同目录）:
-//     每链连续相位载体 virt 跟随领头内插位移（回退钳 0）、空带从领头离开位置无缝
-//     续流、领头出现不跳变（≤10% 带速微漂移缓慢回到 v11 精确对齐）。node 诊断:
-//     scripts/diagnose-pointer-flicker.ts（修复前 S2 每 61Tick 一对跳变，修复后 0）。
+//   - 每帧查询所有 Position+BeltSegmentComp 实体，按链分组；每链持有一个
+//     ChainPointerQueue（指针队列的真值状态，纯逻辑、node 可驱动），逐帧按仿真
+//     Tick 折算步长推进，把每支指针经链几何（直段线性/转角圆弧）映射到世界坐标。
+//   - **队列物理（T2.29，§十三 用户拍板）**: 指针 0 与物品 1 运行逻辑相同——以带速
+//     流动、被物品/其他 0 挡住就停在格心排队（不穿过 1）、被停稳的 1 压住即消失、
+//     滑出链尾后从链首再进来；链激活（首件注入）时全链一次性重相位到物品格网
+//     （最短模距离 ≤半格）——0 与 1 从此永同格网（图1"物品与指针网格错开"根治）。
+//     阻挡/击杀/循环/补充的规则全在 BeltPointerQueue（纯逻辑），本类只做精灵 I/O。
+//   - **带身遮罩（用户参考图设计，T2.28 保留）**: 带身格矩形并集 = 箭头的遮罩——
+//     箭头滑出带端/等待入链时被像素级裁掉，配合端部渐变呈现"半透明滑出/滑入"。
+//   - 保留: 堵塞 tint（黄→橙 #E6956F 渐变）、选中段白色 pointer 叠层、延长预览
+//     隐藏格。
 //
-// PixiJS v8 注意：Graphics 作为 StencilMask，clear()+redraw 后模板缓冲不更新（github #10290）。
-//   drawEndpointMask 重画后必须 cellWrap.mask=null 再绑回，否则蒙版形同虚设——曾导致起点
-//   pointer 从传送带外面飘入。详见 update 中 isHead 分支的 workaround 注释。
+// 层级: 指针层在 layer2Building zIndex 0.4（带身 0 之上、物品 belowItems 0.5 之下、
+// 设备 1 之下）——流动的物品从指针上方碾过（指针在其下方继续存在，§十三②"盖住"）。
 //
 // pointer 纹理：devices 图集的 pointer.png（来自 pointer.svg，9.4×21.3，纵向，默认箭头朝上）。
-// 挂 layer3Item（物品层），盖在传送带带身（layer2Building）之上。
 
-import { Sprite, Texture, Graphics, Container } from 'pixi.js';
+import { Sprite, Texture, Container, Graphics } from 'pixi.js';
 import type { World, EntityHandle } from '../ECS';
 import type { Position } from '../components/Position';
 import type { BeltSegmentComp } from '../components/BeltSegmentComp';
-import type { Direction } from '../components/BuildingComp';
 import type { TextureLookup } from '../systems/RenderSystem';
 import type { BeltSelection } from '../systems/belt/BeltSelection';
+import type { Direction } from '../components/BuildingComp';
 import { CELL_SIZE } from './constants';
 import { turnInfoFromDirections } from '../systems/belt/BeltPathGeometry';
-import { BeltSystem } from '../systems/BeltSystem';
-import { PointerPhaseClock } from './BeltPointerPhase';
+import { BeltSystem, ITEM_PROGRESS_PER_TICK } from '../systems/BeltSystem';
+import { ChainPointerQueue, ARROW_WINDOW_MARGIN, type QueueItemRef } from './BeltPointerQueue';
 import { lerpColor, BLOCKED_BLEND_MS } from './BeltVectorGeometry';
 
 /** pointer 在格内的视觉尺寸（相对 CELL_SIZE）。与旧项目 cellSize*0.25 一致（按 pointer 高度）。 */
@@ -85,55 +60,65 @@ function directionAngle(dir: Direction): number {
   }
 }
 
-/** 单个 pointer Sprite 的运行时状态。 */
-interface PointerEntry {
+const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+/** 单支箭头的运行时状态（按指针 id 键控——id 稳定，位置帧间连续）。 */
+interface ArrowEntry {
   sprite: Sprite;
-  /** 选中格叠加的白色 pointer（tint 白，alpha 随相位渐入渐出）；非选中段 visible=false。 */
+  /** 选中段叠加的白色 pointer；非选中段 visible=false。 */
   whiteSprite: Sprite;
-  /** 包裹 sprite 的容器（作为蒙版裁剪单元，位置=格左上角世界坐标）。 */
-  cellWrap: Container;
-  /** 单元蒙版（Graphics，走 StencilMask 路径，无纹理、resize 安全）。
-   *  形状随端点类型变化（见 lastMaskKey），仅在 kind/direction 变化时重画，避免每帧 redraw 开销。 */
-  cellMask: Graphics;
-  /** 当前已画进 cellMask 的形状 key（kind+direction，避免每帧重画相同形状）。 */
-  lastMaskKey: string;
-  handle: EntityHandle;
-  /** 堵塞渐变进度 0~1（箭头黄 → 橙 #E6956F）。每帧向目标趋近。 */
+  /** 几何行走游标（缓存所在段下标省去每帧线性查找；循环瞬移可双向行走）。 */
+  segCursor: number;
+  /** 上一 Tick 边界的链坐标（渲染内插起点，与物品 prevTick 同律）。 */
+  prevD: number;
+  /** 当前 Tick 的链坐标（队列真值，Tick 边界推进时更新）。 */
+  lastD: number;
+}
+
+/** 单链的箭头池 + 队列真值 + 几何缓存 + 遮罩。 */
+interface ChainRuntime {
+  /** 指针队列真值（位置/阻挡/击杀/循环/补充/重相位）。 */
+  queue: ChainPointerQueue;
+  /** 队列是否已播种（链首次可见时一次）。 */
+  seeded: boolean;
+  /** 上一帧链上物品数——**增加（= 注入事件）**时全链一次性重相位到新物品
+   * （=最末物品）格网：正常流动 δ=0 零开销；停走恢复后新注入与旧队列相位
+   * 分裂时，≤半格刚体平移把后方指针队拉回新物品格网（旧相位物品随吸收排出）。 */
+  lastItemCount: number;
+  /** 指针 id → 箭头精灵（击杀/链销毁时回收）。 */
+  arrows: Map<number, ArrowEntry>;
+  /** 本链可见段（按 segmentIndex 升序）。 */
+  segs: Array<{ handle: EntityHandle; seg: BeltSegmentComp; pos: Position }>;
+  /** 链长（格）= 最大 segmentIndex + 1。 */
+  chainLen: number;
+  /** 堵塞渐变进度 0~1（箭头黄 → 橙）。每帧向目标趋近。 */
   blockedBlend: number;
+  /** 带身遮罩（格矩形并集）——裁掉滑出带端/带外等待的箭头。 */
+  mask: Graphics | null;
+  /** 遮罩对应格集指纹（变化才重建）。 */
+  maskKey: string;
 }
 
 /**
- * 蒙版形状种类。决定 cellMask 画什么形状：
- *  - 'none'：中间格，不裁（renderable=false、mask=null）。
- *  - 'head'：链首格，只裁"背向"方向那一侧（传送带真正的起点），其余三面向链内敞开。
- *  - 'tail'：链尾格，只裁"朝向"方向那一侧（传送带真正的终点），其余三面向链内敞开。
- *  - 'single'：单格链（head+tail 同格），两端都是尽头，完整格蒙版（两端都裁）。
- * 选中格不再单独用蒙版——改用 whiteSprite 叠层 + alpha 渐变实现"白色 pointer"，避免硬切断层。
- */
-type MaskKind = 'none' | 'head' | 'tail' | 'single';
-
-/**
- * 传送带 pointer 渲染器。
+ * 传送带 pointer 流动渲染器（指针队列物理）。
  *
- * 用法：在主循环每帧调用 update(elapsedMS, cameraVisibleBounds?)。
- * elapsedMS 由调用方累积（从游戏开始的总毫秒数）。
+ * 用法：在主循环每帧调用 update(alpha, deltaMS)。
  */
 export class BeltPointerRenderer {
   private world: World;
   private layer: Container;
   private getTexture: TextureLookup;
-  /** 指针纹理（devices 图集的 pointer）。懒解析：assets 在 Game 构造之后才加载完，
-   *  故不能在构造时取（那时还是 EMPTY）；首次 update 时解析并缓存。 */
+  /** 指针纹理（devices 图集的 pointer）。懒解析：assets 在 Game 构造之后才加载完。 */
   private pointerTex: Texture | null = null;
   /** 指针按高度的基准缩放（使 pointer 高度 = CELL_SIZE * POINTER_SIZE_RATIO）。 */
   private pointerScale = 1;
 
-  /** handle → entry 映射，用于 diff。 */
-  private entries = new Map<EntityHandle, PointerEntry>();
-  /** 指针相位时钟（T2.22）: 领头跟随/空带续流/注入不跳变的连续相位计算（纯逻辑）。 */
-  private readonly phaseClock = new PointerPhaseClock();
+  /** chainId → 链运行时（队列真值 + 箭头池 + 几何 + 遮罩）。链消失即销毁。 */
+  private chains = new Map<string, ChainRuntime>();
+  /** 上一帧的 beltPhase——差值折算本帧跨过的仿真 Tick 数（暂停时 0）。 */
+  private lastBeltPhase: number | null = null;
 
-  /** 选中态（SelectionSystem 写）；选中段叠加白色 pointer（whiteSprite alpha 渐变）。 */
+  /** 选中态（SelectionSystem 写）；选中段上的箭头叠加白色 pointer。 */
   private beltSelection: BeltSelection | null = null;
   /** 延长预览中被隐藏的原尾格（该格带身+箭头由创建系统预览接管渲染）。 */
   private getHiddenCell?: () => { x: number; y: number } | null;
@@ -172,276 +157,300 @@ export class BeltPointerRenderer {
   }
 
   /**
-   * 每帧更新所有 pointer 的位置与朝向。
-   * @param alpha 仿真周期插值系数（accumulator/SIM_STEP，0~1）。pointer 用 BeltSystem.beltPhase
-   *   作时间源（与物品同源），消除漂移/闪烁。
+   * 每帧更新所有链的指针队列。
+   * @param alpha 仿真周期插值系数（accumulator/SIM_STEP，0~1）。与物品同源时钟
+   *   （BeltSystem.beltPhase），帧间差 = 本帧应推进的 Tick 数（暂停时为 0）。
    */
   update(alpha: number, deltaMS = 0): void {
     const visible = this.world.query('Position', 'BeltSegmentComp');
-    const seen = new Set<EntityHandle>(visible);
+    const seen = new Set<string>();
 
-    // 1. 销毁消失实体对应的 pointer
-    for (const [handle, entry] of this.entries) {
-      if (!seen.has(handle)) {
-        entry.cellWrap.removeFromParent();
-        entry.cellWrap.destroy({ children: true });
-        this.entries.delete(handle);
+    // 无传送带段时直接返回（也避免无谓的纹理解析）
+    if (visible.length === 0) {
+      this.destroyAll();
+      this.lastBeltPhase = null;
+      return;
+    }
+    if (!this.resolveTexture()) return;
+
+    // 1. 分组: chainId → 段列表（segmentIndex 升序）。链运行时必须经 this.chains
+    //    持久化复用（队列真值 + 箭头池跨帧存活）——每帧新建会按帧泄漏精灵且丢失
+    //    队列状态。段列表须在逐实体循环外整帧清空一次（T2.27-b 教训: 循环内清
+    //    会只剩最后一段，弯折处箭头穿出成直线）。
+    for (const rt of this.chains.values()) rt.segs.length = 0;
+    const grouped = new Map<string, ChainRuntime>();
+    for (const handle of visible) {
+      const seg = this.world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp');
+      const pos = this.world.getComponent<Position>(handle, 'Position');
+      if (!seg || !pos) continue;
+      let rt = this.chains.get(seg.chainId);
+      if (!rt) {
+        rt = {
+          queue: new ChainPointerQueue(), seeded: false, lastItemCount: 0,
+          arrows: new Map(), segs: [], chainLen: 1, blockedBlend: 0, mask: null, maskKey: '',
+        };
+        this.chains.set(seg.chainId, rt);
+      }
+      rt.segs.push({ handle, seg, pos });
+      grouped.set(seg.chainId, rt);
+      seen.add(seg.chainId);
+    }
+
+    // 2. 销毁消失链的队列与箭头池、遮罩
+    for (const [chainId, rt] of this.chains) {
+      if (!seen.has(chainId)) {
+        for (const a of rt.arrows.values()) this.destroyArrow(a);
+        this.destroyMask(rt);
+        this.chains.delete(chainId);
       }
     }
 
-    // 无传送带段时直接返回（也避免无谓的纹理解析）
-    if (visible.length === 0) return;
-
-    // 懒解析纹理：assets 在 Game 构造之后才加载完，首次有传送带段时取真实纹理。
-    if (!this.resolveTexture()) return;
-
-    // 2. 全局相位 + 帧间 alpha 插值（时钟的流动量基准）；每段箭头相位由纯逻辑
-    //    PointerPhaseClock 计算（T2.22: 领头跟随/空带无缝续流/注入不跳变——见文件头）。
-    const globalPhase = BeltSystem.beltPhase + alpha * BeltSystem.beltPhaseDelta;
-    const segsList: Array<{ handle: EntityHandle; seg: BeltSegmentComp }> = [];
-    for (const handle of visible) {
-      const seg = this.world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp');
-      if (seg) segsList.push({ handle, seg });
+    // 3. 本帧跨过的仿真 Tick 数（beltPhase 差值折算；暂停 = 0，指针与物品同步
+    //    冻结）。队列按**整数 Tick** 推进——指针真值恒在 1/40 格网上（与物品同一
+    //    纪律），渲染内插用与物品完全相同的 prev + α×Δ 公式（渲染滞后一 Tick 的
+    //    既有语义），两者逐帧严格同余——这是 0-1 网格对齐的时钟根基。
+    let ticks = 0;
+    if (this.lastBeltPhase !== null) {
+      const d = ((BeltSystem.beltPhase - this.lastBeltPhase) % 1 + 1.5) % 1 - 0.5;
+      ticks = Math.max(0, Math.round(d / ITEM_PROGRESS_PER_TICK));
     }
-    const phases = this.phaseClock.computePhases(segsList, globalPhase, alpha);
+    this.lastBeltPhase = BeltSystem.beltPhase;
+    const advance = ticks > 0;
     // 堵塞渐变步长（线性插值，固定时长；deltaMS=0 时瞬间到位，兼容旧调用）
     const blendStep = deltaMS > 0 ? deltaMS / BLOCKED_BLEND_MS : 1;
     // 延长预览中被隐藏的原尾格（每帧取一次，段循环内比对格坐标）
     const hiddenCell = this.getHiddenCell?.() ?? null;
 
-    // 3. 新增 + 同步
-    for (const handle of visible) {
-      let entry = this.entries.get(handle);
-      if (!entry) {
-        // 结构: layer → cellWrap(位置=格左上角) → sprite(相对 cellWrap 偏移)
-        //          ↑ cellMask(Graphics 正方形蒙版, 同为 cellWrap 子级, 坐标系=cellWrap 本地)
-        // Graphics 非 Sprite → 走 StencilMask(模板缓冲) 路径，无纹理、resize 安全
-        // （GridRenderer 注释里警示的是 Sprite 蒙版即 AlphaMaskPipe 的悬挂引用问题）。
-        const cellWrap = new Container();
-        const cellMask = new Graphics();
-        cellMask.rect(0, 0, CELL_SIZE, CELL_SIZE).fill({ color: 0xffffff });
-        // cellMask.renderable 的值随端点/中间状态每帧切换（见下方 isEndpoint 分支）。
-        // 端点格（启用蒙版）置 true：StencilMask 靠 collectRenderables 把它画进模板缓冲
-        //   （渲染时 colorMask.setMask(0) 关颜色写入，蒙版形状不会出现在最终画面）。
-        // 中间格（不蒙版）置 false：否则白色填充正方形会被当作普通子节点画出来。
-        const sprite = new Sprite(this.pointerTex!);
-        sprite.anchor.set(0.5);
-        sprite.scale.set(this.pointerScale);
-        sprite.tint = POINTER_TINT_NORMAL; // 黄色 pointer（常态底层，始终显示保证跨格衔接）
-        // whiteSprite：选中段叠加的白色 pointer，tint 白，alpha 随相位渐入渐出（见 update）
-        const whiteSprite = new Sprite(this.pointerTex!);
-        whiteSprite.anchor.set(0.5);
-        whiteSprite.scale.set(this.pointerScale);
-        whiteSprite.tint = 0xffffff;
-        whiteSprite.visible = false;
-        cellWrap.addChild(cellMask);
-        cellWrap.addChild(sprite);
-        cellWrap.addChild(whiteSprite);
-        this.layer.addChild(cellWrap);
-        entry = { sprite, whiteSprite, cellWrap, cellMask, lastMaskKey: '', handle, blockedBlend: 0 };
-        this.entries.set(handle, entry);
-      }
+    // 4. 每链: 队列推进（Tick 边界）→ 精灵池同步 → 几何映射（α 内插）
+    for (const rt of grouped.values()) {
+      // 段按 segmentIndex 升序 + 链长
+      rt.segs.sort((a, b) => (a.seg.segmentIndex ?? 0) - (b.seg.segmentIndex ?? 0));
+      rt.chainLen = Math.max(...rt.segs.map(({ seg }) => (seg.segmentIndex ?? 0) + 1));
 
-      const seg = this.world.getComponent<BeltSegmentComp>(handle, 'BeltSegmentComp')!;
-      const pos = this.world.getComponent<Position>(handle, 'Position')!;
-
-      // 延长预览中的原尾格：隐藏箭头（该格由创建系统预览渲染接管，带身同步隐藏）
-      entry.cellWrap.visible = !(
-        hiddenCell &&
-        Math.round(pos.x / CELL_SIZE) === hiddenCell.x &&
-        Math.round(pos.y / CELL_SIZE) === hiddenCell.y
-      );
-
-      // 堵塞渐变: 箭头黄 → 橙 #E6956F（blockedBlend 向目标 0/1 线性趋近）
-      const blockedTarget = seg.blocked === true ? 1 : 0;
-      const bb = entry.blockedBlend;
-      entry.blockedBlend = bb < blockedTarget ? Math.min(blockedTarget, bb + blendStep)
-        : bb > blockedTarget ? Math.max(blockedTarget, bb - blendStep) : bb;
-      entry.sprite.tint = lerpColor(POINTER_TINT_NORMAL, POINTER_TINT_BLOCKED, entry.blockedBlend);
-
-      // 蒙版容器对齐到格左上角世界坐标（蒙版正方形覆盖整个传送带单元）
-      entry.cellWrap.position.set(pos.x, pos.y);
-
-      // v11 箭头相位跟随本链领头物品（2026-08-27 旧项目 transport_belt_renderer.dart
-      // 对齐）: 旧项目里指针与物品共用同一个全局 arrowProgress——物品在该格内的位置
-      // 就是箭头相位的位置，二者锁步前进/停止，因此"物品替换箭头"天衣无缝（无相邻
-      // 贴边、无闪动、无错位）。本项目 T2.7/T2.10 起物品改为独立逐格进度（排队/端口
-      // 轮询需要），指针若仍跑自由时钟就会与队列错位——本轮全部视觉问题（相邻贴边、
-      // 提前消失闪动）的总根源就是这两个时钟。
-      // 对齐方式: 相位 = 领头物品的连续位置 (段序号 + 进度)（取 items 中 max，含
-      // entering 行走中的 p>1——领头走进设备时相位继续前移，队列"跟进去"的观感自然）；
-      // 本格箭头相对偏移 = (领头总位置 − 本段序号) mod 1（mod 1 保证领头换位时按整格
-      // 平移，视觉无跳变）。链上无物品 → 回退自由时钟（空带箭头继续流动，同旧项目）。
-      const phase = phases.get(handle)!;
-
-      // 链端点格启用单元蒙版，pointer 从传送带边界出现/消失，不溢出到传送带之外：
-      //  - head（链首）：裁起点侧（背向 direction），pointer 从起点边界出现。
-      //  - tail（链尾）：裁终点侧（朝向 direction），pointer 在终点边界消失（不走出末端）。
-      //  - single（单格链 head+tail 同格）：两端都是尽头，完整格蒙版（两端都裁）。
-      // 中间格不蒙版，pointer 跨格衔接（N 格出口边 = N+1 格入口边，globalPhase 复位时下一格
-      // 接管同一世界位置）→ 自动扶梯连贯流动。选中格不额外蒙版——白色靠 whiteSprite 叠层
-      // 实现（黄色底层始终在，保证衔接不断层；蒙版对 sprite/whiteSprite 一视同仁地裁剪）。
-      // isTail 可能在延长时由 true 翻 false（见 BeltCreationSystem.commitCells），
-      // 故每帧按当前 seg 重新判定，不缓存端点状态。
-      const isHead = seg.incomingDirection !== undefined;
-      const isTail = seg.isTail;
-      const maskKind: MaskKind = (isHead && isTail) ? 'single' : isHead ? 'head' : isTail ? 'tail' : 'none';
-      if (maskKind === 'none') {
-        // 中间格/链尾格：不蒙版。必须把 cellMask 的 renderable 关掉，否则那个白色填充正方形会
-        // 当作普通子节点直接画出来。
-        entry.cellMask.renderable = false;
-        entry.cellWrap.mask = null;
-      } else {
-        // head：重画蒙版形状。缓存 key 含 direction（延长转弯时 head 方向变也要重画）。
-        const maskKey = `${maskKind}:${seg.direction}`;
-        if (entry.lastMaskKey !== maskKey) {
-          this.drawEndpointMask(entry.cellMask, seg, maskKind);
-          entry.lastMaskKey = maskKey;
-          // PixiJS v8 regression（github #10290）：Graphics 作为 StencilMask，clear()+redraw
-          // 后模板缓冲不更新（仍按旧 geometry 裁剪）→ 越界 pointer 不被裁，表现为起点 pointer
-          // 从传送带外面飘入。workaround：重画后先把 mask 置 null 再绑回，强制重新采集新 geometry。
-          entry.cellWrap.mask = null;
+      // 物品快照（非 entering；stopped = 本 Tick 停走）——击杀/钳制的判定源
+      const items: QueueItemRef[] = [];
+      let rearmost = Infinity;
+      for (const { seg } of rt.segs) {
+        const idx = seg.segmentIndex ?? 0;
+        for (const it of seg.items ?? []) {
+          if (it.entering === true) continue; // 走进设备的过客: 不挡 0、不被 0 阻挡
+          items.push({ total: idx + it.progress, stopped: (it.delta ?? 0) === 0 });
+          if (idx + it.progress < rearmost) rearmost = idx + it.progress;
         }
-        entry.cellMask.renderable = true;
-        entry.cellWrap.mask = entry.cellMask;
       }
 
-      // sprite 用格中心为原点的偏移；再换算到 cellWrap 本地坐标（减去半格）。
-      const { x, y, rotation } = this.computePointerTransform(seg, phase);
-      const px = CELL_SIZE / 2 + x;
-      const py = CELL_SIZE / 2 + y;
+      if (advance) {
+        // Tick 边界: 内插起点前移 + 播种（首见）+ 队列推进 + 注入重相位。
+        // 顺序必须是"先推进后重相位"——注入 Tick 物品不推进（注入发生在
+        // BeltSystem 之后）而指针推进，先重相位会把目标错开一个流动量。
+        for (const entry of rt.arrows.values()) entry.prevD = entry.lastD;
+        if (!rt.seeded) {
+          rt.queue.seed(rt.chainLen, ((BeltSystem.beltPhase % 1) + 1) % 1);
+          rt.seeded = true;
+          for (const a of rt.queue.arrows) {
+            const entry = rt.arrows.get(a.id) ?? this.createEntry(rt, a);
+            entry.prevD = entry.lastD = a.pos;
+          }
+        }
+        const hadItemCount = rt.lastItemCount;
+        rt.lastItemCount = items.length;
+        rt.queue.advance(rt.chainLen, ticks, items);
+        if (items.length > hadItemCount && rearmost < Infinity) {
+          // 注入重相位: ≤半格刚体平移到新物品（=最末物品）格网（正常流动 δ=0）
+          rt.queue.rephase(((rearmost % 1) + 1) % 1);
+        }
+        for (const a of rt.queue.arrows) {
+          const entry = rt.arrows.get(a.id) ?? this.createEntry(rt, a);
+          // 循环瞬移不得内插——prev→last 横跨整条带（尾→首），α 扫过中段会让
+          // 幽灵箭头逐帧从带顶扫到带底（用户实测"连续两帧各多出一个指针"）。
+          // 位移 > 0.55（正常 0.025 / 重相位 ≤0.525）判定为瞬移: 本 Tick 直接
+          // 渲染在新位置（两端都在遮罩外/渐变区，跳变不可见）。
+          if (Math.abs(a.pos - entry.prevD) > 0.55) entry.prevD = a.pos;
+          entry.lastD = a.pos; // prevD 保持推进前快照（新建 entry 两值同为 pos = 首 Tick 静止）
+        }
+        // 击杀回收
+        for (const [id, entry] of rt.arrows) {
+          if (!rt.queue.arrows.some((a) => a.id === id)) {
+            this.destroyArrow(entry);
+            rt.arrows.delete(id);
+          }
+        }
+      }
 
-      // 一格一物品（A9 §5.2.2，2026-08-25 用户定稿）: 该格显示**指针或物品二选一**——
-      // 段上有物品（含 entering 行走中）→ 指针立即隐藏（物品替换箭头，硬切无过渡）；
-      // 空段 → 指针与其他指针行为完全一致: 常显、随链相位流动，无任何渐隐/缓动/半径
-      // 特殊效果。
-      const ptrAlpha = (seg.items ?? []).length > 0 ? 0 : 1;
-      // 黄色 pointer（底层，始终显示，保证自动扶梯跨格衔接不断层）
-      entry.sprite.position.set(px, py);
-      entry.sprite.rotation = rotation;
-      entry.sprite.alpha = ptrAlpha;
-      entry.sprite.visible = true;
-      // whiteSprite：选中段叠加白色 pointer，position/rotation 同 sprite（流动同步）。
-      // alpha 随 globalPhase 余弦渐变——pointer 在格中间(phase≈0.5)全白，在格边界(phase≈0/1)
-      // 渐隐到 0 → pointer 流经选中格时白色平滑出现再消失（黄→白→黄），不立即变白、不溢出、
-      // 不断层（黄色底层始终在）。非选中段 whiteSprite.visible=false，只显示黄色底层。
-      const selected = this.beltSelection?.has(handle) ?? false;
-      if (selected) {
-        entry.whiteSprite.position.set(px, py);
-        entry.whiteSprite.rotation = rotation;
-        // 白色 pointer 在格内大部分全白，仅入口/出口附近窄区渐变（贴近 Transport_2.svg：
-        // pointer 一进入选中格就变白、即将离开时才褪回黄）。phase∈[0,FADE] 入口渐入，
-        // [FADE,1-FADE] 格内全白，[1-FADE,1] 出口渐出。黄色底层始终在 → 跨格衔接不断层。
-        const FADE = 0.18;
-        const gp = phase;
-        const selAlpha = gp < FADE
-          ? gp / FADE
-          : gp > 1 - FADE
-            ? (1 - gp) / FADE
-            : 1;
-        entry.whiteSprite.alpha = selAlpha * ptrAlpha; // 选中白色同受一格一物品隐藏影响
-        entry.whiteSprite.visible = true;
-      } else {
-        entry.whiteSprite.visible = false;
+      // 带身遮罩（格矩形并集；格集变化才重建）
+      this.ensureMask(rt);
+
+      // 堵塞渐变: 链上任一段 blocked → 箭头黄 → 橙 #E6956F
+      const blockedTarget = rt.segs.some(({ seg }) => seg.blocked === true) ? 1 : 0;
+      rt.blockedBlend = rt.blockedBlend < blockedTarget
+        ? Math.min(blockedTarget, rt.blockedBlend + blendStep)
+        : rt.blockedBlend > blockedTarget
+          ? Math.max(blockedTarget, rt.blockedBlend - blendStep)
+          : rt.blockedBlend;
+      const tint = lerpColor(POINTER_TINT_NORMAL, POINTER_TINT_BLOCKED, rt.blockedBlend);
+
+      // 几何映射: 链坐标 d（prev + α×Δ 内插，与物品同公式）→ 世界坐标
+      for (const arrow of rt.queue.arrows) {
+        const entry = rt.arrows.get(arrow.id);
+        if (!entry) continue; // advance 帧才建新 entry; 非推进帧不应出现新 id
+        const d = entry.prevD + alpha * (entry.lastD - entry.prevD);
+        const { seg, pos, handle } = this.segmentAt(rt, entry, d);
+        const progress = d - (seg.segmentIndex ?? 0);
+        const { x, y, rotation } = this.computePointerTransform(seg, progress);
+
+        // 可见性: 端部渐变（带外等待/滑出由遮罩裁剪，渐变给"半透明滑出"观感）
+        let vis = 1;
+        vis = Math.min(vis, clamp01(
+          ((rt.chainLen + ARROW_WINDOW_MARGIN) - d) / (2 * ARROW_WINDOW_MARGIN),
+        ));
+        vis = Math.min(vis, clamp01((d + ARROW_WINDOW_MARGIN) / (2 * ARROW_WINDOW_MARGIN)));
+
+        entry.sprite.position.set(
+          pos.x + CELL_SIZE / 2 + x,
+          pos.y + CELL_SIZE / 2 + y,
+        );
+        entry.sprite.rotation = rotation;
+        entry.sprite.tint = tint;
+        entry.sprite.alpha = vis;
+        entry.sprite.visible = vis > 0.02 && !this.isHiddenCell(pos, hiddenCell);
+        if (rt.mask && entry.sprite.mask !== rt.mask) entry.sprite.mask = rt.mask;
+
+        // 选中段白色 pointer 叠层（按段内进度渐入渐出）
+        const selected = this.beltSelection?.has(handle) ?? false;
+        if (selected) {
+          entry.whiteSprite.position.copyFrom(entry.sprite.position);
+          entry.whiteSprite.rotation = rotation;
+          const FADE = 0.18;
+          const p = ((progress % 1) + 1) % 1;
+          const selAlpha = p < FADE
+            ? p / FADE
+            : p > 1 - FADE
+              ? (1 - p) / FADE
+              : 1;
+          entry.whiteSprite.alpha = selAlpha * vis;
+          entry.whiteSprite.visible = vis > 0.02;
+          if (rt.mask && entry.whiteSprite.mask !== rt.mask) entry.whiteSprite.mask = rt.mask;
+        } else {
+          entry.whiteSprite.visible = false;
+        }
       }
     }
+
+  }
+
+  /** 带身遮罩（格矩形并集）。格集指纹变化才重建 Graphics 内容。 */
+  private ensureMask(rt: ChainRuntime): void {
+    const key = rt.segs
+      .map(({ pos }) => `${Math.round(pos.x / CELL_SIZE)},${Math.round(pos.y / CELL_SIZE)}`)
+      .sort()
+      .join(';');
+    if (rt.maskKey === key && rt.mask) return;
+    rt.maskKey = key;
+    if (!rt.mask) {
+      rt.mask = new Graphics();
+      this.layer.addChild(rt.mask);
+    }
+    rt.mask.clear();
+    for (const { pos } of rt.segs) {
+      rt.mask.rect(pos.x, pos.y, CELL_SIZE, CELL_SIZE);
+    }
+    rt.mask.fill(0xffffff);
+  }
+
+  private destroyMask(rt: ChainRuntime): void {
+    if (!rt.mask) return;
+    rt.mask.removeFromParent();
+    rt.mask.destroy();
+    rt.mask = null;
+    rt.maskKey = '';
+  }
+
+  /** 箭头所在段（几何行走: 常规流动 d 单调前进，循环瞬移 d 大幅回退 → 双向游标）。 */
+  private segmentAt(
+    rt: ChainRuntime,
+    entry: ArrowEntry,
+    d: number,
+  ): { handle: EntityHandle; seg: BeltSegmentComp; pos: Position } {
+    let i = Math.min(Math.max(entry.segCursor, 0), rt.segs.length - 1);
+    while (i < rt.segs.length - 1 && d > (rt.segs[i]!.seg.segmentIndex ?? 0) + 1) i++;
+    while (i > 0 && d < (rt.segs[i]!.seg.segmentIndex ?? 0)) i--;
+    entry.segCursor = i;
+    return rt.segs[i]!;
+  }
+
+  /** 延长预览隐藏格判定。 */
+  private isHiddenCell(
+    pos: Position,
+    hiddenCell: { x: number; y: number } | null,
+  ): boolean {
+    return !!(hiddenCell &&
+      Math.round(pos.x / CELL_SIZE) === hiddenCell.x &&
+      Math.round(pos.y / CELL_SIZE) === hiddenCell.y);
+  }
+
+  /** 为新指针建精灵 entry（首 Tick 静止: prevD = lastD = 当前位置）。 */
+  private createEntry(rt: ChainRuntime, a: { id: number; pos: number }): ArrowEntry {
+    const entry = this.createArrow();
+    entry.prevD = entry.lastD = a.pos;
+    rt.arrows.set(a.id, entry);
+    return entry;
+  }
+
+  private createArrow(): ArrowEntry {
+    const sprite = new Sprite(this.pointerTex ?? Texture.EMPTY);
+    sprite.anchor.set(0.5);
+    sprite.scale.set(this.pointerScale);
+    sprite.tint = POINTER_TINT_NORMAL;
+    const whiteSprite = new Sprite(this.pointerTex ?? Texture.EMPTY);
+    whiteSprite.anchor.set(0.5);
+    whiteSprite.scale.set(this.pointerScale);
+    whiteSprite.tint = 0xffffff;
+    whiteSprite.visible = false;
+    this.layer.addChild(sprite);
+    this.layer.addChild(whiteSprite);
+    return { sprite, whiteSprite, segCursor: 0, prevD: 0, lastD: 0 };
+  }
+
+  private destroyArrow(a: ArrowEntry): void {
+    a.sprite.removeFromParent();
+    a.sprite.destroy();
+    a.whiteSprite.removeFromParent();
+    a.whiteSprite.destroy();
+  }
+
+  private destroyAll(): void {
+    for (const rt of this.chains.values()) {
+      for (const a of rt.arrows.values()) this.destroyArrow(a);
+      this.destroyMask(rt);
+    }
+    this.chains.clear();
   }
 
   /**
-   * 画链端点格(head/tail/single)的蒙版形状到 cellMask（cellWrap 本地坐标，格左上角为原点）。
-   *
-   * 设计：端点格只在"真正是传送带尽头"的那一面裁剪，朝向链内的其余面全部敞开：
-   *  - head（链首）：裁"背向 direction"面（起点）。沿 direction 正向延伸"敞开口"，
-   *    使 pointer 越过入口边滑入时前端不被切，越界部分（滑出起点之外）才被裁掉。
-   *  - tail（链尾）：裁"朝向 direction"面（终点）。沿 -direction 敞开。
-   *  - single（单格链）：两端都是尽头，完整格蒙版（不敞开），pointer 只在格内可见。
-   *
-   * 实现为画一个覆盖"本格 + 敞开侧外延"的矩形（加法），而不是画 U 形多边形——
-   * 矩形蒙版更简单、且 StencilMask 对凸形状无歧义。
-   *
-   * 敞开量 OPEN = 半格：足够覆盖 pointer 前端越界（pointer 高度 0.25 格，moveRange 端点侧
-   * 扩展 0.125 格，前端最多越过边界 ~0.125+0.125=0.25 格 < 0.5 格敞开口）。
-   *
-   * @param kind 'head' | 'tail' | 'single'。
-   */
-  private drawEndpointMask(cellMask: Graphics, seg: BeltSegmentComp, kind: 'head' | 'tail' | 'single'): void {
-    cellMask.clear();
-    if (kind === 'single') {
-      // 单格链：两端都是尽头，完整格蒙版（pointer 只在格内可见，两端渐入/渐出）
-      cellMask.rect(0, 0, CELL_SIZE, CELL_SIZE).fill({ color: 0xffffff });
-      return;
-    }
-    const OPEN = CELL_SIZE / 2; // 敞开侧外延量（半格）
-    // 敞开方向：head 沿 direction 正向敞开（朝链内），tail 沿 direction 负向（朝链内）。
-    // 对链首 head：direction 是链内方向 → 正向敞开。
-    // 对链尾 tail：direction 是链出口方向 → 链内是 -direction → 负向敞开。
-    const sign = kind === 'head' ? 1 : -1;
-    // 在 cellWrap 本地坐标系（原点=格左上角，y 向下）里画"本格 + 敞开侧外延"矩形。
-    // direction 角度：right=0, down=π/2, left=π, up=3π/2。
-    // 外延方向向量 = (cos, sin) * sign。
-    const ang = directionAngle(seg.direction);
-    const dx = Math.cos(ang) * sign;
-    const dy = Math.sin(ang) * sign;
-    let minX = 0, minY = 0, maxX = CELL_SIZE, maxY = CELL_SIZE;
-    if (dx > 0) maxX += OPEN;       // 朝右敞开
-    else if (dx < 0) minX -= OPEN;  // 朝左敞开
-    if (dy > 0) maxY += OPEN;       // 朝下敞开
-    else if (dy < 0) minY -= OPEN;  // 朝上敞开
-    cellMask.rect(minX, minY, maxX - minX, maxY - minY).fill({ color: 0xffffff });
-  }
-
-  /**
-   * 计算指针在格内的偏移与朝向。
-   * 端点格（链首/链尾）的指针允许越过传送带物理边界滑动（滑入/滑出），
-   * 越界部分由单元蒙版裁掉（alpha 恒为 1），实现"箭头自然走出传送带"的平滑效果。
-   * @returns 相对格中心的 (x, y) 偏移（世界像素）+ 旋转角（弧度）。
+   * 计算指针在链内进度 progress（段内 0~1，越界为端点滑入/滑出余量）下的
+   * 世界偏移与朝向（相对所在格中心）。
+   * 直段: 沿方向轴线性（**匀速**）；转角: 沿四分之一圆弧（移植自旧项目 drawItemAt）。
    */
   private computePointerTransform(
     seg: BeltSegmentComp,
-    phase: number,
+    progress: number,
   ): { x: number; y: number; rotation: number } {
     if (seg.isCorner && seg.entryDir !== undefined) {
-      // 转角格：指针沿圆弧走，端点就在格子边缘上，无需额外扩展。
-      // 链首/链尾滑入/滑出的越界部分由单元蒙版裁掉。
-      return this.computeCornerTransform(seg.entryDir, seg.direction, phase);
+      const c = Math.min(Math.max(progress, 0), 1);
+      return this.computeCornerTransform(seg.entryDir, seg.direction, c);
     }
-    return this.computeStraightTransform(seg, phase);
-  }
-
-  /**
-   * 直段 pointer：沿方向轴线性移动，箭头指向 dir（与物品流向一致）。
-   * 链首/链尾格把移动范围扩展半个箭头（0.125 格），使箭头能滑出传送带边界；
-   * 越界部分由单元蒙版裁掉（不再用 alpha 渐变淡出）。
-   */
-  private computeStraightTransform(
-    seg: BeltSegmentComp,
-    phase: number,
-  ): { x: number; y: number; rotation: number } {
-    const rotation = directionToIndex(seg.direction) * (Math.PI / 2);
-    // 移动范围（相对格中心，单位=格）：中间格 [-0.5, +0.5]
-    // 链首格入口端多滑出 HALF_PTR，链尾格出口端多滑出 HALF_PTR
-    const HALF_PTR = POINTER_SIZE_RATIO / 2; // 0.125
-    const isHead = seg.incomingDirection !== undefined;
-    const isTail = seg.isTail;
-    let minMove = -0.5;
-    let maxMove = 0.5;
-    if (isHead) minMove -= HALF_PTR;
-    if (isTail) maxMove += HALF_PTR;
-    const moveRatio = minMove + phase * (maxMove - minMove);
-    const moveDist = moveRatio * CELL_SIZE;
+    // 直段: 匀速线性。progress 允许轻微越界（带外等待/滑出余量），线性公式自然延伸。
+    const moveDist = (progress - 0.5) * CELL_SIZE;
     const dirRad = directionAngle(seg.direction);
-    const dvx = Math.cos(dirRad);
-    const dvy = Math.sin(dirRad);
     return {
-      x: dvx * moveDist,
-      y: dvy * moveDist,
-      rotation,
+      x: Math.cos(dirRad) * moveDist,
+      y: Math.sin(dirRad) * moveDist,
+      rotation: directionToIndex(seg.direction) * (Math.PI / 2),
     };
   }
 
   /**
-   * 转角段 pointer：沿四分之一圆弧移动。
-   * 移植自旧项目 drawItemAt 转角分支。
+   * 转角段 pointer：沿四分之一圆弧移动。移植自旧项目 drawItemAt 转角分支。
    */
   private computeCornerTransform(
     incomingDir: Direction,
@@ -449,32 +458,25 @@ export class BeltPointerRenderer {
     phase: number,
   ): { x: number; y: number; rotation: number } {
     const info = turnInfoFromDirections(incomingDir, outgoingDir);
-    // 进入边的边缘向量（相对格中心，单位=半格 0.5）
-    // 旧项目：inDir 'up'→eY=0.5, 'down'→eY=-0.5, 'left'→eX=0.5, 'right'→eX=-0.5
     let eX = 0, eY = 0;
     if (incomingDir === 270) eY = 0.5;       // up
     else if (incomingDir === 90) eY = -0.5;  // down
     else if (incomingDir === 180) eX = 0.5;  // left
     else if (incomingDir === 0) eX = -0.5;   // right
-    // 出口边的边缘向量
     let xX = 0, xY = 0;
     if (outgoingDir === 270) xY = -0.5;      // up
     else if (outgoingDir === 90) xY = 0.5;   // down
     else if (outgoingDir === 180) xX = -0.5; // left
     else if (outgoingDir === 0) xX = 0.5;    // right
-    // 圆心（pivot）= 两边缘向量之和
     const pivotX = eX + xX;
     const pivotY = eY + xY;
-    // 起始切向 = -出口边向量（指向格内）
     const startVecX = -xX;
     const startVecY = -xY;
     const startAngle = Math.atan2(startVecY, startVecX);
     const deltaAngle = info.isCCW ? -Math.PI / 2 : Math.PI / 2;
     const currentAngle = startAngle + phase * deltaAngle;
-    // pointer 位置（单位=格，再乘 CELL_SIZE 转世界像素）
     const px = pivotX + 0.5 * Math.cos(currentAngle);
     const py = pivotY + 0.5 * Math.sin(currentAngle);
-    // pointer 朝向 = 切线方向 + π/2（旧项目：tangentAngle + π/2，因 pointer 默认朝上）
     const tangentAngle = currentAngle + deltaAngle;
     const rotation = tangentAngle + Math.PI / 2;
     return {
@@ -484,12 +486,9 @@ export class BeltPointerRenderer {
     };
   }
 
-  /** 销毁所有 pointer Sprite。 */
+  /** 销毁所有箭头。 */
   destroy(): void {
-    for (const entry of this.entries.values()) {
-      entry.cellWrap.removeFromParent();
-      entry.cellWrap.destroy({ children: true });
-    }
-    this.entries.clear();
+    this.destroyAll();
+    this.lastBeltPhase = null;
   }
 }

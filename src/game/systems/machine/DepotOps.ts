@@ -14,6 +14,7 @@
 
 import type { BeltSegmentComp } from '../../components/BeltSegmentComp.ts';
 import { PORT_ENTER_PROGRESS } from './IntakeOps.ts';
+import type { SlotPlacement } from './OutputOps.ts';
 
 /**
  * 简化版取货口的输出物品（固定源矿）。产出物品配置界面属 T2.15 设备弹窗，
@@ -23,17 +24,19 @@ export const DEPOT_SOURCE_ITEM = 'originium_ore';
 
 /**
  * 从取货口放一件源物品到传送带段首（T2.7 tryEmitToBelt 的无槽位变体）。
- * 纪律完全同律: 注入**段首 progress=0**（2026-08-25 退役 beltPhase 相位窗口——
- * 物品进度独立推进，无后跳之虞）、只往空段注入（一格一物品）。
+ * 纪律完全同律: 只往空段注入（一格一物品）+ T2.24 槽位网格放置（默认段首
+ * progress=0——取货口"段空即出"的节奏下领头恰跨出首格（total=1.0），frac=0，
+ * 放置结果恒为段首 0，与 2026-08-25 退役相位窗口后的行为一致）。
  * @returns 放出的 itemId；null = 段上已有物品。
  */
 export function emitSourceToBelt(
   seg: BeltSegmentComp,
   itemId: string = DEPOT_SOURCE_ITEM,
+  placement: SlotPlacement = { progress: 0, delta: 0 },
 ): string | null {
   const items = seg.items ?? (seg.items = []);
   if (items.length > 0) return null;
-  items.push({ itemId, progress: 0, delta: 0 });
+  items.push({ itemId, progress: placement.progress, delta: placement.delta });
   return itemId;
 }
 
@@ -42,6 +45,9 @@ export function emitSourceToBelt(
  * 队首 progress ≥ PORT_ENTER_PROGRESS(0.5) 即接受——无槽位/类型/容量判定
  * （无限汇）。物品不移除，标记 entering 由 BeltSystem 放行至 1.5、
  * releaseArrivedItems 移除（走进设备半格深处消失）。
+ * 容差 1e-6（T2.24，T2.23 遗产单独重做）: 固定步长累加在门口边界可能下欺
+ * （0.475+0.025 = 1.4999…类），无容差时吸收/释放滞后 1 Tick、后车多流 0.025
+ * 压缩节奏。1e-6 格 ≈ 0.05px，视觉不可辨。
  * @returns 预约的 itemId；null = 段上无可预约物品 / 队首未到门口。
  */
 export function tryAbsorbHeadItemSink(seg: BeltSegmentComp): string | null {
@@ -52,7 +58,7 @@ export function tryAbsorbHeadItemSink(seg: BeltSegmentComp): string | null {
     if (it.entering) continue;
     if (head === null || it.progress > head.progress) head = it;
   }
-  if (head === null || head.progress < PORT_ENTER_PROGRESS) return null;
+  if (head === null || head.progress < PORT_ENTER_PROGRESS - 1e-6) return null;
   head.entering = true;
   return head.itemId;
 }

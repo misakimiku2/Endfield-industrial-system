@@ -203,22 +203,76 @@ export function pollOutputBelt(
   return { queue: q, chosen };
 }
 
+/** 链上单件物品的快照（诊断日志用）。 */
+export interface ChainItemInfo {
+  segIdx: number;
+  progress: number;
+  delta: number;
+  entering: boolean;
+}
+
+/** 链快照: 全链物品列表（输出注入日志的间距分析用）。 */
+export interface ChainSnapshot {
+  leader: { total: number; delta: number } | null;
+  items: ChainItemInfo[];
+}
+
+/**
+ * 链内物品快照（T2.25 诊断日志用）。
+ * 领头 = total = segmentIndex + progress 最大者（含 entering 行走 >1）。
+ * items 按 segIdx 升序（链首→链尾），注入日志据此直接可读链上间距。
+ */
+export function chainSnapshot(world: World, chainId: string): ChainSnapshot {
+  const items: ChainItemInfo[] = [];
+  let leader: { total: number; delta: number } | null = null;
+  for (const h of world.query('BeltSegmentComp', 'Position')) {
+    const seg = world.getComponent<BeltSegmentComp>(h, 'BeltSegmentComp');
+    if (!seg || seg.chainId !== chainId) continue;
+    const idx = seg.segmentIndex ?? 0;
+    for (const it of seg.items ?? []) {
+      items.push({ segIdx: idx, progress: it.progress, delta: it.delta ?? 0, entering: it.entering === true });
+      const total = idx + it.progress;
+      if (leader === null || total > leader.total) {
+        leader = { total, delta: it.delta ?? 0 };
+      }
+    }
+  }
+  items.sort((a, b) => a.segIdx - b.segIdx || b.progress - a.progress);
+  return { leader, items };
+}
+
+/** 链快照的日志摘要（"seg0@0.000 seg1@0.975"；entering 加 E 后缀；空链 "(空)"）。 */
+export function formatChainItems(items: ReadonlyArray<ChainItemInfo>): string {
+  if (items.length === 0) return '(空)';
+  return items
+    .map((it) => `seg${it.segIdx}@${it.progress.toFixed(3)}${it.entering ? 'E' : ''}`)
+    .join(' ');
+}
+
+/** 注入放置结果（progress = 注入进度；delta = 注入首帧的渲染插值位移量）。 */
+export interface SlotPlacement {
+  progress: number;
+  delta: number;
+}
+
 /**
  * 尝试从输出槽放出一件物品到传送带段首。
- * 取第一个非空输出槽（一槽一物，A8 §2.2），注入段 items[] **段首 progress=0**
- * （紧邻设备的入口边界，视觉"从机器里出来"），扣减输出槽 count（到 0 解锁）。
+ * 取第一个非空输出槽（一槽一物，A8 §2.2），注入段 items[]（放置由 placement 决定，
+ * 默认段首 progress=0），扣减输出槽 count（到 0 解锁）。
  *
- * 注入相位沿革（2026-08-25 退役"物品=实体 pointer"约定）: 旧版注入在全局
- * beltPhase 相位且仅 ≤STOP_MAX 窗口注入——物品与指针动画全局锁步，不同时间
- * 创建的传送带看起来同步流动（用户实测指出不符实际玩法）。改为段首注入后
- * 物品进度独立推进（断头钳制 0→0.5 只进不退，无视觉后跳，相位窗口不再需要），
- * 指针动画改为按链独立相位（BeltPointerRenderer）。
+ * 注入相位沿革: 2026-08-25 退役"物品=实体 pointer"全局相位窗口 → 段首注入;
+ * T2.24 升级为槽位网格放置 frac(领头)（已随 T2.29 退役）→ **T2.29 统一段首
+ * progress=0 + 随流 delta**（调用方传 { progress: 0, delta: 0.025 }）: 注入相位 =
+ * 出货 Tick 网格（节拍恒 40 Tick，BeltSystem 栅格对齐保证跨格精确）→ 同链物品
+ * 间距恒整数格、跨链交错 = 节拍差 × 0.025 格（双带 40 Tick = 1 格 = 0-1-0/1-0-1
+ * 棋盘），且不再依赖链哈希/领头相位（离格链概念随之消亡）。
  * @returns 放出的 itemId；null = 输出槽空 / 段上已有物品（一格一物品 → 满带，
  *          物品留在输出槽，下 Tick 重试）。
  */
 export function tryEmitToBelt(
   seg: BeltSegmentComp,
   comp: BuildingComp,
+  placement: SlotPlacement = { progress: 0, delta: 0 },
 ): string | null {
   // 1. 第一个非空输出槽（全部为空 → 无货可出）
   let slot = null as (typeof comp.bufferOutput)[number] | null;
@@ -232,8 +286,8 @@ export function tryEmitToBelt(
   const items = seg.items ?? (seg.items = []);
   if (items.length > 0) return null;
 
-  // 3. 注入段首 progress=0（delta=0: 出现即静止，下一 Tick 起 BeltSystem 推进并插值）
-  items.push({ itemId, progress: 0, delta: 0 });
+  // 3. 按槽位网格放置注入（delta=0: 出现即静止，下一 Tick 起 BeltSystem 推进并插值）
+  items.push({ itemId, progress: placement.progress, delta: placement.delta });
   consumeFromSlot(slot, 1);
   return itemId;
 }

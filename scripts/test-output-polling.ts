@@ -14,10 +14,12 @@
 // 首格，故"首格可注入" ⇔ 距该带上次注入 ≥ 40 Tick。决策逻辑直接调用产物代码
 // OutputOps.syncOutputBeltQueue / pollOutputBelt（纯函数，无渲染依赖）。
 
+import { ITEM_PROGRESS_PER_TICK } from '../src/game/systems/BeltSystem.ts';
 import {
   syncOutputBeltQueue,
   pollOutputBelt,
   beltCreationKey,
+  tryEmitToBelt,
 } from '../src/game/systems/machine/OutputOps.ts';
 
 const INTERVAL = 40; // OUTPUT_EMIT_INTERVAL_TICKS = 1/0.025
@@ -141,6 +143,36 @@ assertEq('beltCreationKey 非法兜底', beltCreationKey({ chainId: 'oops', segm
   const { emissions } = simulate(belts as TestBelt[], 1000);
   const minGap = emissions.slice(1).every((e, i) => e.tick - emissions[i]!.tick >= INTERVAL);
   assertEq('⑤ 相邻出货间隔 ≥ 40 Tick（含动态接入与永堵带）', minGap, true);
+}
+
+// ── ⑥ T2.29 统一注入: 段首 0 + 随流 delta ──
+// 注入相位 = 出货 Tick 网格（设备级节拍 40 Tick + BeltSystem 1/40 格栅对齐）:
+// 同链物品间距恒整数格; 跨链交错 = 节拍差 × 0.025 格/ Tick（双带 40 Tick = 1 格
+// → 0-1-0/1-0-1 棋盘）。旧 T2.24 frac(领头) 放置与链哈希自流相位已退役——
+// 领头相位是各链历史的任意值，会把任意相对错位冻结进图案（§十三 图2/3 根源）。
+{
+  assertEq('⑥ 出货节拍 = 1/ITEM_PROGRESS_PER_TICK = 40（栅格对齐前提）', 1 / ITEM_PROGRESS_PER_TICK, 40);
+  const comp = { bufferOutput: [{ itemId: 'originium_ore', count: 1 }] } as never;
+  const seg = { items: [] as unknown[] } as never;
+  const id = tryEmitToBelt(seg, comp, { progress: 0, delta: ITEM_PROGRESS_PER_TICK });
+  assertEq('⑥ 机器路径注入: 返回 itemId', id, 'originium_ore');
+  assertEq('⑥ 机器路径注入: 段首 0 + 随流 delta', (seg as { items: Array<{ progress: number; delta: number }> }).items[0], { itemId: 'originium_ore', progress: 0, delta: 0.025 });
+}
+
+// ── ⑦ T2.24 tryEmitToBelt 按 SlotPlacement 注入 ──
+{
+  const comp = { bufferOutput: [{ itemId: 'originium_ore', count: 1 }] } as never;
+  const seg = { items: [] as unknown[] } as never;
+  const id = tryEmitToBelt(seg, comp, { progress: 0.4, delta: 0.025 });
+  assertEq('⑦ 放置注入: 返回 itemId', id, 'originium_ore');
+  assertEq('⑦ 放置注入: 物品 progress/delta 落位', (seg as { items: Array<{ itemId: string; progress: number; delta: number }> }).items[0], { itemId: 'originium_ore', progress: 0.4, delta: 0.025 });
+  assertEq('⑦ 放置注入: 输出槽扣减到 0', (comp as { bufferOutput: Array<{ count: number }> }).bufferOutput[0]!.count, 0);
+  const segFull = { items: [{ itemId: 'x', progress: 0.1, delta: 0 }] } as never;
+  assertEq('⑦ 满带（一格一物品）拒注', tryEmitToBelt(segFull, comp), null);
+  const comp2 = { bufferOutput: [{ itemId: 'originium_ore', count: 1 }] } as never;
+  const segEmpty = { items: [] as unknown[] } as never;
+  tryEmitToBelt(segEmpty, comp2); // 默认 placement = 段首 0（向后兼容）
+  assertEq('⑦ 默认注入段首 progress=0/delta=0', (segEmpty as { items: Array<{ progress: number; delta: number }> }).items[0], { itemId: 'originium_ore', progress: 0, delta: 0 });
 }
 
 console.log(failed === 0 ? '\n全部通过 ✅' : `\n${failed} 项失败 ❌`);

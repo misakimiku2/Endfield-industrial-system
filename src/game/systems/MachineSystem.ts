@@ -47,7 +47,7 @@ import { formatRecipeSummary } from '../data/recipes.ts';
 import type { ItemRegistry } from '../data/items.ts';
 import { getBuildingDefinition, type BuildingDefinition } from '../data/buildings.ts';
 import { CELL_SIZE } from '../render/constants.ts';
-import { ITEM_PROGRESS_PER_TICK } from './BeltSystem.ts';
+import { ITEM_PROGRESS_PER_TICK } from './BeltSystem.ts';
 import {
   findMatchingRecipe,
   planRecipeInputs,
@@ -71,8 +71,11 @@ import {
   collectReceiverBelts,
   syncOutputBeltQueue,
   pollOutputBelt,
+  chainSnapshot,
+  formatChainItems,
 } from './machine/OutputOps.ts';
 import {
+  DEPOT_SOURCE_ITEM,
   emitSourceToBelt,
   tryAbsorbHeadItemSink,
 } from './machine/DepotOps.ts';
@@ -311,11 +314,20 @@ export class MachineSystem implements SimulationSystem {
         if (receiver === null) continue;
         const seg = world.getComponent<BeltSegmentComp>(receiver, 'BeltSegmentComp');
         if (!seg) continue;
-        const emitted = emitSourceToBelt(seg);
+        // T2.29 统一注入: 段首 0 + 随流 delta（与机器路径同律；"段空即出"节奏下
+        // 恒为段首 0，物品从端口边缘滑出）。
+        const rp = world.getComponent<Position>(receiver, 'Position');
+        const snap = chainSnapshot(world, seg.chainId);
+        const emitted = emitSourceToBelt(seg, DEPOT_SOURCE_ITEM, {
+          progress: 0,
+          delta: ITEM_PROGRESS_PER_TICK,
+        });
         if (emitted !== null) {
-          const rp = world.getComponent<Position>(receiver, 'Position');
+          // T2.25 输出诊断: 取货口注入事件（与机器路径同口径）。
           logisticsDebug.log(
-            `📤 取货口出货: ${def.name}(${gx},${gy}) ${this.nameOf(emitted)} ×1（无限源 → 带首 ${rp ? `${Math.round(rp.x / CELL_SIZE)},${Math.round(rp.y / CELL_SIZE)}` : '?'}）`,
+            `📤 取货口出货: ${def.name}(${gx},${gy}) ${this.nameOf(emitted)} ×1（无限源 → ${seg.chainId} 带首 ${rp ? `${Math.round(rp.x / CELL_SIZE)},${Math.round(rp.y / CELL_SIZE)}` : '?'}）`
+            + ` @段首0/Δ${ITEM_PROGRESS_PER_TICK}`
+            + ` | 链上(注前): ${formatChainItems(snap.items)}`,
           );
           this.emit({
             type: 'depot-output', handle,
@@ -566,11 +578,40 @@ export class MachineSystem implements SimulationSystem {
       (h) => byHandle.get(h)?.seg.items.length === 0, // 一格一物品: 段空才可写
     );
     comp.outputPollQueue = queue;
-    if (chosen === null) return; // 全堵（无可写带）——不重置节拍，带腾位即恢复
+    if (chosen === null) {
+      // T2.25 输出诊断: 节拍已到但走访一轮无一可写（全部满带）——出货滞留可观测点
+      // （与 intake ⏳ 门口等待对偶）。每 Tick 命中，按设备节流。
+      const states = candidates
+        .map((c) => `${c.seg.chainId}×${(c.seg.items ?? []).length}`)
+        .join(' ');
+      logisticsDebug.logThrottled(
+        `emit-wait-${handle}`,
+        `⏳ 输出等待: ${def.name}(${gx},${gy}) 节拍已到但无可写带（候选 ${candidates.length}: ${states}）— 货留输出槽，带腾位即恢复`,
+      );
+      return; // 全堵（无可写带）——不重置节拍，带腾位即恢复
+    }
     const receiver = byHandle.get(chosen)!;
-    const itemId = tryEmitToBelt(receiver.seg, comp); // 段空+有货 → 必成功
+    // T2.29 统一注入: 段首 progress=0 + 随流 delta。注入相位 = 出货 Tick 网格
+    // （BeltSystem 栅格对齐保证节拍恒 40 Tick）→ 同链物品间距恒整数格、跨链交错
+    // = 节拍差 × 1 格（双带 0-1-0/1-0-1 棋盘）；物品与箭头的网格对齐由渲染侧
+    // 指针队列（BeltPointerQueue 激活重相位）承担。
+    const receiverPos = world.getComponent<Position>(receiver.handle, 'Position');
+    const snap = chainSnapshot(world, receiver.seg.chainId);
+    const itemId = tryEmitToBelt(receiver.seg, comp, {
+      progress: 0,
+      delta: ITEM_PROGRESS_PER_TICK,
+    }); // 段空+有货 → 必成功
     if (itemId === null) return; // 防御（正常不可达）: 走访到注入之间货被外部取走
     comp.outputNextEmitTick = this.simTick + OUTPUT_EMIT_INTERVAL_TICKS;
+    // T2.25 输出诊断: 注入事件（链上快照可读间距/离格旧物品）。
+    const headCell = receiverPos
+      ? `${Math.round(receiverPos.x / CELL_SIZE)},${Math.round(receiverPos.y / CELL_SIZE)}`
+      : '?';
+    logisticsDebug.log(
+      `📤 输出注入: ${def.name}(${gx},${gy})口${receiver.portIndex + 1} → ${receiver.seg.chainId} 首格(${headCell})`
+      + ` ${this.nameOf(itemId)} ×1 @段首0/Δ${ITEM_PROGRESS_PER_TICK}`
+      + ` | 链上(注前): ${formatChainItems(snap.items)}`,
+    );
     this.emit({
       type: 'output', handle, portIndex: receiver.portIndex,
       message: `${def.name}: 输出 ${this.nameOf(itemId)} ×1（输出口${receiver.portIndex + 1} → 传送带）`,

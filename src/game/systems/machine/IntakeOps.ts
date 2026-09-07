@@ -47,6 +47,14 @@ export const PORT_ENTER_PROGRESS = STOP_MAX;
 export const PORT_RELEASE_PROGRESS = PORT_ENTER_DONE;
 
 /**
+ * 门口边界判定的浮点容差（T2.24，T2.23 遗产单独重做）。
+ * 固定步长累加在边界处可能下欺: 0.475+0.025 = 1.4999…（差 2e-16）——释放判定
+ * `>= 1.5` 无容差时物品在门口滞留 1 Tick（S9 实测行程 41 Tick），后车多流 0.025
+ * 压缩节奏。1e-6 格 ≈ 0.05px，视觉不可辨。
+ */
+const DOOR_EPS = 1e-6;
+
+/**
  * 全部设备**输入**端口格的世界索引（"gx,gy" → 端口格）。
  * T2.16 终点对接: BeltCreationSystem 预览吸附/端口高亮用——与 findFeederBelt 的
  * 吸入判定同一端口来源（inputPortCells 逐台设备），二者口径不会发散。
@@ -122,7 +130,9 @@ export function releaseArrivedItems(seg: BeltSegmentComp): string[] {
     const it = items[i];
 
 
-    if (it.entering && it.progress >= PORT_RELEASE_PROGRESS) {
+    // 容差 DOOR_EPS: 1.475+0.025 浮点下欺时物品在 1.5 门口滞留 1 Tick、后车继续
+    // 流动压缩间距 → 移除时队首切换相位跳 +0.05（指针闪位）。见 DOOR_EPS 注释。
+    if (it.entering && it.progress >= PORT_RELEASE_PROGRESS - DOOR_EPS) {
       released.push(it.itemId);
       items.splice(i, 1);
     }
@@ -145,7 +155,7 @@ export function doorHeadItem(seg: BeltSegmentComp): BeltSegmentComp['items'][num
   }
 
 
-  if (head === null || head.progress < PORT_ENTER_PROGRESS) return null;
+  if (head === null || head.progress < PORT_ENTER_PROGRESS - DOOR_EPS) return null;
   return head;
 }
 

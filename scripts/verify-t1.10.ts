@@ -19,7 +19,7 @@ import {
   type Application,
 } from 'pixi.js';
 import { World } from '../src/game/ECS.ts';
-import { createBufferSlots } from '../src/game/systems/machine/BufferOps';
+import { createBufferSlots } from '../src/game/systems/machine/BufferOps.ts';
 import { Camera } from '../src/game/render/Camera.ts';
 import type { SceneLayers } from '../src/game/render/SceneRenderer.ts';
 import { RenderSystem } from '../src/game/systems/RenderSystem.ts';

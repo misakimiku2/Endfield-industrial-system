@@ -215,8 +215,11 @@ assertEq(fA.bufferOutput[0].count, 0, '5a. 输出槽 5 件全部上带（递减�
 assertEq(chain.reduce((n, s) => n + s.items.length, 0), 5, '5b. 带上共 5 件');
 assert(chain.every((s) => s.items.length === 1),
   '5c. 每段恰 1 件（一格一物品——满带堵塞=每格一件停在格中心）');
-assert(chain.every((s) => near(s.items[0].progress, 0.5)),
-  '5d. 各件停在格中心 0.50（注入相位 ≤ STOP_MAX + 断头钳制，无后跳）');
+// T2.27 连续箭头流: 该场景每段为独立单格链（belt 助手按格建链），物品跨链骑行
+// 后停靠在各自链的注入/钳位槽位上（不后退规则）——停车相位依链而异，断言改为
+// 结构性: 已停止（delta=0）、progress ∈ [0,1)、每段恰一件（5c）。
+assert(chain.every((s) => s.items[0].delta === 0 && s.items[0].progress >= 0 && s.items[0].progress < 1),
+  '5d. 各件已停止（delta=0）且 progress ∈ [0,1)（T2.27 槽位停靠，跨链场景相位依链）');
 const events5 = log.filter((e) => e.type === 'output');
 assertEq(events5.length, 5, '5e. 5 条 output 事件（每件一条）');
 assert(events5.every((e) => e.message.includes('输出 晶体外壳 ×1（输出口2 → 传送带）')),
