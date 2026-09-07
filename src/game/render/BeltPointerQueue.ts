@@ -98,6 +98,8 @@ export class ChainPointerQueue {
    * 排空后滑回当前时钟。哈希序位与流动时钟不相关 → 各链相位差不随时间收敛。
    */
   freeRunClass = 0;
+  /** 上一 Tick 的链长——延长即覆盖的触发器。 */
+  private lastChainLen = 0;
 
   /**
    * 播种（链首次可见时调用一次）: 在窗口 [−MARGIN, len+MARGIN] 的 classFrac
@@ -138,6 +140,39 @@ export class ChainPointerQueue {
       this.seed(chainLen, creationClass);
       this.seeded = true;
       this.freeRunClass = creationClass;
+      this.lastChainLen = chainLen;
+    }
+    // 延长即覆盖（用户实测: 创建中逐段落盘的后续段长时间无指针——链增长只能
+    // 靠队尾补充从带外以带速流入, 新段要等 ~2s/格）: 链长增加时在新格的**既有
+    // 格网**上立即补一支（与前沿恰距 1、与全部实体 ≥1——数量 ≤ 目标恒成立,
+    // 间距不变量不破坏）。
+    if (chainLen > this.lastChainLen) {
+      let anchor: number;
+      if (this.arrows.length > 0) {
+        anchor = ((this.arrows[0]!.pos % 1) + 1) % 1;
+      } else if (items.length > 0) {
+        let rm = Infinity;
+        for (const it of items) if (it.total < rm) rm = it.total;
+        anchor = ((rm % 1) + 1) % 1;
+      } else {
+        anchor = this.freeRunClass;
+      }
+      for (let c = this.lastChainLen; c < chainLen; c++) {
+        const pos = c + anchor;
+        let conflict = false;
+        for (const a of this.arrows) {
+          if (Math.abs(a.pos - pos) < 1 - EPS) { conflict = true; break; }
+        }
+        if (!conflict) {
+          for (const it of items) {
+            if (Math.abs(it.total - pos) < 1 - EPS) { conflict = true; break; }
+          }
+        }
+        if (!conflict) this.arrows.push({ id: this.nextId++, pos, flowing: true });
+      }
+      this.lastChainLen = chainLen;
+    } else if (chainLen < this.lastChainLen) {
+      this.lastChainLen = chainLen;
     }
     this.freeRunClass = (this.freeRunClass + ITEM_PROGRESS_PER_TICK) % 1;
     const had = this.itemCount;
@@ -198,16 +233,18 @@ export class ChainPointerQueue {
       ? ((rearmost % 1) + 1) % 1
       : null;
 
-    // 1. 击杀（一格只能 0 或 1）: ① 停稳物品接触（"1 停稳后 0 才消失"——排队中
-    //    的 0 被走过来盖住的覆盖过程是唯一合法同格瞬态，静止的 0 活到 1 停稳）;
-    //    ② 在流指针被物品重合（物品弹入/走近，同速同行永不自解）——立即让位。
+    // 1. 击杀（一格只能 0 或 1）: **在流**指针与**流动**物品重合（注入弹入/亚格
+    //    间距同行，同速永不自解）→ 立即让位。停止物品不击杀——堵塞虚拟终点
+    //    语义（用户 2026-09-07 拍板，推翻"1 停稳后 0 才消失"）: 0 以带速渐变
+    //    滑入停止物品（渲染层 fade），到终点余量循环回带首，不停走不消失。
     if (items.length > 0) {
       for (let i = this.arrows.length - 1; i >= 0; i--) {
         const a = this.arrows[i]!;
+        if (!a.flowing) continue;
         let dead = false;
         for (const it of items) {
-          if (Math.abs(it.total - a.pos) <= CONTACT_KILL_DIST + EPS
-            && (it.stopped || a.flowing)) {
+          if (it.stopped) continue;
+          if (Math.abs(it.total - a.pos) <= CONTACT_KILL_DIST + EPS) {
             dead = true;
             break;
           }
@@ -230,11 +267,19 @@ export class ChainPointerQueue {
     //      （周期 123/241 ≠ 120/240，实测定位）。mid-tick 的 0.975 间距存在于
     //      移动与循环两 pass 之间，不参与渲染/判定，循环 pass 结束即恢复 ≥1。
     const sorted = this.arrows.slice().sort((a, b) => b.pos - a.pos);
-    const tailLimit = chainLen + ARROW_WINDOW_MARGIN;
+    // 堵塞虚拟终点（用户 2026-09-07 拍板，推翻"堵塞时 0 排队停走"）: 最前方的
+    // 停止物品 = 指针的"带尾"——后方 0 不排队不停走，以带速渐变滑入（渲染层
+    // fade，与真实带尾同款），越过终点余量即循环回带首。无停止物品 = 真带尾。
+    let stoppedFront = Infinity;
+    for (const it of items) {
+      if (it.stopped && it.total < stoppedFront) stoppedFront = it.total;
+    }
+    const tailLimit = Math.min(chainLen, stoppedFront) + ARROW_WINDOW_MARGIN;
     for (let i = 0; i < sorted.length; i++) {
       const a = sorted[i]!;
       let limit = tailLimit;
       for (const it of items) {
+        if (it.stopped) continue; // 停止物品 = 虚拟终点（tailLimit 承担），不排队
         if (it.total <= a.pos + EPS) continue; // 身下/身后: 不钳（随物品同速流动）
         const l = it.total < a.pos + 1 - EPS ? it.total : it.total - 1;
         if (l < limit) limit = l;

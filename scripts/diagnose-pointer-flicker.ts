@@ -281,9 +281,9 @@ runScenario('S2 短带', { aLen: 1, bLen: 2, extendAt: 300, extendLen: 2, aToSin
 runScenario('S3 双死端', { aLen: 3, bLen: 3, extendAt: 300, extendLen: 3, aToSink: false, ticks: 900 });
 runScenario('S4 不延长(对照)', { aLen: 3, bLen: 3, extendAt: 1 << 30, extendLen: 0, aToSink: true, ticks: 900 });
 
-// ═══ S5 堵塞 → 指针整列冻结（§十三"0 也排队"；T2.28"照常循环"反转回队列语义）═══
+// ═══ S5 堵塞 → 虚拟终点循环（渐变滑入堵塞前沿，2026-09-07 用户拍板推翻"0 排队停走"）═══
 {
-  console.log('\n═══ S5 堵塞 → 指针排队冻结 ═══');
+  console.log('\n═══ S5 堵塞 → 虚拟终点循环 ═══');
   const { world, beltSys, machineSys, place } = makeWorld();
   const f = place('refining_unit', 5, 5);
   const idA = 'chain-1754000000901-A';
@@ -314,15 +314,29 @@ runScenario('S4 不延长(对照)', { aLen: 3, bLen: 3, extendAt: 1 << 30, exten
     beltSys.update(world, 50); machineSys.update(world, 50);
     mirror.tick(world, t, { check: false });
   }
-  let maxFlow = 0;
-  for (const [id, prev] of before) {
-    for (const a of mirror.states.get(id)!.q.arrows) {
-      const p0 = prev.get(a.id);
-      if (p0 !== undefined) maxFlow = Math.max(maxFlow, Math.abs(a.pos - p0));
+  let frozen = 0, illegal = 0, moved = 0;
+  for (const id of [idA, idB]) {
+    const q = mirror.states.get(id)!.q;
+    // 堵塞虚拟终点（最前方停止物品）: 指针不停不走不消失——以带速渐变滑入并循环
+    let stoppedFront = Infinity;
+    for (const it of itemsOf(world, id)) {
+      if (it.stopped && it.total < stoppedFront) stoppedFront = it.total;
+    }
+    for (const a of q.arrows) {
+      const p0 = before.get(id)!.get(a.id);
+      if (p0 === undefined) continue;
+      const d = a.pos - p0;
+      if (Math.abs(d) < 1e-9) frozen++;
+      else if (d > -0.5) moved++;
+      // 2 Tick 位移 ∈ {0.05(流动)} ∪ {循环瞬移}——静止 = 违例
+      if (Math.abs(d) < 1e-9 || (Math.abs(d - 0.05) > 0.005 && d > -0.5)) illegal++;
+      // 无指针滞留在虚拟终点余量之外（渐变完成即循环）
+      if (isFinite(stoppedFront) && a.pos > stoppedFront + 0.13) illegal++;
     }
   }
   assertOk(stillJammed, 'S5-a. 前置: 双链仍饱和堵塞（物品未被清空）');
-  assertOk(maxFlow < 1e-9, `S5-b. 饱和堵塞 2 Tick 指针最大位移 ${maxFlow.toExponential(2)}（期望 0——0 与 1 同律排队冻结，不滑过停走队列）`);
+  assertOk(frozen === 0 && illegal === 0 && moved > 0,
+    `S5-b. 饱和堵塞 2 Tick: 静止指针 ${frozen} 支、非法位移/滞留 ${illegal}（期望全 0——0 以带速渐变滑入堵塞前沿【虚拟终点】并循环回带首，不停走不消失）`);
 }
 
 // ═══ S6 空带流速=带速（与链长无关；循环瞬移按 +链长 还原）═══
@@ -572,9 +586,9 @@ runScenario('S4 不延长(对照)', { aLen: 3, bLen: 3, extendAt: 1 << 30, exten
     `S11-c. ${checkerboardChecked} Tick 双带物品 total 差 mod 2 == 1（0-1-0/1-0-1 棋盘精确成立、零漂移; 违例 ${checkerboardViolations}）`);
 }
 
-// ═══ S12 停走击杀 + 疏通恢复（§十三②"1 停稳后 0 才消失"）═══
+// ═══ S12 堵塞前沿吞噬 + 疏通恢复（虚拟终点语义，2026-09-07 拍板）═══
 {
-  console.log('\n═══ S12 停走击杀 + 疏通恢复 ═══');
+  console.log('\n═══ S12 堵塞前沿吞噬 + 疏通恢复 ═══');
   const { world, beltSys, machineSys, place } = makeWorld();
   const f = place('refining_unit', 5, 5);
   const idA = 'chain-1754000000997-A';
@@ -590,46 +604,49 @@ runScenario('S4 不延长(对照)', { aLen: 3, bLen: 3, extendAt: 1 << 30, exten
   const mirror = new QueueMirror();
   const UNBLOCK_AT = 350;
   let saturated = false;
-  let touching = -1;
-  let unblocked = false;
-  let p0: Map<number, number> | null = null;
-  let p1: Map<number, number> | null = null;
+  let beyondFront = 0, frozenJam = 0, checkedJam = 0;
   for (let t = 1; t <= 400; t++) {
     if (t === UNBLOCK_AT) {
-      // 疏通: 移走队首（最末格）物品 → 后方恢复流动
-      const segs = [...world.query('BeltSegmentComp', 'Position')]
-        .map((h) => world.getComponent<BeltSegmentComp>(h, 'BeltSegmentComp')!)
-        .filter((s) => s.chainId === idA)
-        .sort((a, b) => (b.segmentIndex ?? 0) - (a.segmentIndex ?? 0));
-      segs[0]!.items.shift();
-      unblocked = true;
+      // 真正疏通: 清空全链物品（移一件会立刻回堵——前沿退回 1.5, 箭头无从穿越）
+      for (const sg of world.query('BeltSegmentComp', 'Position')) {
+        const seg = world.getComponent<BeltSegmentComp>(sg, 'BeltSegmentComp')!;
+        if (seg.chainId === idA) seg.items!.length = 0;
+      }
     }
+    const prevPos = new Map(mirror.states.get(idA)?.q.arrows.map((a) => [a.id, a.pos] as const) ?? []);
     beltSys.update(world, 50); machineSys.update(world, 50);
     mirror.tick(world, t, { check: false });
-    if (t === UNBLOCK_AT) {
-      p0 = new Map(mirror.states.get(idA)!.q.arrows.map((a) => [a.id, a.pos] as const));
-    }
-    if (t === UNBLOCK_AT + 1) {
-      p1 = new Map(mirror.states.get(idA)!.q.arrows.map((a) => [a.id, a.pos] as const));
-    }
-    if (!unblocked) {
-      const items = itemsOf(world, idA);
-      if (items.length === 3 && items.every((it) => it.stopped)) {
-        saturated = true;
-        const st = mirror.states.get(idA)!;
-        touching = st.q.arrows.filter((a) =>
-          items.some((it) => Math.abs(it.total - a.pos) <= CONTACT_KILL_DIST + 1e-6)).length;
+    const q = mirror.states.get(idA)!.q;
+    const items = itemsOf(world, idA);
+    if (!q || items.length < 3 || !items.every((it) => it.stopped)) continue;
+    saturated = true;
+    let stoppedFront = Infinity;
+    for (const it of items) if (it.stopped && it.total < stoppedFront) stoppedFront = it.total;
+    if (t < UNBLOCK_AT) {
+      checkedJam++;
+      for (const a of q.arrows) {
+        if (a.pos > stoppedFront + 0.13) beyondFront++;
+        const p0 = prevPos.get(a.id);
+        if (p0 !== undefined && Math.abs(a.pos - p0) < 1e-9) frozenJam++;
       }
     }
   }
-  assertOk(saturated && touching === 0, `S12-a. 链满堵塞后停稳物品接触范围内指针数 ${touching}（期望 0——"1 停稳后 0 消失"）`);
-  // 疏通后指针恢复流动: 比较 UNBLOCK_AT 与 +1 Tick 的位置（再晚传送带会重新饱和）
-  let moved = false;
-  for (const [id, p] of p0!) {
-    const q1 = p1!.get(id);
-    if (q1 !== undefined && Math.abs(q1 - p) > 1e-9) moved = true;
+  assertOk(saturated && beyondFront === 0 && frozenJam === 0,
+    `S12-a. 堵塞期间 ${checkedJam} Tick: 滞留虚拟终点外 ${beyondFront}、静止 ${frozenJam}（期望全 0——指针渐变滑入最前方停止物品并在余量处循环，被"吞噬"而非排队/消失）`);
+  // 疏通后: 指针流过原虚拟终点位置（渐变解除）
+  const items0 = itemsOf(world, idA);
+  let front0 = Infinity;
+  for (const it of items0) if (it.total < front0) front0 = it.total;
+  void front0;
+  let crossed = false;
+  for (let t = 401; t <= 460 && !crossed; t++) {
+    beltSys.update(world, 50); machineSys.update(world, 50);
+    mirror.tick(world, t, { check: false });
+    for (const a of mirror.states.get(idA)!.q.arrows) {
+      if (a.pos > 2.0) crossed = true; // 流过接近带尾的原堵塞前沿区
+    }
   }
-  assertOk(moved, 'S12-b. 疏通后指针恢复流动（不再冻结）');
+  assertOk(crossed, 'S12-b. 疏通后指针流过原堵塞前沿（虚拟终点解除，恢复全程流动）');
 }
 
 // ═══ S13 注入重相位（≤半格刚体平移到新物品格网）═══
@@ -801,6 +818,46 @@ runScenario('S4 不延长(对照)', { aLen: 3, bLen: 3, extendAt: 1 << 30, exten
     assertOk(carried && restoredAt > 0,
       `S16-b. 带过物品排空后回归虚拟创建时钟（携带 ✓，回归 @tick ${restoredAt}，时钟锚 ${cA.toFixed(4)}——被设备节拍对齐后不再残留同相，且回归后随时钟继续流动非静止）`);
   }
+}
+
+// ═══ S17 延长即覆盖（创建中逐段落盘的后续段立即有指针）═══
+{
+  console.log('\n═══ S17 延长即覆盖 ═══');
+  const { world, beltSys, machineSys } = makeWorld();
+  const idA = 'chain-1754000000700-A';
+  const addSeg = (i: number): void => {
+    const h = world.createEntity();
+    world.addComponent(h, 'Position', { x: 5 * CELL_SIZE, y: (9 - i) * CELL_SIZE });
+    world.addComponent(h, 'BeltSegmentComp', {
+      chainId: idA, direction: 270, isCorner: false, isTail: false,
+      segmentIndex: i, phaseOffset: 0, items: [], blocked: false,
+    } as BeltSegmentComp);
+  };
+  for (let i = 0; i < 2; i++) addSeg(i);
+  const mirror = new QueueMirror();
+  for (let t = 1; t <= 100; t++) {
+    beltSys.update(world, 50); machineSys.update(world, 50);
+    mirror.tick(world, t, { check: false });
+  }
+  // 模拟创建模式逐段落盘: 链长 2 → 6（每次 +1 段）
+  let worstCoverDelay = 0;
+  for (let i = 2; i < 6; i++) {
+    addSeg(i);
+    beltSys.update(world, 50); machineSys.update(world, 50);
+    mirror.tick(world, 100 + i, { check: false });
+    const q = mirror.states.get(idA)!.q;
+    const len = i + 1;
+    const covered = new Set<number>();
+    for (const a of q.arrows) {
+      if (a.pos >= 0) covered.add(Math.floor(a.pos + 1e-9));
+    }
+    for (let c = 0; c < len; c++) {
+      if (!covered.has(c)) worstCoverDelay++;
+    }
+    if (q.arrows.length > len + 1) worstCoverDelay += 10;
+  }
+  assertOk(worstCoverDelay === 0,
+    `S17. 逐段延长 2→6 格: 落盘次 Tick 起新段全覆盖缺格数 ${worstCoverDelay}（期望 0——创建中后续段不再等队尾流入, 延长即覆盖且不超密度）`);
 }
 
 console.log(`\n累计指针跳变: ${arrowJumps}（应 0）/ 0-1 网格错开: ${alignFails}（应 0）/ 重叠: ${overlapFails}（应 0）`);
