@@ -272,12 +272,14 @@ export class BeltPointerRenderer {
 
       // 堵塞虚拟终点的渐隐中心（用户 2026-09-07 拍板）: 最前方停止物品——0 以
       // 带速渐变滑入停止物品（渐变裁剪，与真实带尾滑出同款效果），到终点余量
-      // 循环回带首。无停止物品 = 真实带尾。
+      // 循环回带首。无停止物品 = 真实带尾。逐支用 queue 的出场口锁定
+      // （T2.29-f）: 渐隐中的指针按自己锁定的终点滑入——虚拟终点离散后跳
+      // （每件物品停稳跳一格）不打断在途渐隐（硬切 = "立刻消失/交替消失"）。
       let stoppedFront = Infinity;
       for (const it of items) {
         if (it.stopped && it.total < stoppedFront) stoppedFront = it.total;
       }
-      const tailFade = Math.min(rt.chainLen, stoppedFront);
+      const liveTailFade = Math.min(rt.chainLen, stoppedFront);
 
       // 几何映射: 链坐标 d（prev + α×Δ 内插，与物品同公式）→ 世界坐标
       for (const arrow of rt.queue.arrows) {
@@ -289,7 +291,8 @@ export class BeltPointerRenderer {
         const { x, y, rotation } = this.computePointerTransform(seg, progress);
 
         // 可见性: 端部渐变（带外等待/滑出由遮罩裁剪，渐变给"半透明滑出"观感;
-        // 尾端渐隐中心 = 堵塞虚拟终点或真实带尾）
+        // 尾端渐隐中心 = 本支出场口（渐隐中锁定）或当前虚拟终点/真实带尾）
+        const tailFade = arrow.exitAt ?? liveTailFade;
         let vis = 1;
         vis = Math.min(vis, clamp01(
           ((tailFade + ARROW_WINDOW_MARGIN) - d) / (2 * ARROW_WINDOW_MARGIN),

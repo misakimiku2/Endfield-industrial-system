@@ -10,3 +10,6 @@ gui-test-screenshots
 
 # T1.3: 构建脚本产物(由 npm run pack-assets 生成，不入库)
 public/spritesheets/
+
+# log 文件夹 - 本地调试日志、截图、视频等不入库
+log/

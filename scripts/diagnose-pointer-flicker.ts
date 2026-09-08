@@ -27,7 +27,7 @@ import { BUILDING_DEFINITIONS } from '../src/game/data/buildings.ts';
 import { BeltSystem, ITEM_PROGRESS_PER_TICK } from '../src/game/systems/BeltSystem.ts';
 import { MachineSystem } from '../src/game/systems/MachineSystem.ts';
 import { createBufferSlots } from '../src/game/systems/machine/BufferOps.ts';
-import { ChainPointerQueue, chainCreationClass, CONTACT_KILL_DIST, type QueueItemRef } from '../src/game/render/BeltPointerQueue.ts';
+import { ChainPointerQueue, chainCreationClass, CONTACT_KILL_DIST, ARROW_WINDOW_MARGIN, type QueueItemRef } from '../src/game/render/BeltPointerQueue.ts';
 import type { BuildingComp } from '../src/game/components/BuildingComp.ts';
 import type { BeltSegmentComp } from '../src/game/components/BeltSegmentComp.ts';
 import { CELL_SIZE } from '../src/game/render/constants.ts';
@@ -858,6 +858,160 @@ runScenario('S4 不延长(对照)', { aLen: 3, bLen: 3, extendAt: 1 << 30, exten
   }
   assertOk(worstCoverDelay === 0,
     `S17. 逐段延长 2→6 格: 落盘次 Tick 起新段全覆盖缺格数 ${worstCoverDelay}（期望 0——创建中后续段不再等队尾流入, 延长即覆盖且不超密度）`);
+}
+
+// ═══ S18 堵塞生长的渐隐完整性（出场口锁定，用户实测"走入物品那格立刻消失/交替消失"）═══
+{
+  console.log('\n═══ S18 堵塞生长渐隐完整性 ═══');
+  const q = new ChainPointerQueue();
+  q.seed(4, 0.0); // 4 格带，物品格网类 0
+  // 阶段1: 物品1 停在带尾格心 3.5（虚拟终点 3.5）
+  let items: QueueItemRef[] = [{ total: 3.5, stopped: true }];
+  // 跑到有一支指针进入渐隐区（锁定 3.5）——恰好复刻用户场景: 物品2 与该指针同速，
+  // 物品2 停稳(终点跳 2.5)的瞬间指针恰在 3.5 附近渐隐中
+  let fading: { id: number; pos: number } | null = null;
+  for (let t = 0; t < 200 && fading === null; t++) {
+    q.advance(4, 1, items);
+    for (const a of q.arrows) {
+      if (a.exitAt !== null && Math.abs(a.exitAt - 3.5) < 1e-9) {
+        fading = { id: a.id, pos: a.pos };
+      }
+    }
+  }
+  const okLock = fading !== null;
+  // 阶段2: 物品2 停在 2.5 → 终点跳到 2.5; 已锁定的指针必须完整滑入 3.5（到
+  // 3.625 循环），不得被硬传送（瞬间消失）——后跳只影响后来者
+  let snapFail = false, completed = false, maxReached = -Infinity;
+  const followerCompletesAt = { old: 0, new: 0 };
+  const lockId = fading?.id ?? -1;
+  for (let t = 0; t < 80; t++) {
+    const prevPos = new Map(q.arrows.map((a) => [a.id, a.pos] as const));
+    items = [
+      { total: 3.5, stopped: true },
+      { total: 2.5, stopped: true },
+    ];
+    q.advance(4, 1, items);
+    for (const a of q.arrows) {
+      const p0 = prevPos.get(a.id);
+      if (a.id === lockId) {
+        maxReached = Math.max(maxReached, a.pos);
+        // 渐隐中的指针位移只允许 +0.025（流动）或循环瞬移（到位后）——中途大幅
+        // 后跳 = 被终点后跳硬传送 = 立刻消失
+        if (p0 !== undefined && a.pos - p0 < -0.5 && a.pos > 0.5) snapFail = true;
+        if (p0 !== undefined && p0 > 3.5 && a.pos < 0) completed = true; // 滑入 3.5 完成并循环
+      }
+    }
+  }
+  // 后来者: 锁定新终点 2.5（走到 2 停止位置才渐隐）
+  for (const a of q.arrows) {
+    if (a.exitAt !== null && Math.abs(a.exitAt - 2.5) < 1e-9) followerCompletesAt.new++;
+  }
+  followerCompletesAt.old = 0;
+  assertOk(okLock && !snapFail && completed && maxReached >= 3.625 - 1e-6,
+    `S18-a. 终点后跳不打断在途渐隐: 锁定 ✓（${okLock}）、无硬传送（${!snapFail}）、完整滑入原前沿 3.5（峰值 ${maxReached.toFixed(3)} ≥3.625 后循环 ${completed}）`);
+  assertOk(followerCompletesAt.new > 0,
+    `S18-b. 后来者跟随新终点 2.5 渐隐（锁定 2.5 的指针 ${followerCompletesAt.new} 支——"走到 2 停止的位置才消失"成为普遍行为而非交替例外）`);
+}
+
+// ═══ S19 断头带堵塞生长: 无"全亮瞬消/硬切"（用户实测"走入物品那格立刻消失/交替消失"，2026-09-08 根因）═══
+// 两个根因（均已在 BeltPointerQueue 修复，本断言锁死不再复发）:
+//   ① 注入清扫用"与任一物品距离 <1"判定——堵塞生长期移动中的物品（class 0.0 格网）
+//      与已停稳的堵塞队列（class 0.5 格网）**不在同一格网**，重相位只能对齐其一，
+//      落在另一格网上的合法 0 与物品距离恰 0.5（<1）→ 被整批删除 = α=1 的指针瞬间
+//      消失（主因）。修复: 判定改为"重相位后重合（距离 <1e-6）"。
+//   ② 出场口锁定用单侧条件 `pos ≥ terminus−余量`，把**远在终点之后**的指针也锁到
+//      terminus（一个在它身后的值）→ 同 Tick 判越界、硬传送回带首（硬切）。修复:
+//      先判"越过终点"锁真实带尾，再判渐隐区锁当前终点。
+// 场景复刻: 精炼炉输出接两带 —— A 通存货口（正常流）、B 断头（堵塞红显）。
+{
+  console.log('\n═══ S19 断头带堵塞生长无瞬消 ═══');
+  const LEN_B = 4;
+  const { world, beltSys, machineSys, place } = makeWorld();
+  const f = place('refining_unit', 5, 5);
+  const idA = 'chain-1754000000931-A';
+  const idB = 'chain-1754000000932-B';
+  const mkChainAt = (x: number, id: string, len: number, isTailLast: boolean): void => {
+    for (let i = 0; i < len; i++) {
+      const h = world.createEntity();
+      world.addComponent(h, 'Position', { x: x * CELL_SIZE, y: (4 - i) * CELL_SIZE });
+      world.addComponent(h, 'BeltSegmentComp', {
+        chainId: id, direction: 270, isCorner: false, isTail: isTailLast && i === len - 1,
+        segmentIndex: i, phaseOffset: 0, items: [], blocked: false,
+      } as BeltSegmentComp);
+    }
+  };
+  mkChainAt(5, idA, 3, true);      // A → 存货口（正常流）
+  mkChainAt(6, idB, LEN_B, true);  // B 断头（无下游 = 堵塞）
+  placeSinkAt(world, 4, 1);
+  f.bufferInput[0] = { itemId: 'originium_ore', count: 500 };
+
+  const clamp01v = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
+  const mirror = new QueueMirror();
+  let prevPos = new Map<number, number>();
+  let prevAlpha = new Map<number, number>();
+  let vanish = 0, hardCut = 0, alphaJump = 0, headTakeover = 0;
+  let jamTicks = 0, maxStopped = 0, injections = 0, prevItemCount = 0;
+  for (let t = 1; t <= 900; t++) {
+    beltSys.update(world, 50);
+    machineSys.update(world, 50);
+    mirror.tick(world, t, { check: false });
+    const q = mirror.states.get(idB)?.q;
+    if (!q) continue;
+    const items = itemsOf(world, idB);
+    if (items.length > prevItemCount) injections++;
+    prevItemCount = items.length;
+    let stoppedFront = Infinity;
+    let nStopped = 0;
+    for (const it of items) {
+      if (!it.stopped) continue;
+      nStopped++;
+      if (it.total < stoppedFront) stoppedFront = it.total;
+    }
+    maxStopped = Math.max(maxStopped, nStopped);
+    if (nStopped > 0) jamTicks++;
+    const terminus = Math.min(LEN_B, stoppedFront);
+    // 渲染层同一公式（BeltPointerRenderer.update 的 vis 计算）
+    const alpha = new Map<number, number>();
+    for (const a of q.arrows) {
+      const tailFade = a.exitAt ?? terminus;
+      let vis = 1;
+      vis = Math.min(vis, clamp01v(((tailFade + ARROW_WINDOW_MARGIN) - a.pos) / (2 * ARROW_WINDOW_MARGIN)));
+      vis = Math.min(vis, clamp01v((a.pos + ARROW_WINDOW_MARGIN) / (2 * ARROW_WINDOW_MARGIN)));
+      alpha.set(a.id, vis);
+    }
+    for (const a of q.arrows) {
+      const p0 = prevPos.get(a.id);
+      const v0 = prevAlpha.get(a.id);
+      const v1 = alpha.get(a.id)!;
+      if (p0 === undefined || v0 === undefined) continue;
+      // ① 循环硬切: α 仍 >0.5 却被瞬移回带首
+      if (a.pos < p0 - 0.5 && v0 > 0.5) {
+        hardCut++;
+        console.log(`  [tick ${t}] 指针#${a.id} ${p0.toFixed(3)}(α${v0.toFixed(2)}) → 循环 ${a.pos.toFixed(3)}【全亮硬切】`);
+      } else if (Math.abs(a.pos - p0) < 0.5 && v0 - v1 > 0.4) {
+        alphaJump++;
+        console.log(`  [tick ${t}] 指针#${a.id} ${p0.toFixed(3)} α${v0.toFixed(2)}→${v1.toFixed(2)}【α跳变】`);
+      }
+    }
+    // ② 击杀瞬消: 从队列移除 = 精灵直接销毁（渐隐归零前就没了）。
+    //    链首注入格（d < 0.5）的让位击杀是**设计内**的（§"一格只能 0 或 1"、
+    //    S15"注入格上的 0 让位"）——物品弹入链首格接管的那一格，不计违例
+    //    （与物品同时同格出现，观感由物品出场主导）。
+    for (const [id, p0] of prevPos) {
+      if (alpha.has(id)) continue;
+      const v0 = prevAlpha.get(id) ?? 0;
+      if (v0 <= 0.5) continue;
+      if (p0 < 0.5) { headTakeover++; continue; }
+      vanish++;
+      console.log(`  [tick ${t}] 指针#${id} ${p0.toFixed(3)}(α${v0.toFixed(2)})【全亮瞬消·击杀】`);
+    }
+    prevPos = new Map(q.arrows.map((a) => [a.id, a.pos] as const));
+    prevAlpha = new Map(alpha);
+  }
+  assertOk(jamTicks > 200 && maxStopped >= 3 && injections > 3,
+    `S19-a. 场景有效: 堵塞 ${jamTicks} Tick、同时停稳物品峰值 ${maxStopped} 件、注入 ${injections} 次（断头带确实在堵塞生长）`);
+  assertOk(vanish === 0 && hardCut === 0 && alphaJump === 0,
+    `S19-b. 堵塞生长期全亮瞬消 ${vanish}、全亮硬切 ${hardCut}、α跳变 ${alphaJump}（期望全 0——每支 0 都滑到自己的出场口渐隐归零，不再有"走入物品那格立刻消失/交替消失"；链首注入格让位 ${headTakeover} 支为设计内的"一格只能 0 或 1"）`);
 }
 
 console.log(`\n累计指针跳变: ${arrowJumps}（应 0）/ 0-1 网格错开: ${alignFails}（应 0）/ 重叠: ${overlapFails}（应 0）`);
