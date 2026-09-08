@@ -342,6 +342,10 @@ export class BeltPointerRenderer {
     rt.maskKey = key;
     if (!rt.mask) {
       rt.mask = new Graphics();
+      // 标记为 mask（PixiJS v8 默认会把 addChild 后的 Graphics 当成普通可见节点渲染——
+      // 会把白填遮罩作为白方块画到屏幕上，导致"删中间段后下游新链首格闪一下白"。
+      // isMask=true 把它从主场景渲染里排除，只用于 sprite.mask 通道的 stencil 裁剪。
+      (rt.mask as { isMask?: boolean }).isMask = true;
       this.layer.addChild(rt.mask);
     }
     rt.mask.clear();

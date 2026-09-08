@@ -88,6 +88,15 @@ const EPS = 1e-9;
  * 同一全局相位（浏览器像素实测三带相位差 0.000/0.000/0.010，T2.29-c 代理验证
  * 发现）。相位常数必须与流动时钟不相关——哈希满足（不同创建时间的 chainId
  * 含不同时间戳/序号，哈希雪崩，无周期混叠）。
+ *
+ * 2026-09-08 进一步约束到 [0.25, 0.75)：原 [0,1) 均匀分布会让约一半链的 classFrac
+ * 落在接近 0 或 1 的区域，seed 出来的指针 d 几乎等于 n（cell 边界），sprite 落在
+ * cell 边缘 ±CELL_SIZE/2 处，被 cell 矩形 mask 整段裁掉——视觉上"物品前后整片空白"。
+ * （用户实测: 6 格链 + 物品 1 个时，classFrac<0.1 或 >0.9 的链只看到链首尾 2 个指针，
+ * 中间 cell 看起来"什么都没有"；classFrac=0.5 时所有 cell 都有清晰指针。）
+ * [0.25, 0.75] 区间对应 d 偏离 n 至少 0.25 = sprite 中心距 cell 边缘 ≥16px
+ * （sprite 高 16px），指针永远在 cell 内部完整可见。每链序位仍各异（997 个 hash
+ * 值各映射到 [0,1) 上的不同点 → 投影到 [0.25,0.75] 上仍均匀覆盖）。
  */
 export function chainCreationClass(chainId: string, fallback: number): number {
   if (chainId.length === 0) return fallback;
@@ -95,7 +104,7 @@ export function chainCreationClass(chainId: string, fallback: number): number {
   for (let i = 0; i < chainId.length; i++) {
     h = (h * 31 + chainId.charCodeAt(i)) % 997;
   }
-  return h / 997;
+  return 0.25 + (h / 997) * 0.5;
 }
 
 export class ChainPointerQueue {
