@@ -98,6 +98,11 @@ export interface BuildingDefinition {
    * 'load' = 存货口（无限汇，无条件吸入）。MachineSystem 据此走 DepotOps 分支。
    */
   depot?: 'unload' | 'load';
+  /**
+   * 取货口默认产出物品 (T2.15)。仅 depot==='unload' 有意义；运行时每台实例可经
+   * BuildingComp.depotOutputItemId 覆盖（弹窗「添加物品」面板），null 时回退本字段。
+   */
+  depotOutputItem?: string;
   /** 可选： billboard 徽标层 key，会叠加在主体上方并保持屏幕朝上 (devices 图集内的 texture key) */
   logoTextureKey?: string;
   /** 是否可被玩家选中 (T1.8 用) */
@@ -290,6 +295,7 @@ export const BUILDING_DEFINITIONS: Record<string, BuildingDefinition> = {
     outputSlotCount: 0,
     bufferCapacity: 50, // 名义值（无槽位即无意义，保持字段必填）
     depot: 'unload',
+    depotOutputItem: 'originium_ore', // T2.15: 默认源矿（弹窗产出选择面板可逐台覆盖）
   },
   depot_loader: {
     id: 'depot_loader',

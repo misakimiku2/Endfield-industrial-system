@@ -1,0 +1,886 @@
+/*
+ * 设备详情弹窗样式 (T2.15) — 样式 token 全部对齐旧 Flutter 项目
+ * 依据: doc/implementation-phase-2.md T2.15「旧项目弹窗结构（复刻基准）」+
+ *       C:\Users\Misaki\Desktop\git\Endfield\lib\widgets\building_detail_dialog.dart 等。
+ * 颜色/尺寸速查（源码抄录）:
+ *   遮罩 rgba(0,0,0,.6) | 外壳 #252525 边框 #444444 圆角 16 | 面板 #373737 圆角 15
+ *   信息栏 77px，LOGO 42×42，名称 26px w600 白，耗电 16px #A6A6A6，关闭按钮 26×26（hover #636363）
+ *   电源开关 120×28 胶囊，滑块 60×28（开=白在左 / 关=#E53935 在右，200ms），文字 12px w600
+ *   物品格 128×128 边框 5px #7F7F7F 圆角 15，底 #696969 渐变+等级色条（synthesis_grid._getGridSvg）
+ *   进度条 156×14: 轨道 140×4 #BFBFBF + 白色填充 8px + 端点圆 r6（processing_indicator 画笔）
+ *   状态文字 18px w500 #EDEDED；暂停/阻塞文字 18px w600 #929292/#E53935
+ *   指示条 20×4 圆角 2；动作按钮图标 44×44 + 标签 14px w500 白
+ *   仓库卡 265×128 #696969 圆角 15；连接线 75px #CCCCCC/#EBAD26；轨道 168×54
+ *   胶囊按钮 圆角 20 字 13px w600（添加=白/#212121 hover#A3A3A3，移除=#E53935 hover#8A1717，取消=#CCCCCC hover#777777）
+ *   标签页胶囊 375×32 底 #6E6E6E，选中页白 93.75×32，字 11px w600 #212121，未选中图标 #929292
+ */
+
+.efd-dialog-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: system-ui, 'Microsoft YaHei', sans-serif;
+  user-select: none;
+}
+
+.efd-dialog-root[hidden] {
+  display: none;
+}
+
+/* 选择面板与预览区互斥切换（hidden 属性需显式覆盖 display:flex）*/
+.efd-picker[hidden] {
+  display: none;
+}
+
+/* 遮罩: showDialog barrierColor black 0.6 —— 点击关闭弹窗 */
+.efd-dialog-barrier {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+/* ── 外壳 ── */
+.efd-dialog {
+  position: relative;
+  width: clamp(1280px, calc(100vw - 48px), 1460px);
+  height: min(720px, calc(100vh - 48px));
+  background: #252525;
+  border: 1px solid #444444;
+  border-radius: 16px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+/* 背景花纹: endfield-industries logo 白色 2% 透明度，距顶 80 / 距左 740 / 800px
+   （building_shared_widgets.DialogBackgroundPattern；img 无法染色 → filter 转白） */
+.efd-dialog-watermark {
+  position: absolute;
+  top: 80px;
+  left: 740px;
+  width: 800px;
+  height: 800px;
+  pointer-events: none;
+  filter: brightness(0) invert(1);
+  opacity: 0.02;
+}
+
+/* ── 顶部信息栏 (77px) ── */
+.efd-infobar {
+  position: relative;
+  height: 77px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding-left: 16px;
+  box-sizing: border-box;
+}
+
+.efd-infobar-logo {
+  width: 42px;
+  height: 42px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.efd-infobar-logo > div {
+  /* 尺寸/背景由 JS 按图集帧计算 */
+}
+
+.efd-vsep {
+  width: 2px;
+  height: 60px;
+  margin: 0 10px;
+  background: #444444;
+  flex: none;
+}
+
+.efd-infobar-name {
+  color: #ffffff;
+  font-size: 26px;
+  font-weight: 600;
+}
+
+.efd-infobar-power {
+  color: #a6a6a6;
+  font-size: 16px;
+}
+
+.efd-infobar-spacer {
+  flex: 1;
+}
+
+.efd-infobar-close {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  flex: none;
+}
+
+.efd-infobar-close:hover {
+  /* 旧项目 hover 染 #636363（白色图标 → ~39% 亮度灰） */
+  filter: brightness(0.39);
+}
+
+.efd-infobar-close-spacer {
+  width: 24px;
+  flex: none;
+}
+
+.efd-hsep {
+  height: 1px;
+  background: #444444;
+  flex: none;
+}
+
+/* ── 电源开关行（信息栏下方左侧: padding left20 top37 bottom4）── */
+.efd-power-row {
+  flex: none;
+  padding: 37px 0 4px 20px;
+  display: flex;
+}
+
+.efd-power-switch {
+  position: relative;
+  width: 120px;
+  height: 28px;
+  border-radius: 14px;
+  background: #6e6e6e;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.efd-power-switch-slider {
+  position: absolute;
+  top: 0;
+  width: 60px;
+  height: 28px;
+  border-radius: 14px;
+  transition: left 200ms ease-in-out, background-color 200ms ease-in-out;
+}
+
+.efd-power-switch.is-on .efd-power-switch-slider {
+  left: 0;
+  background: #ffffff;
+}
+
+.efd-power-switch.is-off .efd-power-switch-slider {
+  left: 60px;
+  background: #e53935;
+}
+
+.efd-power-switch-tabs {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+
+.efd-power-switch-tab {
+  width: 60px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: #929292;
+}
+
+.efd-power-switch.is-on .efd-power-switch-tab.on {
+  color: #212121;
+}
+
+.efd-power-switch.is-off .efd-power-switch-tab.off {
+  color: #ffffff;
+}
+
+/* ── 内容区 ── */
+.efd-dialog-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  padding: 12px 20px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+/* 动作按钮行（移动/删除——旧 ActionButton: 图标 44×44 + 6px + 文字 14px w500 白） */
+.efd-action-row {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  gap: 30px;
+}
+
+.efd-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: inherit;
+}
+
+.efd-action-btn:hover {
+  /* 旧项目 hover 把图标 #636363↔#ffffff 互换；PNG 帧以亮度变化近似 */
+  filter: brightness(1.6);
+}
+
+/* ── 生产面板（合成面板 Phase 2 裁剪版）── */
+.efd-synthesis {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.efd-synthesis-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.efd-synthesis-mid {
+  width: 112px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 0 11px;
+}
+
+.efd-synthesis-indicator {
+  height: 128px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 生产中指示器: 3 枚方向箭头 16×36 交错呼吸（1200ms，间隔 400ms，0.2~1.0）*/
+.efd-arrows {
+  display: flex;
+  gap: 4px;
+}
+
+.efd-arrow {
+  width: 16px;
+  height: 36px;
+  animation: efd-arrow-pulse 1200ms ease-in-out infinite;
+}
+
+.efd-arrow:nth-child(2) { animation-delay: 400ms; }
+.efd-arrow:nth-child(3) { animation-delay: 800ms; }
+
+.efd-arrows.idle .efd-arrow {
+  animation: none;
+  opacity: 0.2;
+}
+
+@keyframes efd-arrow-pulse {
+  0% { opacity: 0.2; }
+  50% { opacity: 1.0; }
+  100% { opacity: 0.2; }
+}
+
+/* 暂停/阻塞指示器: 20×4 条 + 关闭图标 36×36 + 条 */
+.efd-state-indicator {
+  display: flex;
+  align-items: center;
+}
+
+.efd-state-bar {
+  width: 20px;
+  height: 4px;
+  border-radius: 2px;
+}
+
+.efd-state-indicator.paused .efd-state-bar {
+  background-color: #929292;
+}
+
+.efd-state-indicator.paused .efd-state-icon {
+  background-color: #929292;
+}
+
+.efd-state-indicator.blocked .efd-state-bar {
+  background-color: #e53935;
+}
+
+.efd-state-indicator.blocked .efd-state-icon {
+  background-color: #e53935;
+}
+
+.efd-state-icon {
+  width: 36px;
+  height: 36px;
+  background-color: #929292; /* mask 染色源色（白色关闭图标 → 灰/红由类切换）*/
+}
+
+.efd-countdown {
+  color: #ededed;
+  font-size: 18px;
+  font-weight: 500;
+  height: 27px;
+  display: flex;
+  align-items: center;
+}
+
+.efd-state-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 18px;
+  font-weight: 600;
+  height: 27px;
+  white-space: nowrap;
+}
+
+.efd-state-text.paused { color: #929292; }
+.efd-state-text.blocked { color: #e53935; }
+
+/* 「生产已暂停」整行(条+字+条≈146px)超出 112px 中列——旧项目 FittedBox scaleDown
+   的等价: 整行等比缩小（「阻塞」较短不缩，与逐行缩放的旧语义一致）。*/
+.efd-state-text.paused {
+  transform: scale(0.77);
+}
+
+.efd-state-text .efd-state-bar {
+  flex: none;
+}
+
+/* 生产进度条 156×14（processing_indicator._ProductionProgressBarPainter）*/
+.efd-progress {
+  position: relative;
+  width: 156px;
+  height: 14px;
+  margin-top: 8px;
+}
+
+.efd-progress-track {
+  position: absolute;
+  left: 8px;
+  top: 5px;
+  width: 140px;
+  height: 4px;
+  border-radius: 2px;
+  background: #bfbfbf;
+}
+
+.efd-progress-fill {
+  position: absolute;
+  left: 8px;
+  top: 3px;
+  height: 8px;
+  border-radius: 4px;
+  background: #ffffff;
+  width: 0;
+  transition: width 100ms linear;
+}
+
+.efd-progress-knob {
+  position: absolute;
+  left: 136px;
+  top: 1px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ffffff;
+}
+
+/* 底部: 当前自动生产中的配方（标签 14px #6E6E6E w500 + InformationBackground 348×77）*/
+.efd-recipe-section {
+  flex: none;
+  margin-top: 14px;
+}
+
+.efd-recipe-label {
+  color: #6e6e6e;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 0 0 6px 30px;
+}
+
+.efd-recipe-bar {
+  position: relative;
+  width: 348.16px;
+  height: 76.8px;
+  margin-left: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  cursor: default;
+}
+
+/* 背景帧是绝对定位子元素（绘制在非定位内容之上）——内容一律抬到 relative，
+   否则配方的输入/产物图标会被背景盖住（实测只透出三角形指示器）。*/
+.efd-recipe-bar > :not([data-sprite]) {
+  position: relative;
+}
+
+.efd-recipe-io {
+  display: flex;
+  align-items: center;
+}
+
+.efd-recipe-io .efd-icon-sprite {
+  margin: 0 4px;
+}
+
+.efd-recipe-run {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.efd-recipe-run-triangles {
+  display: flex;
+  gap: 4px;
+}
+
+.efd-recipe-run-triangles > div {
+  width: 10px;
+  height: 12px;
+  background: #ffffff;
+  clip-path: polygon(0 0, 100% 50%, 0 100%);
+  animation: efd-tri-wave 1200ms linear infinite;
+}
+
+.efd-recipe-run-triangles > div:nth-child(2) { animation-delay: 400ms; }
+.efd-recipe-run-triangles > div:nth-child(3) { animation-delay: 800ms; }
+
+@keyframes efd-tri-wave {
+  0%   { opacity: 0.2; }
+  16.6%{ opacity: 1.0; }
+  50%  { opacity: 0.6; }
+  83.3%{ opacity: 1.0; }
+  100% { opacity: 0.2; }
+}
+
+.efd-recipe-time {
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.efd-recipe-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #aaaaaa;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+/* ── 物品格（synthesis_grid._getGridSvg 复刻）── */
+.efd-tile {
+  position: relative;
+  width: 128px;
+  height: 128px;
+  border: 5px solid #7f7f7f;
+  border-radius: 15px;
+  background: #696969;
+  overflow: hidden;
+  box-sizing: border-box;
+  flex: none;
+}
+
+.efd-tile-bg {
+  position: absolute;
+  inset: 0;
+  background-size: 100% 100%;
+}
+
+.efd-tile-img {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.efd-tile-count {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 12px;
+  text-align: center;
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 600;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+}
+
+.efd-tile-empty-icon {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.efd-tile-slots {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 404px;
+}
+
+/* ── 仓库口面板（depot_grid_tile 复刻）── */
+.efd-depot {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.efd-depot-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.efd-depot-card-wrap {
+  position: relative;
+}
+
+.efd-depot-row {
+  display: flex;
+  align-items: center;
+}
+
+.efd-warehouse-card {
+  position: relative;
+  width: 265px;
+  height: 128px;
+  border-radius: 15px;
+  background: #696969;
+  overflow: hidden;
+  flex: none;
+}
+
+.efd-warehouse-card-img {
+  position: absolute;
+  left: 80px;
+  top: -60px;
+  opacity: 0.55;
+}
+
+.efd-warehouse-card-name {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.efd-warehouse-card-qty {
+  position: absolute;
+  bottom: 10px;
+  left: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #ffffff;
+  font-size: 34px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.efd-depot-connector {
+  position: relative;
+  width: 75px;
+  height: 128px;
+  flex: none;
+}
+
+.efd-depot-connector::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 3px;
+  margin-top: -1.5px;
+  border-radius: 1.5px;
+  background: #cccccc;
+}
+
+.efd-depot-connector::after {
+  content: '';
+  position: absolute;
+  left: 69px;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: #cccccc;
+}
+
+.efd-depot-connector > i {
+  position: absolute;
+  left: -6px;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: #cccccc;
+}
+
+.efd-depot-connector.active::before { background: #ebad26; }
+.efd-depot-connector.active::after { background: #ebad26; }
+.efd-depot-connector.active > i { background: #ebad26; }
+
+/* 轨道 168×54（dialog_track 图集帧 + 两枚游动箭头，2s 循环）*/
+.efd-depot-track {
+  position: relative;
+  width: 168px;
+  height: 54px;
+  flex: none;
+  background-size: 100% 100%;
+}
+
+.efd-depot-track .efd-track-arrows {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 0;
+  bottom: 0;
+  overflow: hidden;
+}
+
+.efd-depot-track .efd-track-arrow {
+  position: absolute;
+  top: 50%;
+  width: 0;
+  height: 0;
+  border-top: 6px solid transparent;
+  border-bottom: 6px solid transparent;
+  animation: efd-track-ltr 2000ms linear infinite;
+}
+
+.efd-depot-track.out .efd-track-arrow {
+  border-left: 10px solid rgba(255, 255, 255, 0.9);
+  border-right: none;
+}
+
+.efd-depot-track.in .efd-track-arrow {
+  border-right: 10px solid rgba(255, 255, 255, 0.9);
+  border-left: none;
+  animation-name: efd-track-rtl;
+}
+
+.efd-depot-track .efd-track-arrow:nth-child(2) { animation-delay: 1000ms; }
+
+@keyframes efd-track-ltr {
+  from { left: -12px; }
+  to   { left: 100%; }
+}
+
+@keyframes efd-track-rtl {
+  from { left: 100%; }
+  to   { left: -12px; }
+}
+
+/* 胶囊按钮（DepotCapsuleButton: 三态 + hover + add 图标 45° 旋转）*/
+.efd-capsule-btn {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 20px;
+  border: none;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 150ms ease-in-out, color 150ms ease-in-out;
+}
+
+.efd-capsule-btn .efd-capsule-icon {
+  width: 16px;
+  height: 16px;
+  transition: transform 200ms ease-in-out;
+}
+
+.efd-capsule-btn.has-item .efd-capsule-icon {
+  transform: rotate(45deg);
+}
+
+.efd-capsule-btn.add {
+  background: #ffffff;
+  color: #212121;
+}
+
+.efd-capsule-btn.add:hover { background: #a3a3a3; }
+
+.efd-capsule-btn.remove {
+  background: #e53935;
+  color: #ffffff;
+}
+
+.efd-capsule-btn.remove:hover { background: #8a1717; }
+
+.efd-capsule-btn.cancel {
+  background: #cccccc;
+  color: #ffffff;
+}
+
+.efd-capsule-btn.cancel:hover { background: #777777; }
+
+/* ── 取货口产出物品选择（旧资源面板 4 标签页 + 物品网格复刻）── */
+.efd-picker {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 24px;
+  box-sizing: border-box;
+}
+
+.efd-picker-tabs {
+  position: relative;
+  width: 375px;
+  height: 32px;
+  border-radius: 16px;
+  background: #6e6e6e;
+  flex: none;
+}
+
+.efd-picker-tabs-pill {
+  position: absolute;
+  top: 0;
+  width: 93.75px;
+  height: 32px;
+  border-radius: 16px;
+  background: #ffffff;
+  transition: left 200ms ease-in-out;
+}
+
+.efd-picker-tab {
+  position: absolute;
+  top: 0;
+  width: 93.75px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  color: #212121;
+  font-family: inherit;
+  padding: 0;
+}
+
+.efd-picker-tab:not(.active) {
+  color: transparent; /* 未选中只显示图标（旧项目图标 #929292，文字隐藏）*/
+}
+
+/* 标签图标 mask 染色（JS 设 mask 定位，这里只管颜色: 选中 #212121 / 未选中 #929292）*/
+.efd-picker-tab .efd-icon-sprite {
+  background-color: #929292;
+}
+
+.efd-picker-tab.active .efd-icon-sprite {
+  background-color: #212121;
+}
+
+.efd-picker-grid-wrap {
+  position: relative;
+  margin-top: 24px;
+  width: 395.66px;
+  flex: 1;
+  min-height: 0;
+}
+
+.efd-picker-grid {
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(4, 93.44px);
+  grid-auto-rows: 93.62px;
+  gap: 7.3px;
+  padding: 0 12px 8px 0;
+  box-sizing: border-box;
+}
+
+.efd-picker-grid::-webkit-scrollbar {
+  width: 8px;
+}
+
+.efd-picker-grid::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.5);
+  border-radius: 5px;
+}
+
+.efd-picker-tile {
+  position: relative;
+  width: 93.44px;
+  height: 93.62px;
+  border-radius: 11px;
+  overflow: hidden;
+  background: #696969;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.efd-picker-tile:hover {
+  filter: brightness(1.15);
+}
+
+.efd-picker-tile .efd-tile-bg {
+  border-radius: 11px;
+}
+
+.efd-picker-tile-add {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.efd-picker-empty {
+  color: #aaaaaa;
+  font-size: 14px;
+  margin-top: 24px;
+}
+
+/* ── 通用: 图集帧 sprite（JS 设 background-image/size/position + 宽高）── */
+.efd-icon-sprite {
+  display: block;
+  background-repeat: no-repeat;
+  flex: none;
+}

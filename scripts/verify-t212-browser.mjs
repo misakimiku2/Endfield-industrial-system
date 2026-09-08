@@ -10,8 +10,8 @@
 //   B 传送带创建: E 进创建模式 → 悬停取货口输出口（Status 面板蓝高亮截图）→ 起点点击
 //     → 上移 → 落盘 → 末端接入存货口输入口
 //   C 物流: 源矿源源上带（depot-output ≥ 3）→ 流动 → 进存货口消失（depot-input ≥ 3）
-//   D T2.9b 读数: 放精炼炉 → 点击 → 读数"输入: x/50 输出: y/50"可见（截图）；
-//     点击取货口 → 读数消失（非生产设备无缓冲区）
+//   D 设备弹窗烟测（T2.15）: 点精炼炉 → 弹窗打开；点遮罩 → 关闭
+//     （T2.9b 屏幕读数已被 T2.15 弹窗吸收移除，完整弹窗验收见 verify-t215-browser.mjs）
 //   E R 四档旋转（T2.17）: 取货口放置态按 R 四次 → 0°→90°→180°→270°→0°，
 //     90°/270° 预览竖放 1×3（截图对比）
 //   F 存货口悬停: E 模式悬停存货口输入格 → Status 淡蓝（截图）
@@ -111,20 +111,25 @@ ok(in12 >= 3, `C3. 存货口持续接收 ≥ 3 件（实际 ${in12}，物品进�
 const beltMid = await game(() => window.__game.beltStatus());
 ok(!beltMid.includes('[堵]'), 'C4. 全链无堵塞（无限汇永不回压）');
 
-// ══ D. T2.9b 读数: 精炼炉有 / 仓库口无 ══
-console.log('[D] 选中读数（T2.9b）');
+// ══ D. T2.15 设备弹窗烟测（完整弹窗验收见 verify-t215-browser.mjs）══
+// 2026-09-09: 原 T2.9b 屏幕读数已被 T2.15 设备弹窗吸收移除——本节改为验证
+// 「点击设备 → 弹窗打开（信息栏+电源开关），点遮罩 → 关闭」的选中联动不回归。
+console.log('[D] 设备弹窗烟测（T2.15）');
 await page.mouse.click(S.btnFurnace, S.toolbarY);
 await page.mouse.move(S.furnace.x, S.furnace.y, { steps: 4 });
 await page.mouse.click(S.furnace.x, S.furnace.y);
 await page.keyboard.press('Escape');
 await page.waitForTimeout(300);
-await page.mouse.click(S.furnace.x, S.furnace.y); // 选中精炼炉
-await page.waitForTimeout(500); // 4Hz 节流
-await shot('t212-d1-readout-furnace');
-await page.mouse.click(S.unloader.x, S.unloader.y); // 换选取货口
+await page.mouse.click(S.furnace.x, S.furnace.y); // 选中精炼炉 → 弹窗
 await page.waitForTimeout(500);
-await shot('t212-d2-readout-depot-none');
-ok(true, 'D1. 截图对比: 精炼炉选中显示读数 / 仓库口选中无读数（人工核验 t212-d1 vs d2）');
+await shot('t212-d1-device-dialog');
+const dialogOpen = await game(() => window.__game.deviceDialog.isOpen());
+ok(dialogOpen, 'D1. 点击精炼炉 → 设备详情弹窗打开');
+await page.mouse.click(5, 5); // 遮罩边缘 → 关闭
+await page.waitForTimeout(300);
+await shot('t212-d2-dialog-closed');
+const dialogClosed = await game(() => !window.__game.deviceDialog.isOpen());
+ok(dialogClosed, 'D2. 点击遮罩 → 弹窗关闭');
 
 // ══ E. R 四档旋转（T2.17: 90°/270° 竖放 1×3）══
 console.log('[E] R 键四档旋转（T2.17 占地宽高互换）');

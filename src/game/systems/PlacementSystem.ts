@@ -431,6 +431,7 @@ export class PlacementSystem {
       currentRecipeId: null, // T2.5: 生产计时字段（A8 §3.1），放置时无生产任务
       progress: 0,
       elapsed: 0,
+      depotOutputItemId: null, // T2.15: 取货口产出物品（null=用定义默认源矿，弹窗可改）
     });
     this.world.addComponent(handle, 'SpriteComp', {
       group: 'devices' as AtlasGroup,

@@ -126,4 +126,10 @@ export interface BuildingComp {
    * （立即允许）。
    */
   outputNextEmitTick?: number;
+  /**
+   * 取货口产出物品 (T2.15)。null/undefined = 用 BuildingDefinition.depotOutputItem
+   * 的默认值（简化版默认源矿 DEPOT_SOURCE_ITEM）；设备弹窗「仓库取货口」面板选物品时写入。
+   * 每台实例独立（BuildingDefinition 运行时只读，A3 §6），仅 def.depot==='unload' 时有意义。
+   */
+  depotOutputItemId?: string | null;
 }

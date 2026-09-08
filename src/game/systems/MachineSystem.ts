@@ -309,6 +309,8 @@ export class MachineSystem implements SimulationSystem {
     const gx = Math.round(pos.x / CELL_SIZE);
     const gy = Math.round(pos.y / CELL_SIZE);
     if (def.depot === 'unload') {
+      // T2.15: 产出物品逐台可配（弹窗选择面板）——实例覆盖 → 定义默认 → 简化版兜底源矿
+      const outputItemId = comp.depotOutputItemId ?? def.depotOutputItem ?? DEPOT_SOURCE_ITEM;
       for (const cell of outputPortCells(gx, gy, def, comp.direction)) {
         const receiver = findReceiverBelt(world, beltAt, cell);
         if (receiver === null) continue;
@@ -318,7 +320,7 @@ export class MachineSystem implements SimulationSystem {
         // 恒为段首 0，物品从端口边缘滑出）。
         const rp = world.getComponent<Position>(receiver, 'Position');
         const snap = chainSnapshot(world, seg.chainId);
-        const emitted = emitSourceToBelt(seg, DEPOT_SOURCE_ITEM, {
+        const emitted = emitSourceToBelt(seg, outputItemId, {
           progress: 0,
           delta: ITEM_PROGRESS_PER_TICK,
         });

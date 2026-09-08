@@ -20,7 +20,7 @@ import { SceneRenderer } from './game/render/SceneRenderer';
 import { GridRenderer } from './game/render/GridRenderer';
 import { loadAllAssets, getTexture } from './game/render/AssetsLoader';
 import { InventoryUI } from './game/ui/InventoryUI';
-import { deviceReadoutText } from './game/ui/DeviceReadout';
+import { DeviceDialog } from './game/ui/DeviceDialog';
 import { BUILDING_DEFINITIONS, getBuildingDefinition, effectiveFootprint, type BuildingDefinition } from './game/data/buildings';
 import type { BuildingComp, BufferSlot, Direction } from './game/components/BuildingComp';
 import { loadItemRegistry } from './game/data/items';
@@ -118,19 +118,6 @@ async function main() {
   help.x = 10;
   help.y = 30;
   app.stage.addChild(help);
-
-  // ── T2.9b: 选中设备最小读数（**临时件**，T2.15 弹窗落地时吸收移除）──
-  // 屏幕空间层单个 Pixi Text（不随 Ctrl+R 视图旋转），4Hz 节流（T1.10 先例）。
-  // 非生产设备（仓库口无任何槽位）deviceReadoutText 返回 null → 隐藏。
-  // 明确不做: 弹窗容器/多行排版/图标/进度条/样式——全部留给 T2.15。
-  const readout = new Text({
-    text: '',
-    style: { fontFamily: 'monospace', fontSize: 14, fill: 0x1a5fb4 },
-  });
-  readout.x = 10;
-  readout.y = 52;
-  readout.visible = false;
-  app.stage.addChild(readout);
 
   // ── T1.7 设备放置: 工具栏 + 放置系统输入转发 ──
   const placement = game.placement;
@@ -363,19 +350,18 @@ async function main() {
         lastHudText = text;
         hud.text = text;
       }
-      // T2.9b 读数（临时件）: 选中设备的缓冲区单行读数；仓库口等无槽位设备 → null 隐藏
-      let readoutTxt: string | null = null;
-      if (devHandle !== null && game.world.isAlive(devHandle)) {
-        const comp = game.world.getComponent<BuildingComp>(devHandle, 'BuildingComp');
-        const def = comp ? getBuildingDefinition(comp.definitionId) : undefined;
-        if (comp && def) readoutTxt = deviceReadoutText(comp, def);
-      }
-      if (readoutTxt !== null) {
-        if (readout.text !== readoutTxt) readout.text = readoutTxt;
-        readout.visible = true;
-      } else {
-        readout.visible = false;
-      }
+      // T2.9b 读数（临时件）已由 T2.15 设备弹窗吸收移除——缓冲数量现在
+      // 直接显示在弹窗的输入/输出格上（DeviceDialog 100ms 局部刷新）。
+    }
+    // T2.15: 设备弹窗跟随选中（双向绑定）。syncSelection 内部是单次比较，
+    // 每帧调用的开销可忽略；在 ticker 末尾调用（此时 selection 状态刚 update 过）。
+    // 声明顺序说明: deviceDialog 在本 ticker 注册之后（需等 recipeIndex 组合根），
+    // 但 ticker 回调首次触发要等下一个 rAF，届时 main 同步初始化早已完成。
+    // 开关状态翻转时同步相机输入门控（弹窗打开时冻结边缘滚动，见 CameraController）。
+    const dialogWasOpen = deviceDialog.isOpen();
+    deviceDialog.syncSelection(selection.getSelected());
+    if (deviceDialog.isOpen() !== dialogWasOpen) {
+      controller.setInputEnabled(!deviceDialog.isOpen());
     }
   });
 
@@ -474,6 +460,7 @@ async function main() {
       inputPollIndex: 0, // T2.10: 输入轮询指针从定义序首口（左）开始
       outputPollQueue: [], // T2.21: 输出轮询队列=接收传送带 handle，首次有货出料时按创建序发现填入
       currentRecipeId: null, progress: 0, elapsed: 0, // T2.5: 生产计时字段（放置时无任务）
+      depotOutputItemId: null, // T2.15: 取货口产出物品（null=用定义默认源矿，弹窗可改）
     });
     game.world.addComponent(handle, 'SpriteComp', {
       group: 'devices', textureKey: def.texture,
@@ -866,6 +853,38 @@ async function main() {
     if (e.type === 'depot-output' || e.type === 'depot-input') return;
     console.log(`[${ts()}] [${eventTag(e)}] ${e.message}`);
   };
+
+  // ── T2.15 设备详情弹窗（DOM overlay，样式对齐旧 Flutter 项目）──
+  // 选中即弹窗: 点设备打开/切换、点空白/ESC/关闭按钮/遮罩关闭（双向绑定选中）。
+  // 电源开关 = T2.8 暂停的正式玩家入口（写 comp.paused，渲染侧 LOGO 自动联动）；
+  // 删除按钮 = 复用 T1.9 DeleteSystem（与 Delete 键同路径）。
+  const deviceDialog = new DeviceDialog({
+    world: game.world,
+    itemName,
+    recipeIndex,
+    items: itemTable,
+    onDelete: (h) => {
+      // 与 Delete 键完全同路径（deleteBuilding → 清选中 → 立即刷一帧）
+      if (deleteSystem.deleteBuilding(h)) {
+        selection.clearSelection(); // 触发 syncSelection(null) → 弹窗关闭
+        game.update();
+      }
+    },
+    onClose: () => selection.clearSelection(),
+  });
+
+  // 弹窗模态键盘 gate（capture 相位，先于全部游戏快捷键的 bubble 监听触发）:
+  // 弹窗开着时吞掉所有游戏快捷键（E/R/Delete/WASD…），仅放行 ESC = 关闭弹窗。
+  // keyup 不拦——按住 W 时开弹窗再松开，keyup 必须到达 CameraController 清键态，
+  // 否则恢复后相机会一直平移。
+  window.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (!deviceDialog.isOpen()) return;
+    e.stopImmediatePropagation();
+    if (e.code === 'Escape') {
+      e.preventDefault();
+      deviceDialog.closeByUser(); // 内部回调 onClose → 清选中
+    }
+  }, true);
 
   // ── T2.4 验收钩子: 输入缓冲区（模拟物品传入，检查 count 与锁定）──
   // injectInput('originium_ore', 3) → "输入槽0: 源矿 × 3/50 (已锁定)"
@@ -1751,6 +1770,7 @@ async function main() {
     selection,
     deleteSystem,
     belt,
+    deviceDialog, // T2.15: 设备弹窗（isOpen()/getHandle()；开弹窗走 selectFirstBuilding 即可）
     getTexture,
     spawnTestDevices,
     clearTestDevices,
@@ -1800,7 +1820,7 @@ async function main() {
   console.log('  操作: 中键拖拽/WASD(屏幕相对)/边缘滚动 平移, 滚轮以鼠标为中心缩放, Ctrl+R 视图旋转');
   console.log('  放置: 底部工具栏选设备 → 左键放网格 → R 旋转(相对视图) → 右键/ESC 取消');
   console.log('  传送带: E 进入创建模式 → 点蓝色高亮端口/末端选起点 → 移动鼠标显蓝色预览(L形+BFS绕障) → 左键逐段落盘并延伸 → 右键/ESC/E 退出(不落盘)');
-  console.log('  交互: 左键点设备=选中(黄色填充+白色选中框); 左键点传送带段=选中该格(白边+斜杠+隐pointer), 双击同段=选中整条链; 点空白=取消; Delete=删当前所选(单格→单段/整链→整链)');
+  console.log('  交互: 左键点设备=选中并弹出详情弹窗（电源开关=暂停/恢复、缓冲数量、删除; 点空白/ESC/关闭按钮关闭）; 左键点传送带段=选中该格(白边+斜杠+隐pointer), 双击同段=选中整条链; 点空白=取消; Delete=删当前所选(单格→单段/整链→整链)');
   console.log('  验收: __game.placeAt("refining_unit",5,5) 放设备 → selectFirstBuilding() 选中 → deleteSelectedBuilding() 删除 → getOccupiedCells() 查占用');
   console.log('  T1.10: __game.spawnBenchmarkDevices(100) 一键100设备 / fillBenchmarkDevices() 铺满地图 → runFpsBenchmark() 采样FPS/内存 → memoryStressCheck() 内存压测');
   console.log('  T2.0: __game.spawnBelt([[5,5],[8,5],[8,8]],0) 程序化生成带转角传送带链 → 验证4方向转角+pointer流动');
@@ -1816,7 +1836,7 @@ async function main() {
   console.log('  T2.7 手动: placeAt("refining_unit",5,5) → spawnBelt([[6,4],[6,3]],270) 首段入口朝向顶中输出端口(6,5) → injectOutput("origocrust",5) → 物品逐件出现在带首、一格一件前进(productionStatus() 查输出槽递减); 1格断头带+5件 → 带上1件即满、输出槽留4件 → consumeBeltTailItem() 疏通继续出货');
   console.log('  T2.8 一键测试: __game.test("t28")  ← 复制这一条到控制台回车即可（LOGO 状态图标: 暂停深灰/堵塞红X + 端口黄/红高亮全流程演示）');
   console.log('  T2.8 手动: setPaused(true/false) 手动暂停/恢复（LOGO 换图标、计时冻结） → portStatus() 查端口连接黄/堵塞红（与画面高亮同源） → productionStatus() 对照 "(已暂停)" 标记');
-  console.log('  T2.9 观察: 点击设备 → 屏幕左上显示"输入: x/50 输出: y/50"单行读数（临时件，T2.15 弹窗吸收）；点击仓库口不显示（非生产设备）');
+  console.log('  T2.15 弹窗: 点击设备 → 详情弹窗（信息栏/电源开关=暂停正式入口/配方进度/输入输出数量/删除; 取货口可换产出物品）; 弹窗吸收了 T2.9b 临时读数');
   console.log('  T2.12 一键测试: __game.test("t212")  ← 复制这一条到控制台回车即可（取货口+4段带+存货口: 源矿持续上带→流动→进存货口消失+暂停/恢复演示）');
   console.log('  T2.12 手动: 工具栏选"仓库取货口"放置（R 四档旋转: 90°/270° 时竖放 1×3，T2.17） → E 进创建模式悬停其上方（Status 面板蓝） → 从输出口起带 → 末端接"仓库存货口"端口侧 → 物品流进去消失');
   console.log('  T2.10 一键测试: __game.test("t210")  ← 复制这一条到控制台回车即可（3入: 三台取货口各接一条带持续供料实战形态（T2.18 单口/台），三条带满载流动、按先到排名序交替吞门口件（portStatus 看排名）；3出: 连续生产轮转 1→2→3；中带堵塞跳过+恢复 左→右→中；约 2 分钟）');

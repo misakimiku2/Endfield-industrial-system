@@ -44,8 +44,23 @@ export class CameraController {
   /** 鼠标是否当前在 canvas 内（离开窗口时禁用边缘滚动，防止误触发）。 */
   private mouseInside = false;
 
+  /**
+   * 输入门控 (T2.15 设备弹窗)。模态弹窗打开时置 false: 本类的 mousemove 挂在
+   * window 上，DOM overlay 挡不住——弹窗开着/刚关闭时鼠标在遮罩边缘移动会
+   * 持续平移视口（实测点遮罩关弹窗，视口被拖走 ~360px，后续点击全部落空）。
+   * 只冻结"边缘滚动"这一受 window mousemove 驱动的路径；鼠标坐标照常跟踪，
+   * 恢复 true 后无需任何额外同步。WASD/拖拽/滚轮的监听在 canvas 上或被
+   * main.ts 的键盘 gate 拦截，不受影响。
+   */
+  private inputEnabled = true;
+
   // 持有解绑函数，destroy 时一次性移除所有监听。
   private disposers: Array<() => void> = [];
+
+  /** 开/关边缘滚动输入（T2.15: 模态弹窗打开时关，关闭时恢复）。 */
+  setInputEnabled(enabled: boolean): void {
+    this.inputEnabled = enabled;
+  }
 
   constructor(camera: Camera, canvas: HTMLCanvasElement) {
     this.camera = camera;
@@ -227,7 +242,9 @@ export class CameraController {
 
     // ── 边缘滚动（8 方向：鼠标在边缘触发带内 → 该方向滚动）──
     // 仅当鼠标在 canvas 内才判定，避免鼠标离开游戏窗口时画面持续滚动。
-    if (this.mouseInside) {
+    // 输入门控关闭时一并冻结（T2.15）: 模态弹窗的 DOM overlay 挡不住本类挂在
+    // window 上的 mousemove——弹窗开着/刚关闭时鼠标掠过遮罩边缘会持续平移视口。
+    if (this.inputEnabled && this.mouseInside) {
       const w = this.canvas.clientWidth;
       const h = this.canvas.clientHeight;
       const m = CAMERA_EDGE_SCROLL_MARGIN;
