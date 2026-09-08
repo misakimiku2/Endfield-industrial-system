@@ -139,8 +139,10 @@ class QueueMirror {
         continue;
       }
       const prev = this.prevPos.get(chainId) ?? new Map<number, number>();
-      // ① Tick 间连续性: |Δ| ∈ {0(被钳)} ∪ [0.025±余量] ∪ 循环瞬移(Δ ≤ 0.075−链长)
-      //    ∪ 重相位类刚体平移（注入重相位 / 空带回归创建相位, slid 且 ≤0.525）
+      // ① Tick 间连续性: |Δ| ∈ {0(被钳)} ∪ [0.025±余量] ∪ 间距整复档(0.05/0.075 =
+      //    2~3×带速, 2026-09-09 间距整复: 洞后指针以至多 3×带速平滑追平, 渲染
+      //    prev→last 内插无跳变) ∪ 循环瞬移(Δ ≤ 0.075−链长) ∪ 重相位类刚体平移
+      //    （注入重相位 / 空带回归创建相位, slid 且 ≤0.525）
       for (const a of st.q.arrows) {
         const p = prev.get(a.id);
         if (p === undefined) continue;
@@ -148,6 +150,8 @@ class QueueMirror {
         const legal =
           Math.abs(delta) < 1e-9 ||
           Math.abs(delta - ITEM_PROGRESS_PER_TICK) <= 0.002 ||
+          Math.abs(delta - 2 * ITEM_PROGRESS_PER_TICK) <= 0.002 ||
+          Math.abs(delta - 3 * ITEM_PROGRESS_PER_TICK) <= 0.002 ||
           delta <= 0.075 - len + 1e-6 || // 循环 re-entry（尾→首瞬移）
           (slid && Math.abs(delta) <= 0.5 + ITEM_PROGRESS_PER_TICK + 1e-9);
         if (!legal) {

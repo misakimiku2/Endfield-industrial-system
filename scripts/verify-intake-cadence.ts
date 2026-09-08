@@ -29,12 +29,12 @@ function makeWorld() {
   let tick = 0;
   const events: Array<{ tick: number; port: number }> = [];
   machine.onEvent = (e) => { if (e.type === 'input') events.push({ tick, port: e.portIndex ?? -1 }); };
-  const place = (defId: string, gx: number, gy: number) => {
+  const place = (defId: string, gx: number, gy: number, direction: 0|90|180|270 = 0) => {
     const def = BUILDING_DEFINITIONS[defId as keyof typeof BUILDING_DEFINITIONS];
     const h = world.createEntity();
     world.addComponent(h, 'Position', { x: gx * CELL_SIZE, y: gy * CELL_SIZE });
     world.addComponent(h, 'BuildingComp', {
-      definitionId: defId, direction: 0, state: 'idle',
+      definitionId: defId, direction, state: 'idle',
       bufferInput: createBufferSlots(def.inputSlotCount),
       bufferOutput: createBufferSlots(def.outputSlotCount),
       inputPollIndex: 0, outputPollQueue: [],
@@ -76,15 +76,25 @@ console.log('[A] 单带节拍（修复前 4.05s/件，期望 ≈2s/件）');
   ok(avg <= 42, `A1. 单带节拍 ≤ 2.1s/件（平均 ${(avg * 0.05).toFixed(2)}s）——传送带本速，walking 不再占格`);
 }
 
-// ── B. 三带吞吐: 同一取货口三口各接 3 格带 → 饱和期总吸入速率 ≈ 3× 单带
+// ── B. 三带吞吐: 三个取货口（T2.18 单端口化，一口一链）各接带 → 精炼炉三输入口，饱和期总吸入速率 ≈ 3× 单带
 console.log('[B] 三带同时进料吞吐（期望 ≈ 3× 单带 = 1.5 件/s）');
 {
   const sc = makeWorld();
   const f = sc.place('refining_unit', 5, 5);
-  sc.place('depot_loader', 5, 1); // 排产物防 blocked
+  // T2.19: 存货口 0° 接带面朝上；排产带从下方朝上接入须 180°（供给格 (6,2)=排产带尾）
+  sc.place('depot_loader', 5, 1, 180); // 排产物防 blocked
   for (const y of [4, 3, 2]) sc.beltAt(6, y, 270, 'drain');
-  sc.place('depot_unloader', 5, 11);
-  for (const x of [5, 6, 7]) for (const y of [10, 9, 8]) sc.beltAt(x, y, 270, `c${x}`);
+  // 三个取货口各供一链（阶梯错行让三口互不占位；链底段在邻行取货口占地格下方
+  // ——纯逻辑测试无 OccupancyMap 参与，功能上无影响）:
+  //   c7: (7,10)(7,9)(7,8)      ← 取货口 (6,11)（占 6..8,11，中口 (7,11)）
+  //   c6: (6,11)(6,10)(6,9)(6,8) ← 取货口 (5,12)（占 5..7,12，中口 (6,12)）
+  //   c5: (5,12)(5,11)(5,10)(5,9)(5,8) ← 取货口 (4,13)（占 4..6,13，中口 (5,13)）
+  sc.place('depot_unloader', 6, 11);
+  for (const y of [10, 9, 8]) sc.beltAt(7, y, 270, 'c7');
+  sc.place('depot_unloader', 5, 12);
+  for (const y of [11, 10, 9, 8]) sc.beltAt(6, y, 270, 'c6');
+  sc.place('depot_unloader', 4, 13);
+  for (const y of [12, 11, 10, 9, 8]) sc.beltAt(5, y, 270, 'c5');
   for (let i = 0; i < 1000; i++) sc.step(); // 50s
   const evts = sc.events();
   const total = evts.length;

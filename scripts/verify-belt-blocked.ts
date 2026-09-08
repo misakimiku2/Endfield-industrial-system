@@ -112,11 +112,12 @@ function placeBuilding(
   w: World, defId: 'refining_unit' | 'depot_loader', gx: number, gy: number,
   slots: Array<{ itemId: string | null; count: number }>,
   state: 'idle' | 'working' | 'blocked', paused = false,
+  direction: 0 | 90 | 180 | 270 = 0,
 ): BuildingComp {
   const h = w.createEntity();
   w.addComponent(h, 'Position', { x: gx * CELL_SIZE, y: gy * CELL_SIZE });
   const comp: BuildingComp = {
-    definitionId: defId, direction: 0, state,
+    definitionId: defId, direction, state,
     bufferInput: slots, bufferOutput: [],
     inputPollIndex: 0, outputPollQueue: [],
     currentRecipeId: null, progress: 0, elapsed: 0, paused,
@@ -211,7 +212,9 @@ function stockDoorChain(a: BeltSegmentComp, b: BeltSegmentComp, c: BeltSegmentCo
     segmentIndex: 0, phaseOffset: 0, items: [],
   };
   w.addComponent(dh, 'BeltSegmentComp', ds);
-  placeBuilding(w, 'depot_loader', -1, -2, [], 'idle'); // loader 占 (-1..1,-2)，端口含 (0,-2)
+  // T2.19（2026-09-04）起存货口 0° 接带面朝上；带从下方朝上接入须 180°（接带面
+  // 朝下，供给格 (0,-1) = 下游段所在格，同 verify-t212-depot.ts 存货口场景）。
+  placeBuilding(w, 'depot_loader', -1, -2, [], 'idle', false, 180); // loader 占 (-1..1,-2)，端口含 (0,-2)
   h2.items.push({ itemId: 'originium_ore', progress: 0.5, delta: 0 });
   h0.items.push({ itemId: 'originium_ore', progress: 0.5, delta: 0 });
   ds.items.push({ itemId: 'originium_ore', progress: 0.5, delta: 0 });

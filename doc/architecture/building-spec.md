@@ -8,7 +8,7 @@
 
 ## 1. BuildingDefinition
 
-所有建筑类型由数据定义，存放在 `src/data/buildings.ts`：
+所有建筑类型由数据定义，存放在 `src/game/data/buildings.ts`：
 
 ```ts
 interface BuildingDefinition {
@@ -346,6 +346,12 @@ type BuildingState = 'idle' | 'working' | 'blocked' | 'no_power';
 - 若无可接受槽（所有槽都锁定了其他类型、或同类型槽已满、或端口无物品），则指针立即移动到下一个索引继续尝试。
 - 轮询指针不会因设备满载而重置，始终保持当前位置。
 
+> **修订（2026-09-02，T2.10 用户拍板"先到先得"）**: 输入轮询走访序不再按端口索引
+> 循环，改为**先到排名序**——`BuildingComp.inputArrivalRank` 记录各口首次有物品到达
+> 供给格中心(0.5)的仿真 Tick（满载/类型不符也记），走访序 = 按此值升序（先到先服务），
+> 从未有物品到门口的口排最后、按定义序；`inputPollIndex` 指针沿排名序前进（满载
+> 冻结不重置不变）。详见 A8 §4.1 修订注与 implementation-phase-2.md T2.10 笔记。
+
 **输出轮询**：
 - 输出端口按索引顺序 `0 → 1 → 2 → ... → n-1 → 0 → 1 → ...` 循环轮询。
 - 当前端口连接的传送带可写入时，从输出缓冲区取出 1 个物品发出。
@@ -357,6 +363,11 @@ type BuildingState = 'idle' | 'working' | 'blocked' | 'no_power';
 > 追加队尾"语义（A8 §4.2）需要显式队列表达；**堵塞集 = 全部输出端口 − 队列**
 > （派生值不落盘，DD-012 存档只存队列）。输入侧仍为 `inputPollIndex` 指针
 > （满载冻结不重置）。详见 implementation-phase-2.md T2.10 实现笔记。
+>
+> **修订（2026-09-05，T2.21 用户拍板）**: 输出轮询单元从"输出端口（定义序）"改为
+> **"接收传送带（chainId 创建顺序）"**，并新增设备级输出节拍（每 40 Tick 至多成功
+> 输出 1 件）——`outputPollQueue` 元素是接收传送带段 handle（不再按下标容量初始化），
+> `outputPortCount` 仅保留端口计数语义。详见 A8 §4.2 修订注与 T2.21 笔记。
 
 ### 3.3 方向约定
 

@@ -119,13 +119,15 @@ height = footprint.h × CELL_SIZE px
 | 图集 key | 内容 |
 |----------|------|
 | `<device_key>` | 完整设备（所有层可见，兼容现有单 Sprite 渲染） |
-| `<device_key>/base` | 仅 `layer-base` |
-| `<device_key>/ports` | 仅 `layer-ports` |
-| `<device_key>/arrows` | 仅 `layer-arrows` |
-| `<device_key>/indicators` | 仅 `layer-indicators` |
-| `<device_key>/equipment` | 仅 `layer-equipment`（设备专属部件） |
-| `<device_key>/logo` | 仅 `layer-logo`（billboard 徽标，保持屏幕朝上） |
-| `<device_key>_arrow_mask` | T1.7 预览染色 mask（兼容用，后续可能迁移到 `/arrows`） |
+| `<device_key>/logo`、`/logo-glow` | 仅 `layer-logo`（billboard 徽标，保持屏幕朝上）/ glow 白源层 |
+| `<device_key>/port-in-*`、`/port-out-*` 等 `port-*` 前缀 | 逐端口面板帧（PortHighlightRenderer 消费） |
+| `<device_key>/arrow-in-*`、`/arrow-out-*` 等 `arrow-*` 前缀 | 逐端口箭头帧（白色源，运行时 tint） |
+| `<device_key>_arrow_mask` | T1.7 预览染色 mask（兼容用，现仅 `3x3_unit` 生成） |
+
+> **T1.11b 瘦身修订**: `<device_key>/base`、`/ports`、`/arrows`、`/indicators`、
+> `/equipment` 整层帧运行时无人消费（用的是主帧整图 + 逐端口小帧），已按
+> `DEVICE_LAYER_WHITELIST`（`scripts/assets/asset-manifest.ts`，保留
+> logo/logo-glow/status 与 `port-*`/`arrow-*`/`state-*` 前缀）从打包输出移除。
 
 所有层的 `sourceSize` 与完整设备帧一致，运行时可直接按同一尺寸叠加。
 
@@ -284,7 +286,8 @@ S2 §1.3 称 base 层有"9 块底板"，**实测 `3x3_unit.svg` 只有 6 块**�
 - S2 §8-2 验收中"底板每格一块"按实际素材调整为"底板每格一块（仅顶/底行）"。
 
 此修正保证了 S2 验收 #1（3×3 拼装像素级还原）成立——已实测 0 差异像素
-（`scripts/verify-t1.11-nineslice.mjs`）。
+（`scripts/verify-t1.11-nineslice.mjs`，该脚本已于 2026-08-23 提交 08b940b
+随旧验证脚本批量清理删除）。
 
 ### 9.7 新增九宫格设备的流程
 

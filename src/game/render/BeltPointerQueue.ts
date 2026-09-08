@@ -88,15 +88,6 @@ const EPS = 1e-9;
  * 同一全局相位（浏览器像素实测三带相位差 0.000/0.000/0.010，T2.29-c 代理验证
  * 发现）。相位常数必须与流动时钟不相关——哈希满足（不同创建时间的 chainId
  * 含不同时间戳/序号，哈希雪崩，无周期混叠）。
- *
- * 2026-09-08 进一步约束到 [0.25, 0.75)：原 [0,1) 均匀分布会让约一半链的 classFrac
- * 落在接近 0 或 1 的区域，seed 出来的指针 d 几乎等于 n（cell 边界），sprite 落在
- * cell 边缘 ±CELL_SIZE/2 处，被 cell 矩形 mask 整段裁掉——视觉上"物品前后整片空白"。
- * （用户实测: 6 格链 + 物品 1 个时，classFrac<0.1 或 >0.9 的链只看到链首尾 2 个指针，
- * 中间 cell 看起来"什么都没有"；classFrac=0.5 时所有 cell 都有清晰指针。）
- * [0.25, 0.75] 区间对应 d 偏离 n 至少 0.25 = sprite 中心距 cell 边缘 ≥16px
- * （sprite 高 16px），指针永远在 cell 内部完整可见。每链序位仍各异（997 个 hash
- * 值各映射到 [0,1) 上的不同点 → 投影到 [0.25,0.75] 上仍均匀覆盖）。
  */
 export function chainCreationClass(chainId: string, fallback: number): number {
   if (chainId.length === 0) return fallback;
@@ -104,7 +95,7 @@ export function chainCreationClass(chainId: string, fallback: number): number {
   for (let i = 0; i < chainId.length; i++) {
     h = (h * 31 + chainId.charCodeAt(i)) % 997;
   }
-  return 0.25 + (h / 997) * 0.5;
+  return h / 997;
 }
 
 export class ChainPointerQueue {
@@ -169,16 +160,23 @@ export class ChainPointerQueue {
     }
     // 延长即覆盖（用户实测: 创建中逐段落盘的后续段长时间无指针——链增长只能
     // 靠队尾补充从带外以带速流入, 新段要等 ~2s/格）: 链长增加时在新格的**既有
-    // 格网**上立即补一支（与前沿恰距 1、与全部实体 ≥1——数量 ≤ 目标恒成立,
-    // 间距不变量不破坏）。
+    // 格网**上立即补一支（与前沿恰距 1、与全部指针 ≥1——数量 ≤ 目标恒成立,
+    // 间距不变量不破坏; 与物品的关系见下方槽位冲突判定）。
+    //
+    // ⚠️ 锚必须取**最末物品**格网（2026-09-09 修订）: 旧实现优先取 arrows[0] 的
+    // 相位——arrows[0] 是数组头的陈旧指针（可能整支在带外等待区, 相位随流动漂移,
+    // 与物品格网差 0.x 格）, 以它为锚会把新格指针插到离物品/队列 0.x 格的任意
+    // 相位上; 而堵塞列全体以带速 lockstep 齐走, 相对间距**永不自愈** = 用户实测
+    // "断头链二次延长后物品前后空一格"（拆链出生 + 延长的复合场景）。物品格网
+    // 锚定下新槽与最末物品的距离恒为整数, lockstep 保持恰 1 格。
     if (chainLen > this.lastChainLen) {
       let anchor: number;
-      if (this.arrows.length > 0) {
-        anchor = ((this.arrows[0]!.pos % 1) + 1) % 1;
-      } else if (items.length > 0) {
+      if (items.length > 0) {
         let rm = Infinity;
         for (const it of items) if (it.total < rm) rm = it.total;
         anchor = ((rm % 1) + 1) % 1;
+      } else if (this.arrows.length > 0) {
+        anchor = ((this.arrows[0]!.pos % 1) + 1) % 1;
       } else {
         anchor = this.freeRunClass;
       }
@@ -188,9 +186,13 @@ export class ChainPointerQueue {
         for (const a of this.arrows) {
           if (Math.abs(a.pos - pos) < 1 - EPS) { conflict = true; break; }
         }
+        // 物品冲突只跳过**精确同格**（类锚定下与锚物品距离恒为整数, <1 即 0 = 物品
+        // 正占着这个槽, 由物品自己覆盖）。不得按 <1 跳过——物品相位随流动连续漂移,
+        // 距新槽 0.975 也判冲突会让整格漏插（旧实现二次延长漏插的直接根源, 2026-09-09）;
+        // 非锚格网的物品（双格网瞬态）允许近距插入, 由骑行区钳制/覆盖击杀动态消解。
         if (!conflict) {
           for (const it of items) {
-            if (Math.abs(it.total - pos) < 1 - EPS) { conflict = true; break; }
+            if (Math.abs(it.total - pos) < 1e-6) { conflict = true; break; }
           }
         }
         if (!conflict) this.arrows.push({ id: this.nextId++, pos, flowing: true, exitAt: null });
@@ -382,6 +384,31 @@ export class ChainPointerQueue {
 
     // 4. 补充: 击杀/循环消耗后维持密度（链长+1）。
     this.replenish(chainLen, items);
+
+    // 5. 间距整复（2026-09-09）: 击杀（接触/注入）/补充后退/异相位插入在实体列里
+    //    留下的 ≥1 格空洞, 在 lockstep（全体同速）下相对间距**永不自愈**, 会随队列
+    //    终身循环 = 用户实测"物品前后空一格"（红色堵塞带同样出现）。此处把洞后的
+    //    第一支指针向前实体追平到恰距 1: 额外 ≤2 格带速（含流动 pass 合至多 3×
+    //    带速, 渲染 prev→last 内插平滑, 远小于 0.55 瞬移阈值, 无跳变）。逐支只看
+    //    自己的**前一实体**（物品或指针, 取 > 自身的最小位置）→ 目标 = 前实体 −1,
+    //    不越过任何实体; 与停止物品的间距收到 1 后即停, 箭头此后按虚拟终点语义
+    //    以常速继续滑入渐隐区, 不驻留、不干扰出场口锁定。
+    if (this.arrows.length > 1) {
+      const sorted2 = this.arrows.slice().sort((a, b) => b.pos - a.pos);
+      const fronts: number[] = [];
+      for (const it of items) fronts.push(it.total);
+      for (const a of sorted2) fronts.push(a.pos);
+      for (const a of sorted2) {
+        let front = Infinity;
+        for (const f of fronts) {
+          if (f > a.pos + EPS && f < front) front = f;
+        }
+        if (front === Infinity) continue;
+        if (front - a.pos <= 1 + EPS) continue;
+        a.pos = Math.min(front - 1, a.pos + 2 * move);
+        a.flowing = true;
+      }
+    }
   }
 
   /**
@@ -409,7 +436,7 @@ export class ChainPointerQueue {
   }
 
   /**
-   * 密度维持: 数量 < 链长+1 时回补（该槽必与全部实体 ≥1 格）。
+   * 密度维持: 数量 < 链长+1 时回补（该槽必与全部**指针** ≥1 格）。
    *
    * ⚠️ 落点必须与**既有指针同格网**（最末指针 − 1）——旧实现取"最末实体（含物品）
    * − 1"（认为"该槽必在物品格网上"）: 当最末实体是物品、且它的格网 ≠ 指针格网时
@@ -417,8 +444,13 @@ export class ChainPointerQueue {
    * 二者不同格网），补出的指针落在**异格网**上 = 离格指针，直接破坏"0 与 1 同格网"
    * 不变量: 它此后既不在注入清扫的判定格网上（永远杀不掉），又会一路流进带内与
    * 物品重合被击杀 → **带内全亮(α=1)瞬消**（用户实测"走入物品那格立刻消失"，
-   * 2026-09-08 根因③）。落点与物品冲突时**整格后退**（保持指针格网，退到带外
-   * 等待区，遮罩外不可见）。
+   * 2026-09-08 根因③）。
+   *
+   * ⚠️ 冲突后退只看**指针**、不看物品（2026-09-09 修订）: 旧实现对物品也整格后退
+   * （距离 0.975 也后退），补出的指针离物品 1.975 格 = 物品身后**永久空一格**——
+   * 堵塞列全体 lockstep 齐走、相对间距不自愈，拆链出生帧的这一后退会伴随队列
+   * 终身循环（用户实测"断头链物品前后空一格"）。与新槽 <1 相处的物品由骑行区
+   * 钳制（贴住物品身位、被物品精灵覆盖不可见）与覆盖击杀动态消解，不产生可见洞。
    */
   private replenish(chainLen: number, items: readonly QueueItemRef[]): void {
     const target = chainLen + 1;
@@ -434,13 +466,8 @@ export class ChainPointerQueue {
       const guard = items.length + this.arrows.length + 64;
       for (let i = 0; i < guard; i++) {
         let conflict = false;
-        for (const it of items) {
-          if (Math.abs(it.total - pos) < 1 - 1e-6) { conflict = true; break; }
-        }
-        if (!conflict) {
-          for (const a of this.arrows) {
-            if (Math.abs(a.pos - pos) < 1 - 1e-6) { conflict = true; break; }
-          }
+        for (const a of this.arrows) {
+          if (Math.abs(a.pos - pos) < 1 - 1e-6) { conflict = true; break; }
         }
         if (!conflict) break;
         pos -= 1;

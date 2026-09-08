@@ -232,7 +232,8 @@ console.log('\n[B] 纹理共享（100 设备只引用图集共享纹理，不产
     visible: boolean; destroyed?: boolean; children?: Array<unknown>;
   }>;
   // 递归收集渲染根子树的全部纹理实例（whole: Sprite.texture + logo；
-  // nineslice: [底座切片容器(8 Sprite), equipment Sprite, logo] —— 10 个共享纹理）
+  // nineslice: [九宫格底座切片容器(8 Sprite), 端口切片容器(T1.12, 本测试无
+  // port- 纹理=空), equipment Sprite, logo] —— 10 个共享纹理）
   const collectTextures = (node: { texture?: Texture; children?: unknown[] }): Texture[] => {
     const out: Texture[] = [];
     if (node.texture) out.push(node.texture);
@@ -252,8 +253,8 @@ console.log('\n[B] 纹理共享（100 设备只引用图集共享纹理，不产
     '所有图集引用纹理均来自共享集合（无逐设备新建纹理；无 label 的 Graphics 兜底纹理除外）',
   );
   assert(
-    sprites.every((s) => (s.children ?? []).length === 3),
-    '每个设备渲染根 = [底座, equipment, logo] 三子树（nineslice 结构）',
+    sprites.every((s) => (s.children ?? []).length === 4),
+    '每个设备渲染根 = [九宫格底座, 端口切片, equipment, logo] 四子树（T1.12 结构）',
   );
   // 图集共享是"增删设备不涨纹理内存"的前提: 同 key 的 Sprite 必须是同一 Texture 实例
   const firstTex = collectTextures(sprites[0] as never);

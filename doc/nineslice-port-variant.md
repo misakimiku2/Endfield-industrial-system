@@ -338,7 +338,8 @@ buildings.ts / MachineSystem / PortStatusOps 等 Phase 2 消费方——**独立
 `PlacementSystem.ts` / `InventoryUI.ts`（接线）；demo 设备 `buildings.ts`
 （test_nineslice_noport / test_nineslice_liquid_5x5）；验收脚本
 `verify-t1.12-portvariant.mjs`（离线 20/20）、`verify-t1.12-runtime.mjs`
-（浏览器探针 21/21）、`verify-t1.12-visual.mjs`（截图）。
+（浏览器探针 21/21）、`verify-t1.12-visual.mjs`（截图）——三个脚本已于
+2026-08-23 提交 08b940b 随旧验证脚本批量清理删除。
 
 **遗留（按计划后置，非本任务缺口）**: 顶/底液体口的 def 置位依赖 A3 端口模型
 "方向×介质"拆分（§7.1，独立小任务）；届时掩码派生规则按 §5.2 目标模型补

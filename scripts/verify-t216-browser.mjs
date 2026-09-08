@@ -6,12 +6,13 @@
 // 用法: 先启动 dev server（npm run dev，strictPort 固定 5173），然后:
 //       node scripts/verify-t216-browser.mjs
 //
-// 验收内容（真实 E 键 + 鼠标事件驱动，非脚本搭场）:
-//   A 直连: 从下炉输出口起带 → 悬停上炉正下方供给格 → dockInfo 确认端口（绿）→
-//     左键落盘 → 段方向指向端口、上炉输入口 ●黄(已连接)
-//   B 拖到设备上: 鼠标直接放上炉输入端口格 → 路径自动截断到供给格 + 末段指向端口
-//     （旧版此手势整条染红点不了——用户实测"连不上设备"的主路径）
-//   C 侧面接近 L 形: 末段默认尾向背离端口 → 吸附覆盖为指向端口，落盘成转角段
+// 验收内容（真实 E 键 + 鼠标事件驱动，非脚本搭场; 2026-09-02 端口重定向修订口径）:
+//   A 直连: 从下炉输出口起带 → 悬停上炉正下方供给格 → dockInfo.confirmed 确认端口
+//     （绿，无 targets 候选——候选紫已移除）→ 左键落盘 → 段方向指向端口、上炉输入口 ●黄(已连接)
+//   B 拖到设备上: 鼠标直接放上炉输入端口格 → dockRedirect 重定向到朝向侧供给格 +
+//     末段吸附指向端口（旧版此手势整条染红点不了——用户实测"连不上设备"的主路径）
+//   C 侧向横穿反例: 末段横穿端口侧面 → confirmed 空、不吸附、端口保持未连接
+//     （2026-09-02 用户拍板: 接 (2,0) 只能经下方 (2,1)，不能从 (3,0) 侧向横穿）
 //   D 起点反例: hover 态悬停输入端口 → getStartHintCell 命中（红警示+文字），点击无效
 //   E 回归: __game.test('t26') 输入对接全流程仍跑通
 //
@@ -111,7 +112,8 @@ await moveToCell(...SUPPLY.mid); // 悬停 B 正下方一格
   const di = await dockInfo();
   ok(di !== null && di.confirmed.some((c) => c.x === B_IN.mid[0] && c.y === B_IN.mid[1]),
     `A3. 悬停供给格 → dockInfo.confirmed 命中 B 中输入口 ${JSON.stringify(B_IN.mid)}（端口亮绿"将连接"）`);
-  ok(di !== null && di.targets.length === 1, `A4. targets 仅相邻的 1 个输入口（实际 ${JSON.stringify(di?.targets)}）`);
+  ok(di !== null && di.confirmed.length === 1 && di.targets === undefined,
+    `A4. confirmed 仅 1 个端口且无 targets 候选（2026-09-02 候选紫移除，实际 confirmed=${JSON.stringify(di?.confirmed)}）`);
 }
 await shot('t216-a-confirm-green');
 await clickCell(...SUPPLY.mid); // 落盘单格带
@@ -145,30 +147,33 @@ await clickCell(...B_IN.left); // 在设备格上落盘（点击命中供给格�
 }
 await page.keyboard.press('e');
 
-// ══ C. 侧面接近: L 形末段默认尾向背离端口 → 吸附覆盖 + 转角段 ══
-console.log('[C] 从右侧绕行接近 B 右输入口 → 末段默认朝上，吸附覆盖为朝左指向端口');
+// ══ C. 侧向横穿反例（2026-09-02 用户拍板口径）: 末段横穿端口侧面 ≠ 对接 ══
+// 接 (bx+2,by+2) 只能经下方供给格 (bx+2,by+3)，从 (bx+3,by+2) 侧向横穿指入不算
+// "将连接"——confirmed 空（候选紫 targets 已移除），落盘段不被吸附覆盖，端口保持未连接。
+console.log('[C] 从右侧绕行横穿 B 右输入口侧面 → confirmed 空（侧向横穿不算对接）');
 await page.keyboard.press('e');
 await clickCell(...A_OUT.right); // 从 A 右输出口起带（首步强制向上）
-await moveToCell(bx + 3, by + 3); // L 形中段（无端口相邻）
+await moveToCell(bx + 3, by + 3); // 绕行中段（无端口相邻）
 {
   const di = await dockInfo();
-  ok(di !== null && di.targets.length === 0, `C1. 绕行中段 targets 空（未到对接位，实际 ${JSON.stringify(di?.targets)}）`);
+  ok(di !== null && di.confirmed.length === 0,
+    `C1. 绕行中段 confirmed 空（在途无对接，实际 ${JSON.stringify(di?.confirmed)}）`);
 }
-await moveToCell(...SUPPLY.side); // B 右输入口右侧一格
+await moveToCell(...SUPPLY.side); // B 右输入口右侧一格（横穿位，非朝向侧供给格）
 {
   const di = await dockInfo();
-  ok(di !== null && di.confirmed.some((c) => c.x === B_IN.right[0] && c.y === B_IN.right[1]),
-    'C2. 悬停端口右侧供给格 → confirmed 命中 B 右输入口（末段被吸附为朝左）');
+  ok(di !== null && di.confirmed.length === 0,
+    `C2. 悬停端口右侧横穿位 → confirmed 空（侧向横穿不算"将连接"，实际 ${JSON.stringify(di?.confirmed)}）`);
 }
-await shot('t216-c-side-snap');
+await shot('t216-c-side-cross-reject');
 await clickCell(...SUPPLY.side);
 {
   const seg = (await segments()).find((s) => s.x === SUPPLY.side[0] && s.y === SUPPLY.side[1]);
-  ok(seg !== undefined && seg.dir === 180 && seg.corner,
-    `C3. 落盘段 (${SUPPLY.side}) 方向 180(左) 且为转角段（实际 ${JSON.stringify(seg)}）`);
+  ok(seg !== undefined && seg.dir === 270 && !seg.corner,
+    `C3. 落盘段 (${SUPPLY.side}) 保持默认 270(上) 直段（无吸附覆盖，实际 ${JSON.stringify(seg)}）`);
   const st = await portStatusAt(bx, by);
-  ok(st.includes(`(${B_IN.right[0]},${B_IN.right[1]}) ●黄(已连接)`),
-    `C4. B 右输入口 已连接（portStatus: ${st.split('\n')[1]?.trim()}）`);
+  ok(st.includes(`(${B_IN.right[0]},${B_IN.right[1]}) 未连接`),
+    `C4. B 右输入口保持 未连接（横穿带不构成连接；portStatus: ${st.split('\n')[1]?.trim()}）`);
 }
 await page.keyboard.press('e');
 

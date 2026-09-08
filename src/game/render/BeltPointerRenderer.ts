@@ -258,8 +258,13 @@ export class BeltPointerRenderer {
         }
       }
 
-      // 带身遮罩（格矩形并集；格集变化才重建）
-      this.ensureMask(rt);
+      // 带身遮罩（格矩形并集；格集变化才重建）。尚无箭头的链（新链出生当帧可能
+      // 跨 0 个仿真 Tick, 队列未播种）不建遮罩——遮罩 Graphics 一旦挂进渲染树而
+      // 尚未被任何精灵引用（sprite.mask 赋值发生在本帧稍后的箭头循环）, Pixi v8
+      // 的 StencilMask 尚未把它 includeInBuild=false, 白色填充会作为普通节点画出
+      // = "删中间段后下游新链首格闪一下白"（2026-09-09 修订, 旧 isMask 标记是
+      // 无效属性——v8 没有 isMask, 正确通道是 StencilMask.init 写的 includeInBuild）。
+      if (rt.queue.arrows.length > 0 || rt.mask) this.ensureMask(rt);
 
       // 堵塞渐变: 链上任一段 blocked → 箭头黄 → 橙 #E6956F
       const blockedTarget = rt.segs.some(({ seg }) => seg.blocked === true) ? 1 : 0;
@@ -342,10 +347,16 @@ export class BeltPointerRenderer {
     rt.maskKey = key;
     if (!rt.mask) {
       rt.mask = new Graphics();
-      // 标记为 mask（PixiJS v8 默认会把 addChild 后的 Graphics 当成普通可见节点渲染——
-      // 会把白填遮罩作为白方块画到屏幕上，导致"删中间段后下游新链首格闪一下白"。
-      // isMask=true 把它从主场景渲染里排除，只用于 sprite.mask 通道的 stencil 裁剪。
-      (rt.mask as { isMask?: boolean }).isMask = true;
+      // 与 v8 StencilMask.init 同款口径: 遮罩 Graphics 只参与 stencil 裁剪、不作为
+      // 普通可见节点渲染（includeInBuild=false, 另关 measurable 防止抬高层 cull 包围盒）。
+      // v8 没有 isMask 属性（更早版本写过的 isMask=true 是无效标记）; 精灵首次
+      // sprite.mask 赋值时 StencilMask 也会写同一属性, 此处提前到创建帧写, 消除
+      // "已挂树但尚未被任何精灵引用就被画成白块"的窗口（备用保险——主修复是
+      // update() 侧"无箭头不建遮罩"）。sprite.mask 永不置 null、精灵销毁不归还
+      // mask effect（v8 Container.destroy 直接弃引用）→ 不会被 StencilMask.reset()
+      // 翻回 true, 该标记与遮罩共存亡。
+      rt.mask.includeInBuild = false;
+      rt.mask.measurable = false;
       this.layer.addChild(rt.mask);
     }
     rt.mask.clear();

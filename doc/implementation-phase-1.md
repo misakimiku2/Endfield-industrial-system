@@ -718,7 +718,7 @@ Phase 2 窗口内、**T2.12（取/存货口，第一台 3×1 Depot 素材启用�
 - `src/game/systems/RenderSystem.ts` — nineslice 渲染分支（根 Container[底座, equipment, logo]，position/rotation 数学与 whole 完全一致）
 - `src/game/systems/PlacementSystem.ts` — nineslice 预览分支（逐 Sprite tint 蓝/橙红，PreviewTintFilter 保留给 whole）
 - `src/game/ui/InventoryUI.ts` — nineslice 工具栏组合图标（底座+equipment 烘焙 RenderTexture）
-- `scripts/verify-t1.11-nineslice.mjs` — 永久验证（11 断言）
+- `scripts/verify-t1.11-nineslice.mjs` — 永久验证（11 断言; 脚本已于 2026-08-23 提交 08b940b 随旧验证脚本批量清理删除）
 - S1（asset-drawing-standard.md）v1.1 增补 §9 九宫格设备章节
 
 **与 S2 原文的实测修正**（详见 S2 §11 实施记录 / S1 §9.6）:
@@ -845,7 +845,7 @@ app.ticker.add(() => {
 ---
 
 > **签入**: Phase 1 每个任务完成后 commit，提交信息格式 `Phase 1.x: 简短描述`  
-> **分支策略**: 直接在 master 开发（单人项目），不进 Phase 2 不做 tag
+> **分支策略**: 直接在 main 开发（单人项目），不进 Phase 2 不做 tag
 
 ---
 

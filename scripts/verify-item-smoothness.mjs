@@ -24,12 +24,19 @@ const found = await page.evaluate(() => {
 });
 if (!found) { console.log('❌ 未找到 belowItems 容器'); process.exit(1); }
 
-// 场景: 取货口(5,6) → 4 段带(5,5)(5,4)(5,3)(5,2) → 存货口(5,1)
+// 场景: 取货口(5,7)（中口 (6,7)）→ 5 段带(6,6)..(6,2) 上行 → 存货口(5,1)。
+// T2.18: 取货口仅中间 1 格是输出口——带必须对准中口列 x=6（旧 x=5 列与 (6,7) 对角，
+// 取货口够不着，带上永远无物品）。
+// T2.19: 存货口 0° 接带面朝上，带从下方朝上接入须 180°（供给格 (6,2)=带尾）——
+// 否则按断头处理，物品堵死整条带（零移动）。
 await page.evaluate(() => {
   window.__game.clearAllPlaced();
   window.__game.placeAt('depot_unloader', 5, 7);
-  window.__game.placeAt('depot_loader', 5, 1);
-  window.__game.spawnBelt([[5, 6], [5, 5], [5, 4], [5, 3], [5, 2]], 270);
+  window.__game.placeAt('depot_loader', 5, 1, 180);
+  window.__game.spawnBelt([[6, 6], [6, 5], [6, 4], [6, 3], [6, 2]], 270);
+  // 相机对准场景（防视口剔除隐藏物品 Sprite）
+  window.__game.camera.setPosition(6 * 64, 4 * 64);
+  window.__game.camera.setZoom(1);
   window.__game.logisticsDebug(false);
 });
 await page.waitForTimeout(4000); // 等带填充稳定流动
