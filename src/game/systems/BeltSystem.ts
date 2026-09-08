@@ -38,6 +38,7 @@ import type { Position } from '../components/Position.ts';
 import type { BuildingComp, Direction } from '../components/BuildingComp.ts';
 import { getBuildingDefinition, type BuildingDefinition } from '../data/buildings.ts';
 import { directionVector } from './belt/BeltPathGeometry.ts';
+import { segmentIncomingDir } from './belt/BeltChainOps.ts';
 import { inputPortCells } from './PortGeometry.ts';
 import { logisticsDebug } from './machine/LogisticsDebug.ts';
 import { CELL_SIZE } from '../render/constants.ts';
@@ -185,7 +186,9 @@ export class BeltSystem implements SimulationSystem {
       let flowsInto: string | null = null;
       for (const e of chainSegs.get(chainId) ?? []) {
         const down = segByCell.get(e.exitKey);
-        if (down === undefined) {
+        // 与 findDownstream 同律: 邻段必须从本段出口方向进料才算接上；几何擦边但
+        // 流向不接（横穿带的侧面）同样是断头——否则被横穿带"接住"的断头链不报红。
+        if (down === undefined || segmentIncomingDir(down) !== e.seg.direction) {
           if (deadEnd !== null) { redMemo.set(chainId, true); return true; } // 多链尾异常拓扑
           deadEnd = e;
         } else if (down.chainId !== chainId) {
@@ -386,6 +389,12 @@ export class BeltSystem implements SimulationSystem {
   /**
    * 找出口方向相邻 Cell 的下游传送带段 (A9 §4.2 隐式连接)。
    * seg.direction 是出口方向（直段=流向，转角段=出口方向，见 BeltSegmentComp）。
+   *
+   * **入口朝向约束（与 A9 §6.7 `findReceiverBelt` / `findFeederBelt` 同律）**:
+   * 相邻还不够——下游段必须从**来向**进料，即「下游段入口朝向 === 本段出口方向」。
+   * 只按格相邻连通会让物品拐进/插进几何擦边但流向不接的**另一条链**:
+   * 典型如竖带 A 删掉中间格拆成两条断头链后，玩家横穿一条新带 B 补上那一格——
+   * A 尾格出口正对 B 的**直行段侧面**，物品本该停在 A 尾，却顺着 B 流走。
    * @returns 下游段 handle；无则 null（断头）。
    */
   private findDownstream(
@@ -401,9 +410,9 @@ export class BeltSystem implements SimulationSystem {
     for (const h of candidates) {
       if (h === self) continue;
       const p = world.getComponent<Position>(h, 'Position');
-      if (p && Math.abs(p.x - neighborX) < 1 && Math.abs(p.y - neighborY) < 1) {
-        return h;
-      }
+      if (!p || Math.abs(p.x - neighborX) >= 1 || Math.abs(p.y - neighborY) >= 1) continue;
+      const down = world.getComponent<BeltSegmentComp>(h, 'BeltSegmentComp');
+      if (down && segmentIncomingDir(down) === seg.direction) return h;
     }
     return null;
   }

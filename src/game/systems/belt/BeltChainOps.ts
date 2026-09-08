@@ -35,8 +35,12 @@ function segmentCell(world: World, handle: EntityHandle): { x: number; y: number
   return { x: Math.round(pos.x / CELL_SIZE), y: Math.round(pos.y / CELL_SIZE) };
 }
 
-/** 取段的「进入方向」（转角段=entryDir；直段=出方向）。 */
-function segmentIncomingDir(seg: BeltSegmentComp): Direction {
+/**
+ * 取段的「进入方向」（物品进入该格时的行进方向）：转角段 = entryDir；直段 = 出方向。
+ * A9 §6.7 同律（与 `findReceiverBelt` 的"入口朝向"同源）——传送带恒从入口朝向一侧
+ * 进料。导出供 BeltSystem 判定"下游段是否真的接得住本段吐出的物品"。
+ */
+export function segmentIncomingDir(seg: BeltSegmentComp): Direction {
   return seg.isCorner && seg.entryDir !== undefined ? seg.entryDir : seg.direction;
 }
 
