@@ -81,7 +81,7 @@ export class PortHighlightRenderer {
   private getTexture: TextureLookup;
   private layer: Container;
   private entries = new Map<EntityHandle, PortEntry>();
-  /** 查询是否处于传送带创建模式（按 E）。创建模式下输出端口染蓝 #80BEE9。 */
+  /** 查询是否处于传送带创建模式（按 E）。创建模式下未连接的输出端口染蓝 #80BEE9。 */
   private isCreateMode: () => boolean;
   /** 查询当前悬停的输出端口格（创建模式下用于悬停淡蓝高亮）。 */
   private getHoveredPortCell: () => { x: number; y: number } | null;
@@ -172,7 +172,8 @@ export class PortHighlightRenderer {
       entry.container.rotation = (comp.direction * Math.PI) / 180;
 
       // 端口状态 → visible/tint（未连接隐藏；堵塞红 / 连接黄；堵塞箭头白；黄→红渐变）。
-      // 创建模式下输出端口覆盖为蓝色 #80BEE9（作为可连接起点提示，未连接也显示），
+      // 创建模式下输出端口仅**未连接**的染蓝 #80BEE9（作为可创建起点提示；已连接端口
+      // 保持连接黄/堵塞红常态——蓝色只指示"这里能起新带"，避免误导玩家去点已接带的口），
       // 悬停的端口用更淡的蓝 #A8D4F5 提示可点击。
       // T2.16 输入端口（创建模式）: 起点反例红 > "将连接"绿 > 候选紫 > 常态（连接黄/隐藏）。
       const inSt = inputPortStatuses(this.world, beltAt, handle, comp, def);
@@ -247,8 +248,10 @@ export class PortHighlightRenderer {
 
   /**
    * 逐端口同步显隐 + 颜色（面板/箭头）。
-   * 创建模式下输出端口（isOutput && createMode）覆盖为蓝色 #80BEE9 且始终显示，
-   * 悬停端口用更淡的蓝 #A8D4F5、箭头白色（面板之上清晰可见）；
+   * 创建模式下仅**未连接**的输出端口（isOutput && createMode && !connected）覆盖为
+   * 蓝色 #80BEE9 且始终显示——已连接端口保持连接黄/堵塞红常态（端口已被占用，
+   * 蓝色只提示"能从这里起新带"）；悬停端口用更淡的蓝 #A8D4F5、箭头白色
+   * （面板之上清晰可见）；
    * T2.16 创建模式下输入端口按对接信息覆盖: 起点反例红 / "将连接"绿
    * （箭头白色），优先级高于常态；否则按连接黄/堵塞红渐变，未连接隐藏。
    */
@@ -267,7 +270,8 @@ export class PortHighlightRenderer {
   ): void {
     for (let i = 0; i < sprites.length && i < states.length; i++) {
       const st = states[i];
-      const showCreate = createMode && isOutput;
+      // 创建模式蓝高亮只给**未连接**的输出端口——已连接端口保持连接黄/堵塞红常态
+      const showCreate = createMode && isOutput && !st.connected;
       const isHovered = showCreate && hoveredCell !== null && st.x === hoveredCell.x && st.y === hoveredCell.y;
       // T2.16 输入端口对接态（仅创建模式 + 输入端口）
       const dockable = createMode && !isOutput && dock !== null;

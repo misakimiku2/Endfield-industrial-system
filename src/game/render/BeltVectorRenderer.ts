@@ -63,7 +63,7 @@ export class BeltVectorRenderer {
   private layer: Container;
   /** 选中态（SelectionSystem 写）；选中段带身染选中色（#B1B1B1/#FFF56A）。由 RenderSystem 注入。 */
   private beltSelection: BeltSelection | null = null;
-  /** 查询是否处于传送带创建模式。创建模式下断头末端(tail)带身黄→蓝渐变。 */
+  /** 查询是否处于传送带创建模式。创建模式下断头末端(tail)带身黄/红→蓝渐变（堵塞段红→蓝）。 */
   private isCreateMode: () => boolean;
   /** 延长预览中被隐藏的原尾格（该格由 BeltCreationSystem 预览接管渲染）。 */
   private getHiddenCell?: () => { x: number; y: number } | null;
@@ -181,7 +181,7 @@ export class BeltVectorRenderer {
       // 形状重绘（方向/转角/选中态/堵塞态/创建终点态变化时，或堵塞渐变进行中）
       const selected = this.beltSelection?.has(handle) ?? false;
       const blocked = seg.blocked === true;
-      // 创建模式下断头末端(tail)带身 Status 黄→蓝渐变（替代整格蓝占位）
+      // 创建模式下断头末端(tail)带身 Status 黄/红→蓝渐变（替代整格蓝占位）
       const createTail = createMode && seg.isTail === true;
       // 堵塞渐变进度向目标（0↔1）线性趋近
       const target = blocked ? 1 : 0;
@@ -193,18 +193,24 @@ export class BeltVectorRenderer {
       // 渐变进行中（0<blend<1）颜色连续变化 → 也需重绘；到 0/1 后仅 key 变化才重绘
       if (entry.lastKey !== key || (blend > 0 && blend < 1)) {
         entry.g.clear();
-        // 染色优先级: 选中态 > 堵塞态 > 创建终点态(黄→蓝渐变) > 素材原色。
+        // 染色优先级: 选中态 > 创建终点态(黄/红→蓝渐变) > 堵塞态 > 素材原色。
         // 选中态：带身整体染选中色（灰壳#B1B1B1/黄带#FFF56A）；
-        // 堵塞态：仅 Status 黄带从黄 lerp 到红 #B10000（灰壳 base 保持原色）；
-        // 创建终点态：仅 Status 黄带沿带身方向黄 → 蓝 #80BEE9 渐变。
+        // 创建终点态：仅 Status 黄带沿带身方向渐变到蓝 #80BEE9——段首=当前带色
+        // （正常黄 / 堵塞红，堵塞渐变进行中随 blend 平滑过渡），段尾蓝，末端始终蓝。
+        // 因此堵塞断头带得到"红→蓝"创建指引，正常断头带是"黄→蓝"；
+        // 堵塞态：仅 Status 黄带从黄 lerp 到红 #B10000（灰壳 base 保持原色）。
         let colors: BeltColors | undefined;
         if (selected) {
           colors = { shellColor: BELT_COLOR_SHELL_SELECTED, beltColor: BELT_COLOR_BELT_SELECTED };
+        } else if (createTail) {
+          colors = {
+            beltGradient: {
+              from: lerpColor(BELT_COLOR_BELT, BELT_COLOR_STATUS_BLOCKED, blend),
+              to: BELT_COLOR_CREATE,
+            },
+          };
         } else if (blocked || blend > 0) {
           colors = { beltColor: lerpColor(BELT_COLOR_BELT, BELT_COLOR_STATUS_BLOCKED, blend) };
-        } else if (createTail) {
-          // 创建模式终点：沿"段首 → 段尾"方向 黄 → 蓝 渐变（段首黄、段尾蓝，末端始终蓝）
-          colors = { beltGradient: { from: BELT_COLOR_BELT, to: BELT_COLOR_CREATE } };
         }
         if (seg.isCorner) {
           drawCornerBelt(entry.g, CELL_SIZE, colors);

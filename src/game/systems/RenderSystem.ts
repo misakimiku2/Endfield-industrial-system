@@ -37,7 +37,8 @@ import { buildNineSliceBase, buildNineSlicePorts, getBakedNineSliceTexture } fro
 import { emptyPortMask, portMaskFromDef } from '../render/PortMask';
 import { getBuildingDefinition, effectiveFootprint, type BuildingDefinition } from '../data/buildings';
 import { outputPortCells } from './machine/OutputOps';
-import { inputPortCells } from './machine/IntakeOps';
+import { inputPortCells, buildBeltCellIndex } from './machine/IntakeOps';
+import { outputPortStatuses } from './machine/PortStatusOps';
 import { CELL_SIZE } from '../render/constants';
 import type { BeltSelection } from './belt/BeltSelection';
 import type { AtlasGroup } from '../render/AssetsLoader';
@@ -262,6 +263,12 @@ export class RenderSystem {
     // ── 2. 视口可见世界范围（屏幕四角 world AABB + padding）──
     const view = this.computeVisibleBounds();
 
+    // ── 2.5 传送带格索引（仅创建模式构建）──
+    // 仓库口 Status 面板的"输出端口是否已连接"判定需要（PortStatusOps 同源口径）。
+    // 非创建模式面板恒隐 → 索引不建，零开销；创建模式为瞬态，与 PortHighlightRenderer
+    // 每帧建索引的既有开销同级。
+    const beltAt = (this.isBeltCreationActive?.() ?? false) ? buildBeltCellIndex(this.world) : null;
+
     // ── 3. 新增 + 位置/纹理同步 + 剔除 ──
     for (const handle of visible) {
       const pos = this.world.getComponent<Position>(handle, 'Position')!;
@@ -341,9 +348,10 @@ export class RenderSystem {
       }
 
       // T2.12 仓库口 Status 面板显隐/染色 + LOGO 白色切换（仅 statusSprite 存在的
-      // 设备产生开销——普通设备 undefined 短路）。悬停匹配按端口世界格计算。
+      // 设备产生开销——普通设备 undefined 短路）。悬停匹配按端口世界格计算；
+      // 2026-09-09: 取货口蓝显收紧为"输出端口未连接"（beltAt 索引判连接）。
       if (entry.statusSprite && building && def) {
-        this.applyDepotStatus(entry, building, def, pos, spr);
+        this.applyDepotStatus(handle, entry, building, def, pos, spr, beltAt);
       }
 
       // 视口剔除: 实体世界 AABB（有效占地）与可见范围无交集 → 隐藏
@@ -576,41 +584,48 @@ export class RenderSystem {
   }
 
   /**
-   * T2.12 仓库口 Status 面板（2026-08-24 用户反馈修订）:
-   *   - 取货口（有输出口）: 创建模式常显蓝 #80BEE9（"可连接起点"提示），悬停任一
-   *     输出端口格 → 淡蓝 #A8D4F5；
+   * T2.12 仓库口 Status 面板（2026-08-24 用户反馈修订；2026-09-09 蓝显收紧）:
+   *   - 取货口（有输出口）: 创建模式且输出端口**未连接**传送带时常显蓝 #80BEE9
+   *     （"可连接起点"提示）；已连接端口不蓝显、悬停也不淡蓝——与
+   *     PortHighlightRenderer 的 `!connected` 口径一致（蓝=能起新带，避免误导玩家
+   *     去点已接带的口），连接判定同源 PortStatusOps（A9 §6.7）；
    *   - 存货口（无输出口）: 仅悬停其输入端口格时淡蓝（提示"传送带可接入此处"）。
    *   - **高亮时 LOGO 换白色变体**（`${logoTextureKey}_white` 帧；深色源无法用 tint
    *     提亮，走纹理切换，同 T2.8 暂停/堵塞换图机制），白色帧缺失 → 保持原 LOGO。
    * 非创建模式隐藏（常态灰面板烘在主帧里，由本面板覆盖）。
+   * @param beltAt 传送带格索引（update 仅创建模式构建；null 时视作未连接——
+   *                只发生在非创建模式，面板本就隐藏，不影响可见结果）。
    */
   private applyDepotStatus(
+    handle: EntityHandle,
     entry: SpriteEntry,
     building: BuildingComp,
     def: BuildingDefinition,
     pos: Position,
     spr: SpriteComp,
+    beltAt: Map<string, EntityHandle> | null,
   ): void {
     const s = entry.statusSprite!;
     const create = this.isBeltCreationActive?.() ?? false;
     const hovered = create ? (this.getHoveredAnyPortCell?.() ?? null) : null;
+    const hasOutPort = def.ports.some((p) => p.type === 'output');
+    const outConnected =
+      hasOutPort && beltAt !== null &&
+      outputPortStatuses(this.world, beltAt, handle, building, def).some((st) => st.connected);
     let hoverOut = false;
     let hoverIn = false;
-    let hasOut = false;
     if (hovered) {
       const gx = Math.round(pos.x / CELL_SIZE);
       const gy = Math.round(pos.y / CELL_SIZE);
       for (const c of outputPortCells(gx, gy, def, building.direction)) {
-        hasOut = true;
-        if (c.x === hovered.x && c.y === hovered.y) hoverOut = true;
+        // 已连接的取货口悬停不淡蓝（同 PortHighlightRenderer isHovered 依赖 showCreate）
+        if (c.x === hovered.x && c.y === hovered.y) hoverOut = !outConnected;
       }
       for (const c of inputPortCells(gx, gy, def, building.direction)) {
         if (c.x === hovered.x && c.y === hovered.y) hoverIn = true;
       }
-    } else {
-      hasOut = def.ports.some((p) => p.type === 'output');
     }
-    s.visible = create && (hasOut || hoverIn);
+    s.visible = create && ((hasOutPort && !outConnected) || hoverIn);
     s.tint = hoverOut || hoverIn ? PORT_CREATE_HOVER_TINT : PORT_CREATE_TINT;
 
     // LOGO 纹理切换（首次必进: depotLogoWhite 未初始化）。⚠️ logoMain 是 logo(glow
