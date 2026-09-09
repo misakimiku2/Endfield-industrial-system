@@ -25,6 +25,7 @@ import { BUILDING_DEFINITIONS, getBuildingDefinition, effectiveFootprint, type B
 import type { BuildingComp, BufferSlot, Direction } from './game/components/BuildingComp';
 import { loadItemRegistry } from './game/data/items';
 import { parseRecipeCsv, buildRecipeIndex, formatRecipeSummary } from './game/data/recipes';
+import { applyEquipmentPower } from './game/data/equipment';
 import { createBufferSlots, tryAcceptItem, consumeFromSlot, formatBufferSlots } from './game/systems/machine/BufferOps';
 import { portStatuses, type PortStatus } from './game/systems/machine/PortStatusOps';
 import { logisticsDebug } from './game/systems/machine/LogisticsDebug';
@@ -35,6 +36,11 @@ import {
 } from './game/systems/machine/IntakeOps';
 import recipeCsvText from '../doc/csv/recipe.csv?raw';
 import resourceCsvText from '../doc/csv/终末地资源列表 - 自然资源.csv?raw';
+// 设备 CSV（耗电峰值权威源，T2.15 用户反馈: 弹窗耗电数按 CSV 而非定义表硬编码）。
+// 物流设备/电力两份无耗电列，无需导入。
+import equipSynthCsvText from '../doc/csv/终末地设备 - 合成制造.csv?raw';
+import equipBasicCsvText from '../doc/csv/终末地设备 - 基础生产.csv?raw';
+import equipDepotCsvText from '../doc/csv/终末地设备 - 仓储存取.csv?raw';
 import { SelectionSystem } from './game/systems/SelectionSystem';
 import { DeleteSystem } from './game/systems/DeleteSystem';
 import { deleteChain, deleteSegment, queryChain } from './game/systems/belt/BeltChainOps';
@@ -833,6 +839,12 @@ async function main() {
       [...new Set(recipeTable.skipped.map((s) => s.detail))].join('、'));
   }
   const recipeIndex = buildRecipeIndex(recipeTable.recipes);
+  // 设备耗电以 CSV 为权威源（覆盖定义表初值；未实现设备计入 skipped 仅日志核对）
+  const powerReport = applyEquipmentPower([equipSynthCsvText, equipBasicCsvText, equipDepotCsvText]);
+  if (powerReport.skipped.length > 0) {
+    console.log(`[T2.15] 设备耗电 CSV 加载: 覆写 ${powerReport.loaded} 台；${
+      powerReport.skipped.length} 台未实现（${powerReport.skipped.slice(0, 8).join('、')}${powerReport.skipped.length > 8 ? '…' : ''}）`);
+  }
   const itemName = (id: string): string => itemTable.byId.get(id)?.name ?? id;
   const listRecipes = (equipmentId = 'refining_unit'): string => {
     const def = getBuildingDefinition(equipmentId);

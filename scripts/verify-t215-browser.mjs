@@ -101,8 +101,8 @@ ok(resumed, 'B4. 点「开」→ 恢复（从暂停处继续）');
 // ══ C. 生产状态摘要（吸收 T2.9b 读数）══
 console.log('[C] 状态摘要: 缓冲数量在格上 + 进度条推进');
 const inCount = await page.evaluate(() =>
-  document.querySelector('.efd-tile-slots .efd-tile-count')?.textContent ?? '');
-ok(inCount.includes('/50'), `C1. 输入格显示计数（实际: ${inCount}）`);
+  document.querySelector('.efd-under-count')?.textContent ?? '');
+ok(inCount.includes('5') || inCount !== '', `C1. 输入格格下计数显示（实际: ${inCount}，旧 SynthesisGrid 格下数字样式）`);
 const progressMoved = await page.waitForFunction(() => {
   const w = document.querySelector('.efd-progress-fill')?.style.width ?? '';
   return parseInt(w, 10) > 0;

@@ -203,12 +203,15 @@
   color: #ffffff;
 }
 
-/* ── 内容区 ── */
+/* ── 内容区 ──
+   左侧预留 480px = 旧项目资源面板 440 + 间距 20（Phase 2 无资源面板，但全部面板
+   内容按旧布局落在「右区」——生产行/仓库卡片/动作按钮的横向位置与旧项目一致）。
+   配合 .efd-synthesis-main 的 zoom 缩放（旧 FittedBox scaleDown 等价）。*/
 .efd-dialog-body {
   position: relative;
   flex: 1;
   min-height: 0;
-  padding: 12px 20px 20px 20px;
+  padding: 12px 20px 20px 480px;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
@@ -249,7 +252,8 @@
   flex-direction: column;
 }
 
-.efd-synthesis-main {
+/* 行容器: 垂直居中（旧 Expanded + Stack Positioned(rowTop) 的等价） */
+.efd-synthesis-main-wrap {
   flex: 1;
   min-height: 0;
   display: flex;
@@ -257,16 +261,30 @@
   justify-content: center;
 }
 
+.efd-synthesis-main {
+  display: flex;
+  align-items: flex-start; /* 旧 FittedBox alignment topCenter: 格组与状态列顶对齐 */
+  flex: none;
+}
+
+/* 格组容器（轨道连接器 + 物品格 + 格下计数; 宽由 TS 按是否有端口设 128/416）*/
+.efd-grid-box {
+  position: relative;
+  flex: none;
+}
+
 .efd-synthesis-mid {
   width: 112px;
+  flex: none;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center; /* 内容在 rowH+74 内整体居中（旧 Column mainAxisAlignment.center）*/
   margin: 0 11px;
 }
 
 .efd-synthesis-indicator {
-  height: 128px;
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -339,6 +357,14 @@
   height: 27px;
   display: flex;
   align-items: center;
+}
+
+/* 进度槽: 生产=进度条 / 暂停=「生产已暂停」/ 阻塞=「阻塞」（三选一，固定高防跳动）*/
+.efd-progress-slot {
+  position: relative;
+  width: 156px;
+  height: 27px;
+  margin-top: 8px;
 }
 
 .efd-state-text {
@@ -536,11 +562,141 @@
   justify-content: center;
 }
 
-.efd-tile-slots {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 404px;
+/* ── 格下计数（旧 SynthesisGrid: countY=格顶+134，20px w500 #DDDDDD，满仓红）── */
+.efd-under-count {
+  position: absolute;
+  width: 128px;
+  text-align: center;
+  color: #dddddd;
+  font-size: 20px;
+  font-weight: 500;
+}
+
+.efd-under-count.full {
+  color: #ff4444;
+}
+
+/* ── 轨道连接器（旧 TrackJointsPainter 1:1，288×端口数×62）──
+   输入侧灰（interface #8D8C8C / link #6E6E6E / 白点），输出侧金（#B38626 / #8D6E32 / #EBAD26 点）*/
+.efd-trackjoints {
+  position: absolute;
+  width: 288px;
+  top: 0;
+}
+
+.efd-trackjoints.in { left: 0; }
+.efd-trackjoints.out { left: 128px; }
+
+.efd-trackjoints .tj-link {
+  position: absolute;
+  background: #6e6e6e;
+}
+
+.efd-trackjoints.out .tj-link {
+  background: #8d6e32;
+}
+
+.efd-trackjoints .tj-interface {
+  position: absolute;
+  background: #8d8c8c;
+}
+
+.efd-trackjoints.out .tj-interface {
+  background: #b38626;
+}
+
+.efd-trackjoints .tj-dot {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ffffff;
+}
+
+.efd-trackjoints .tj-dot.gold {
+  background: #ebad26;
+}
+
+/* 已连接端口的活动覆盖层: 白/金折线 + 渐变带残段 + 流动箭头 */
+.tj-active {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.tj-active-line {
+  position: absolute;
+  border-radius: 1.5px;
+  background: #ffffff;
+}
+
+.efd-trackjoints.out .tj-active-line {
+  background: #ebad26;
+}
+
+.tj-belt {
+  position: absolute;
+  width: 168px;
+  height: 54px;
+}
+
+.tj-belt.in {
+  background: linear-gradient(to right, rgba(232, 138, 17, 0), rgba(255, 184, 43, 0.667));
+}
+
+.tj-belt.out {
+  background: linear-gradient(to right, rgba(255, 184, 43, 0.667), rgba(232, 138, 17, 0));
+}
+
+.tj-belt::before,
+.tj-belt::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1.6px;
+}
+
+.tj-belt.in::before { background: linear-gradient(to right, rgba(255, 187, 51, 0), rgba(255, 210, 102, 0.867)); }
+.tj-belt.in::after { background: linear-gradient(to right, rgba(255, 187, 51, 0), rgba(255, 210, 102, 0.867)); bottom: 0; top: auto; }
+.tj-belt.out::before { background: linear-gradient(to right, rgba(255, 210, 102, 0.867), rgba(255, 187, 51, 0)); }
+.tj-belt.out::after { background: linear-gradient(to right, rgba(255, 210, 102, 0.867), rgba(255, 187, 51, 0)); bottom: 0; top: auto; }
+
+.tj-belt-arrows {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.tj-belt.in .tj-belt-arrows {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000);
+  mask-image: linear-gradient(to right, transparent, #000);
+}
+
+.tj-belt.out .tj-belt-arrows {
+  -webkit-mask-image: linear-gradient(to right, #000, transparent);
+  mask-image: linear-gradient(to right, #000, transparent);
+}
+
+.tj-belt-arrows > div {
+  position: absolute;
+  top: 50%;
+  margin-top: -6px;
+  width: 0;
+  height: 0;
+  border-top: 6px solid transparent;
+  border-bottom: 6px solid transparent;
+  border-left: 10px solid #ffffff;
+  animation: efd-tj-flow 2000ms linear infinite;
+}
+
+.tj-belt-arrows > div:nth-child(2) {
+  animation-delay: 1000ms;
+}
+
+@keyframes efd-tj-flow {
+  from { left: -10px; }
+  to   { left: 168px; }
 }
 
 /* ── 仓库口面板（depot_grid_tile 复刻）── */

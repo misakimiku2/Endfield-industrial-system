@@ -32,6 +32,7 @@ import type { BuildingDefinition } from '../data/buildings';
 import { getBuildingDefinition } from '../data/buildings';
 import type { ItemRegistry } from '../data/items';
 import type { Recipe } from '../data/recipes';
+import { portStatuses } from '../systems/machine/PortStatusOps';
 
 /** 简化版取货口的兜底产出物品（与 DepotOps.DEPOT_SOURCE_ITEM 同值；避免循环依赖不直接 import）。 */
 const FALLBACK_DEPOT_ITEM = 'originium_ore';
@@ -122,8 +123,18 @@ export class DeviceDialog {
   private countdownBlocked: HTMLDivElement | null = null;
   private progressWrap: HTMLDivElement | null = null;
   private progressFill: HTMLDivElement | null = null;
-  private inputTiles: TileRefs[] = [];
-  private outputTiles: TileRefs[] = [];
+  // 合成面板输入/输出格（旧 SynthesisGrid 复刻: 轨道连接器 + 物品格 + 格下计数）
+  private inputGridBox: HTMLDivElement | null = null;
+  private outputGridBox: HTMLDivElement | null = null;
+  private inputTile: TileRefs | null = null;
+  private outputTile: TileRefs | null = null;
+  private inputCountEl: HTMLDivElement | null = null;
+  private outputCountEl: HTMLDivElement | null = null;
+  private inputConnector: { el: HTMLDivElement; active: HTMLDivElement } | null = null;
+  private outputConnector: { el: HTMLDivElement; active: HTMLDivElement } | null = null;
+  private connKey = ''; // 端口连接态去重（变化才重建活动覆盖层）
+  private mainRow: HTMLDivElement | null = null; // FittedBox 缩放目标
+  private mainNaturalW = 0;
   private recipeBar: HTMLDivElement | null = null;
   private recipeShownKey: string | null = null; // 配方行重建去重（id 或 'empty'）
   // 仓库取货口
@@ -224,8 +235,17 @@ export class DeviceDialog {
     this.countdownBlocked = null;
     this.progressWrap = null;
     this.progressFill = null;
-    this.inputTiles = [];
-    this.outputTiles = [];
+    this.inputGridBox = null;
+    this.outputGridBox = null;
+    this.inputTile = null;
+    this.outputTile = null;
+    this.inputCountEl = null;
+    this.outputCountEl = null;
+    this.inputConnector = null;
+    this.outputConnector = null;
+    this.connKey = '';
+    this.mainRow = null;
+    this.mainNaturalW = 0;
     this.recipeBar = null;
     this.recipeShownKey = null;
     this.cardName = null;
@@ -471,6 +491,12 @@ export class DeviceDialog {
 
   // ═════════════════════ 生产设备面板 ═════════════════════
 
+  /**
+   * 生产面板（旧 DefaultSynthesisPanel + SynthesisGrid 1:1 复刻）:
+   * 输入[轨道连接器+物品格+格下计数] |（11px）状态列（112px）|（11px）输出[物品格+计数+轨道连接器]。
+   * 行高 = max(端口数×62, 128)（TrackJointsConnector 几何）；整行按旧 FittedBox scaleDown
+   * 缩放放进「右区」（body 左侧预留 480px = 旧资源面板 440 + 间距，Phase 2 无资源面板但布局位保留）。
+   */
   private buildSynthesisPanel(def: BuildingDefinition): HTMLDivElement {
     const panel = document.createElement('div');
     panel.className = 'efd-synthesis';
@@ -478,18 +504,37 @@ export class DeviceDialog {
     // 顶部动作行: 删除（旧 ActionButton 样式；移动按钮待 T2.14 落地后补）
     panel.appendChild(this.buildActionRow());
 
-    // 中部: 输入格 | 状态列 | 输出格
+    const nIn = def.ports.filter((p) => p.type === 'input').length;
+    const nOut = def.ports.filter((p) => p.type === 'output').length;
+    const rowH = Math.max(Math.max(nIn, nOut) * 62, 128); // defaultRowH
+    const tileTop = (rowH - 128) / 2; // originalGridBoxY
+
+    const mainWrap = document.createElement('div');
+    mainWrap.className = 'efd-synthesis-main-wrap';
     const main = document.createElement('div');
     main.className = 'efd-synthesis-main';
+    this.mainRow = main;
 
-    const inputCol = document.createElement('div');
-    inputCol.className = 'efd-tile-slots';
-    for (let i = 0; i < def.inputSlotCount; i++) this.inputTiles.push(this.makeTile(inputCol));
+    // ── 输入格组（轨道连接器在左）──
+    this.inputGridBox = document.createElement('div');
+    this.inputGridBox.className = 'efd-grid-box';
+    this.inputGridBox.style.width = `${nIn > 0 ? 416 : 128}px`;
+    this.inputGridBox.style.height = `${rowH}px`;
+    if (nIn > 0) {
+      this.inputConnector = this.buildTrackJoints(nIn, true, rowH);
+      this.inputGridBox.appendChild(this.inputConnector.el);
+    }
+    this.inputTile = this.makeTileAt(this.inputGridBox, nIn > 0 ? 288 : 0, tileTop);
+    this.inputCountEl = this.makeUnderCount(this.inputGridBox, nIn > 0 ? 288 : 0, tileTop + 134);
+    main.appendChild(this.inputGridBox);
+
+    // ── 状态列（112px，高度 rowH+74，内容整体垂直居中）──
     const mid = document.createElement('div');
     mid.className = 'efd-synthesis-mid';
+    mid.style.height = `${rowH + 74}px`;
     this.indicatorBox = document.createElement('div');
     this.indicatorBox.className = 'efd-synthesis-indicator';
-    // 三种指示器各建一次，刷新时只切换 display（避免 CSS 动画重置）
+    this.indicatorBox.style.height = `${rowH}px`;
     this.indicatorArrows = this.buildArrows();
     this.indicatorPaused = this.buildStateIndicator('paused');
     this.indicatorBlocked = this.buildStateIndicator('blocked');
@@ -497,13 +542,12 @@ export class DeviceDialog {
     this.indicatorBox.appendChild(this.indicatorPaused);
     this.indicatorBox.appendChild(this.indicatorBlocked);
     this.countdownText = document.createElement('span');
-    this.countdownPaused = this.buildStateText('paused', '生产已暂停');
-    this.countdownBlocked = this.buildStateText('blocked', '阻塞');
     const countdown = document.createElement('div');
     countdown.className = 'efd-countdown';
     countdown.appendChild(this.countdownText);
-    countdown.appendChild(this.countdownPaused);
-    countdown.appendChild(this.countdownBlocked);
+    // 进度槽（旧项目三态: 生产=进度条常显（未加工也画 0 轨道）/暂停=「生产已暂停」/阻塞=「阻塞」）
+    const progressSlot = document.createElement('div');
+    progressSlot.className = 'efd-progress-slot';
     this.progressWrap = document.createElement('div');
     this.progressWrap.className = 'efd-progress';
     const track = document.createElement('div');
@@ -515,16 +559,32 @@ export class DeviceDialog {
     this.progressWrap.appendChild(track);
     this.progressWrap.appendChild(this.progressFill);
     this.progressWrap.appendChild(knob);
+    this.countdownPaused = this.buildStateText('paused', '生产已暂停');
+    this.countdownBlocked = this.buildStateText('blocked', '阻塞');
+    progressSlot.appendChild(this.progressWrap);
+    progressSlot.appendChild(this.countdownPaused);
+    progressSlot.appendChild(this.countdownBlocked);
     mid.appendChild(this.indicatorBox);
     mid.appendChild(countdown);
-    mid.appendChild(this.progressWrap);
-    const outputCol = document.createElement('div');
-    outputCol.className = 'efd-tile-slots';
-    for (let i = 0; i < def.outputSlotCount; i++) this.outputTiles.push(this.makeTile(outputCol));
-    main.appendChild(inputCol);
+    mid.appendChild(progressSlot);
     main.appendChild(mid);
-    main.appendChild(outputCol);
-    panel.appendChild(main);
+
+    // ── 输出格组（轨道连接器在右）──
+    this.outputGridBox = document.createElement('div');
+    this.outputGridBox.className = 'efd-grid-box';
+    this.outputGridBox.style.width = `${nOut > 0 ? 416 : 128}px`;
+    this.outputGridBox.style.height = `${rowH}px`;
+    this.outputTile = this.makeTileAt(this.outputGridBox, 0, tileTop);
+    this.outputCountEl = this.makeUnderCount(this.outputGridBox, 0, tileTop + 134);
+    if (nOut > 0) {
+      this.outputConnector = this.buildTrackJoints(nOut, false, rowH);
+      this.outputGridBox.appendChild(this.outputConnector.el);
+    }
+    main.appendChild(this.outputGridBox);
+
+    this.mainNaturalW = (nIn > 0 ? 416 : 128) + 22 + 112 + (nOut > 0 ? 416 : 128);
+    mainWrap.appendChild(main);
+    panel.appendChild(mainWrap);
 
     // 底部: 当前自动生产中的配方
     const section = document.createElement('div');
@@ -542,6 +602,124 @@ export class DeviceDialog {
     section.appendChild(this.recipeBar);
     panel.appendChild(section);
     return panel;
+  }
+
+  /** 在指定容器内放一个 128×128 物品格（绝对定位）并登记引用。 */
+  private makeTileAt(parent: HTMLElement, left: number, top: number): TileRefs {
+    const root = document.createElement('div');
+    root.className = 'efd-tile';
+    root.style.position = 'absolute';
+    root.style.left = `${left}px`;
+    root.style.top = `${top}px`;
+    const bg = document.createElement('div');
+    bg.className = 'efd-tile-bg';
+    const imgWrap = document.createElement('div');
+    imgWrap.className = 'efd-tile-img';
+    const icon = document.createElement('div');
+    icon.className = 'efd-icon-sprite';
+    imgWrap.appendChild(icon);
+    root.appendChild(bg);
+    root.appendChild(imgWrap);
+    parent.appendChild(root);
+    return { root, bg, icon, count: document.createElement('div') };
+  }
+
+  /** 格下计数文本（旧 SynthesisGrid: countY = 格顶+128+6，20px w500，满仓变红）。 */
+  private makeUnderCount(parent: HTMLElement, left: number, top: number): HTMLDivElement {
+    const el = document.createElement('div');
+    el.className = 'efd-under-count';
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+    parent.appendChild(el);
+    return el;
+  }
+
+  /**
+   * 轨道连接器（旧 TrackJointsConnector/Painter 1:1，288×端口数×62）。
+   * 输入侧灰色（interface #8D8C8C / link #6E6E6E / 白圆点），输出侧金色
+   * （#B38626 / #8D6E32 / #EBAD26 圆点）；已连接端口叠加发光折线 + 传送带残段
+   * （橙色渐变 + 流动箭头，活动覆盖层由 refresh 按连接态重建）。
+   */
+  private buildTrackJoints(n: number, isInput: boolean, height: number): { el: HTMLDivElement; active: HTMLDivElement } {
+    const el = document.createElement('div');
+    el.className = `efd-trackjoints ${isInput ? 'in' : 'out'}`;
+    el.style.height = `${height}px`;
+    const rect = (cls: string, left: number, top: number, w: number, h: number): void => {
+      const d = document.createElement('div');
+      d.className = cls;
+      d.style.left = `${left}px`;
+      d.style.top = `${top}px`;
+      d.style.width = `${w}px`;
+      d.style.height = `${h}px`;
+      el.appendChild(d);
+    };
+    const circle = (cls: string, cx: number, cy: number): void => {
+      const d = document.createElement('div');
+      d.className = cls;
+      d.style.left = `${cx - 6}px`;
+      d.style.top = `${cy - 6}px`;
+      el.appendChild(d);
+    };
+
+    const devCY = (n * 62) / 2;
+    const X = (x: number): number => (isInput ? x : 288 - x); // 输出侧镜像
+
+    // 垂直骨干 + 汇流横线 + 格端圆点
+    rect('tj-link tj-backbone', X(212.5) - (isInput ? 5 : 0), 0, 5, height);
+    rect('tj-link tj-window', Math.min(X(211.5), X(288)), devCY - 3.3, 76.5, 6.6);
+    circle(isInput ? 'tj-dot' : 'tj-dot gold', X(288), devCY);
+    for (let i = 0; i < n; i++) {
+      const cy = i * 62 + 31;
+      rect('tj-link', Math.min(X(174), X(209)), cy - 3.3, 35, 6.6);
+      rect('tj-interface', Math.min(X(168), X(175)), cy - 27, 7, 54);
+      circle(isInput ? 'tj-dot' : 'tj-dot gold', X(175), cy);
+    }
+
+    const active = document.createElement('div');
+    active.className = 'tj-active';
+    el.appendChild(active);
+    return { el, active };
+  }
+
+  /** 活动覆盖层（已连接端口）: 发光折线 + 带渐变残段 + 流动箭头（旧 Painter 第 2 节）。 */
+  private refreshTrackActive(
+    active: HTMLDivElement, conns: boolean[], isInput: boolean,
+  ): void {
+    active.innerHTML = '';
+    const n = conns.length;
+    const devCY = (n * 62) / 2;
+    const seg = (left: number, top: number, w: number, h: number): void => {
+      const d = document.createElement('div');
+      d.className = 'tj-active-line';
+      d.style.left = `${left}px`;
+      d.style.top = `${top}px`;
+      d.style.width = `${w}px`;
+      d.style.height = `${h}px`;
+      active.appendChild(d);
+    };
+    conns.forEach((connected, i) => {
+      if (!connected) return;
+      const cy = i * 62 + 31;
+      if (isInput) {
+        seg(175, cy - 1.5, 35, 3);
+        if (Math.abs(devCY - cy) > 1) seg(208.5, Math.min(cy, devCY), 3, Math.abs(devCY - cy));
+        seg(211.5, devCY - 1.5, 76.5, 3);
+      } else {
+        seg(78, cy - 1.5, 35, 3);
+        if (Math.abs(devCY - cy) > 1) seg(76.5, Math.min(cy, devCY), 3, Math.abs(devCY - cy));
+        seg(0, devCY - 1.5, 76.5, 3);
+      }
+      // 传送带残段: 渐变轨 + 上下描边 + 两枚流动箭头（箭头容器 mask 渐隐）
+      const stub = document.createElement('div');
+      stub.className = `tj-belt ${isInput ? 'in' : 'out'}`;
+      stub.style.left = isInput ? '0px' : '120px';
+      stub.style.top = `${cy - 27}px`;
+      const arrows = document.createElement('div');
+      arrows.className = 'tj-belt-arrows';
+      for (let a = 0; a < 2; a++) arrows.appendChild(document.createElement('div'));
+      stub.appendChild(arrows);
+      active.appendChild(stub);
+    });
   }
 
   /** 生成一个 128×128 物品格并登记引用（bg/icon/count 供刷新）。 */
@@ -817,18 +995,47 @@ export class DeviceDialog {
     }
   }
 
-  /** 生产设备面板刷新: 指示器/倒计时/进度条/缓冲格/配方行。 */
+  /** 生产设备面板刷新: 指示器/倒计时/进度条/缓冲格/轨道连接态/配方行。 */
   private refreshSynthesis(def: BuildingDefinition, comp: BuildingComp): void {
     const cap = def.bufferCapacity;
     const recipe = comp.currentRecipeId !== null
       ? (this.deps.recipeIndex.get(comp.definitionId) ?? []).find((r) => r.id === comp.currentRecipeId)
       : undefined;
     const inputCount = comp.bufferInput.reduce((n, s) => n + s.count, 0);
+    const outputCount = comp.bufferOutput.reduce((n, s) => n + s.count, 0);
     const level = recipe?.level ?? null;
 
-    // 缓冲格（吸收 T2.9b 读数: 数量直接标在格上）
-    this.updateTiles(this.inputTiles, comp.bufferInput, cap, level);
-    this.updateTiles(this.outputTiles, comp.bufferOutput, cap, level);
+    // 缓冲格 + 格下计数（吸收 T2.9b 读数; 满仓变红，旧 SynthesisGrid 同款）
+    const firstItem = (slots: BuildingComp['bufferInput']): string | null =>
+      slots.find((s) => s.itemId !== null)?.itemId ?? null;
+    this.updateTile(this.inputTile, firstItem(comp.bufferInput), inputCount, cap, level);
+    this.updateTile(this.outputTile, firstItem(comp.bufferOutput), outputCount, cap, level);
+    this.setUnderCount(this.inputCountEl, inputCount, cap);
+    this.setUnderCount(this.outputCountEl, outputCount, cap);
+
+    // 轨道连接态（端口是否接带 → 活动覆盖层; 连接态变化才重建）
+    if ((this.inputConnector !== null || this.outputConnector !== null) && this.handle !== null) {
+      const st = portStatuses(this.deps.world, this.handle, comp, def);
+      const key = st.input.map((p) => (p.connected ? 1 : 0)).join('')
+        + '|' + st.output.map((p) => (p.connected ? 1 : 0)).join('');
+      if (key !== this.connKey) {
+        this.connKey = key;
+        if (this.inputConnector !== null) {
+          this.refreshTrackActive(this.inputConnector.active, st.input.map((p) => p.connected), true);
+        }
+        if (this.outputConnector !== null) {
+          this.refreshTrackActive(this.outputConnector.active, st.output.map((p) => p.connected), false);
+        }
+      }
+    }
+
+    // FittedBox scaleDown 等价: 行自然宽超出右区时整行等比缩小
+    if (this.mainRow !== null) {
+      const avail = this.mainRow.parentElement?.clientWidth ?? 0;
+      if (avail > 0) {
+        this.mainRow.style.zoom = String(Math.min(1, avail / this.mainNaturalW));
+      }
+    }
 
     // 状态判定（旧项目口径）:
     //   isReady = 有配方且加工位空（输入空 + progress≤0）→ 文案"就绪"
@@ -844,10 +1051,8 @@ export class DeviceDialog {
       this.indicatorPaused.style.display = comp.paused ? 'flex' : 'none';
       this.indicatorBlocked.style.display = !comp.paused && comp.state === 'blocked' ? 'flex' : 'none';
     }
-    // 倒计时/就绪/暂停/阻塞文案
+    // 倒计时文案（仅 秒数/就绪; 暂停与阻塞的文案在进度槽，旧项目同款分工）
     if (this.countdownText !== null && this.countdownPaused !== null && this.countdownBlocked !== null) {
-      this.countdownPaused.style.display = comp.paused ? 'flex' : 'none';
-      this.countdownBlocked.style.display = !comp.paused && comp.state === 'blocked' ? 'flex' : 'none';
       if (comp.paused || comp.state === 'blocked') {
         this.countdownText.textContent = '';
       } else if (isCrafting && recipe !== undefined) {
@@ -859,9 +1064,11 @@ export class DeviceDialog {
         this.countdownText.textContent = '';
       }
     }
-    // 进度条（暂停/阻塞隐藏，由文案行接管）
-    if (this.progressWrap !== null) {
-      this.progressWrap.style.visibility = isCrafting ? 'visible' : 'hidden';
+    // 进度槽三态（旧项目: 进度条常显——未加工也画 0 轨道 + 端点圆）
+    if (this.progressWrap !== null && this.countdownPaused !== null && this.countdownBlocked !== null) {
+      this.progressWrap.style.display = comp.paused || comp.state === 'blocked' ? 'none' : 'block';
+      this.countdownPaused.style.display = comp.paused ? 'flex' : 'none';
+      this.countdownBlocked.style.display = !comp.paused && comp.state === 'blocked' ? 'flex' : 'none';
       if (this.progressFill !== null) {
         const p = isCrafting ? Math.min(comp.progress, 1) : 0;
         this.progressFill.style.width = `${140 * p}px`;
@@ -912,22 +1119,26 @@ export class DeviceDialog {
     }
   }
 
-  private updateTiles(tiles: TileRefs[], slots: BuildingComp['bufferInput'], cap: number, level: number | null): void {
-    tiles.forEach((tile, i) => {
-      const slot = slots[i];
-      const itemId = slot?.itemId ?? null;
-      const count = slot?.count ?? 0;
-      this.tileBgStyle(tile.bg, itemId !== null ? level : null);
-      if (itemId !== null) {
-        this.itemIconStyle(tile.icon, itemId, 128, 128);
-        tile.icon.style.display = 'block';
-        tile.count.textContent = `${count}/${cap}`;
-      } else {
-        tile.icon.style.backgroundImage = 'none';
-        tile.icon.style.display = 'none';
-        tile.count.textContent = '';
-      }
-    });
+  /** 单个缓冲格刷新（物品图 + 等级渐变底；计数显示在格下方，见 setUnderCount）。 */
+  private updateTile(
+    tile: TileRefs | null, itemId: string | null, _count: number, _cap: number, level: number | null,
+  ): void {
+    if (tile === null) return;
+    this.tileBgStyle(tile.bg, itemId !== null ? level : null);
+    if (itemId !== null) {
+      this.itemIconStyle(tile.icon, itemId, 128, 128);
+      tile.icon.style.display = 'block';
+    } else {
+      tile.icon.style.backgroundImage = 'none';
+      tile.icon.style.display = 'none';
+    }
+  }
+
+  /** 格下计数（旧 SynthesisGrid: 20px w500 #DDDDDD，满仓 #FF4444）。 */
+  private setUnderCount(el: HTMLDivElement | null, count: number, cap: number): void {
+    if (el === null) return;
+    el.textContent = String(count);
+    el.classList.toggle('full', count >= cap);
   }
 
   /** 生产中指示器: 3 枚方向箭头（16×36，交错呼吸动画）。 */
