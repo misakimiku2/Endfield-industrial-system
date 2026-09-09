@@ -135,7 +135,6 @@ export class DeviceDialog {
   private connKey = ''; // 端口连接态去重（变化才重建活动覆盖层）
   private inputConns: boolean[] = []; // 最近一次端口连接态（物品飞行选分支用）
   private outputConns: boolean[] = [];
-  private lastFlightAt = { input: 0, output: 0 }; // 实测到货/出货间隔（自适应飞行时长）
   private mainRow: HTMLDivElement | null = null; // FittedBox 缩放目标
   private mainNaturalW = 0;
   private recipeBar: HTMLDivElement | null = null;
@@ -249,7 +248,6 @@ export class DeviceDialog {
     this.connKey = '';
     this.inputConns = [];
     this.outputConns = [];
-    this.lastFlightAt = { input: 0, output: 0 };
     this.mainRow = null;
     this.mainNaturalW = 0;
     this.recipeBar = null;
@@ -756,37 +754,37 @@ export class DeviceDialog {
     const conn = isInput ? this.inputConnector : this.outputConnector;
     if (conn === null) return;
 
-    const now = performance.now();
-    const key = isInput ? 'input' : 'output';
-    const last = this.lastFlightAt[key];
-    const duration = last > 0 ? Math.min(5000, Math.max(300, now - last)) : 1500;
-    this.lastFlightAt[key] = now;
-
     const comp = this.deps.world.getComponent<BuildingComp>(this.handle, 'BuildingComp');
     if (!comp) return;
     const slots = isInput ? comp.bufferInput : comp.bufferOutput;
     const itemId = slots.find((s) => s.itemId !== null)?.itemId ?? null;
     if (itemId === null) return;
-    this.spawnFlightItem(conn.el, isInput, branch, itemId, duration);
+    // 飞行时长固定 1500ms（旧项目默认值）——多带交替供料时事件间隔忽长忽短，
+    // 自适应会让速度时快时慢（用户实测"有的快有的慢得离谱"）；频率已由逐事件
+    // 触发保证与真实物流一致，速度恒定即可。
+    this.spawnFlightItem(conn.el, isInput, branch, itemId);
   }
 
   /**
-   * 放飞一枚物品图标: 与轨道箭头同款——沿残段（168px 带内）从一端扫到另一端，
-   * 不飞出轨道；透明度跟随轨道渐变方向（输入 0→0.9 渐显、输出 0.9→0 渐隐），
-   * 播完自删。
+   * 放飞一枚物品图标: 与轨道箭头同款——在残段同尺寸的裁剪容器（168×54,
+   * overflow hidden）里从左缘外滑入、滑出右缘被裁掉（**不飞出轨道、无突然消失**），
+   * 全程恒定透明度 0.9（旧项目物品动画的 Opacity(0.9) + ClipRect 同款），播完自删。
    */
   private spawnFlightItem(
-    container: HTMLElement, isInput: boolean, branch: number,
-    itemId: string, duration: number,
+    container: HTMLElement, isInput: boolean, branch: number, itemId: string,
   ): void {
     const cy = branch * 62 + 31;
+    const clip = document.createElement('div');
+    clip.className = 'efd-flight-clip';
+    clip.style.left = isInput ? '0px' : '120px'; // 残段横向位置: 输入在骨干左/输出在骨干右
+    clip.style.top = `${cy - 27}px`;
     const item = document.createElement('div');
     item.className = 'efd-flight-item';
     this.itemIconStyle(item, itemId, 40, 40);
-    item.style.top = `${cy - 20}px`; // 图标中心对准分支中线（40px 图标 → top = cy−20）
-    item.style.animation = `${isInput ? 'efd-item-in' : 'efd-item-out'} ${duration}ms linear forwards`;
-    item.addEventListener('animationend', () => item.remove());
-    container.appendChild(item);
+    item.style.animation = 'efd-item-sweep 1500ms linear forwards';
+    item.addEventListener('animationend', () => clip.remove());
+    clip.appendChild(item);
+    container.appendChild(clip);
   }
 
   /** 生成一个 128×128 物品格并登记引用（bg/icon/count 供刷新）。 */

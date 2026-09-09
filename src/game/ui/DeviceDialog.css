@@ -696,26 +696,29 @@
   100% { left: 168px; opacity: 0; }
 }
 
-/* ── 物品飞行: 缓冲每变化一件（事件驱动），一枚 40px 物品图标沿残段从一端扫到
-   另一端（与箭头同轨道、同渐变遮挡: 输入 0→0.9 渐显 / 输出 0.9→0 渐隐），
-   时长 = 实测传输间隔（300~5000ms 钳制）。left 由 keyframes 驱动（图标左缘
-   0→128px = 中心扫过 20→148，40px 图标全程在 168px 残段内不越界）。*/
-.efd-flight-item {
+/* ── 物品飞行: 缓冲每变化一件（事件驱动），一枚 40px 物品图标在残段同尺寸的
+   裁剪容器里从左缘外滑入、滑出右缘被裁掉——与轨道箭头同一蒙版行为，恒定
+   透明度 0.9，固定 1500ms（速度恒定，频率由逐事件触发与真实物流一致）。*/
+.efd-flight-clip {
   position: absolute;
-  left: 0;
-  opacity: 0;
+  width: 168px;
+  height: 54px;
+  overflow: hidden;
   pointer-events: none;
   z-index: 3;
 }
 
-@keyframes efd-item-in {
-  0%   { left: 0; opacity: 0; }
-  100% { left: 128px; opacity: 0.9; }
+.efd-flight-item {
+  position: absolute;
+  top: 7px; /* (54−40)/2: 图标在 54px 残段带上垂直居中 */
+  left: -40px;
+  opacity: 0.9;
+  pointer-events: none;
 }
 
-@keyframes efd-item-out {
-  0%   { left: 0; opacity: 0.9; }
-  100% { left: 128px; opacity: 0; }
+@keyframes efd-item-sweep {
+  from { left: -40px; }
+  to   { left: 168px; }
 }
 
 /* ── 仓库口面板（depot_grid_tile 复刻）── */
