@@ -696,6 +696,27 @@
   100% { left: 168px; opacity: 0; }
 }
 
+/* ── 物品飞行（旧 ItemTrackAnim 等价）: 缓冲计数每变化一件，一枚 40px 物品图标
+   沿贝塞尔轨道（offset-path 由 JS 按分支/骨干几何生成）飞入/飞出格；
+   时长 = 实测传输间隔（300~5000ms 钳制），两端淡入淡出。*/
+.efd-flight-item {
+  position: absolute;
+  left: 0;
+  top: 0;
+  offset-rotate: 0deg;
+  offset-distance: 0%;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+
+@keyframes efd-item-fly {
+  0%   { offset-distance: 0%; opacity: 0; }
+  10%  { opacity: 0.95; }
+  85%  { opacity: 0.95; }
+  100% { offset-distance: 100%; opacity: 0; }
+}
+
 /* ── 仓库口面板（depot_grid_tile 复刻）── */
 .efd-depot {
   flex: 1;
