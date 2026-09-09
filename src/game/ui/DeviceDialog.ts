@@ -681,35 +681,43 @@ export class DeviceDialog {
     return { el, active };
   }
 
-  /** 活动覆盖层（已连接端口）: 发光折线 + 带渐变残段 + 流动箭头（旧 Painter 第 2 节）。 */
+  /**
+   * 活动覆盖层（已连接端口）: 发光折线（单条 SVG path，stroke-linejoin round——与旧
+   * drawPath 等价，div 拼段会在缩放下出现抗锯齿接缝）+ 带渐变残段 + 流动箭头。
+   */
   private refreshTrackActive(
     active: HTMLDivElement, conns: boolean[], isInput: boolean,
   ): void {
     active.innerHTML = '';
     const n = conns.length;
     const devCY = (n * 62) / 2;
-    const seg = (left: number, top: number, w: number, h: number): void => {
-      const d = document.createElement('div');
-      d.className = 'tj-active-line';
-      d.style.left = `${left}px`;
-      d.style.top = `${top}px`;
-      d.style.width = `${w}px`;
-      d.style.height = `${h}px`;
-      active.appendChild(d);
-    };
+    const H = n * 62;
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'tj-active-svg');
+    svg.setAttribute('width', '288');
+    svg.setAttribute('height', String(H));
+    svg.setAttribute('viewBox', `0 0 288 ${H}`);
+    const color = isInput ? '#ffffff' : '#ebad26';
     conns.forEach((connected, i) => {
       if (!connected) return;
       const cy = i * 62 + 31;
-      if (isInput) {
-        seg(175, cy - 1.5, 35, 3);
-        if (Math.abs(devCY - cy) > 1) seg(208.5, Math.min(cy, devCY), 3, Math.abs(devCY - cy));
-        seg(211.5, devCY - 1.5, 76.5, 3);
-      } else {
-        seg(78, cy - 1.5, 35, 3);
-        if (Math.abs(devCY - cy) > 1) seg(76.5, Math.min(cy, devCY), 3, Math.abs(devCY - cy));
-        seg(0, devCY - 1.5, 76.5, 3);
-      }
-      // 传送带残段: 渐变轨 + 上下描边 + 两枚流动箭头（箭头容器 mask 渐隐）
+      const d = isInput
+        ? `M 175 ${cy} L 210 ${cy} L 210 ${devCY} L 288 ${devCY}`
+        : `M 113 ${cy} L 78 ${cy} L 78 ${devCY} L 0 ${devCY}`;
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', d);
+      path.setAttribute('stroke', color);
+      path.setAttribute('stroke-width', '3');
+      path.setAttribute('stroke-linejoin', 'round');
+      path.setAttribute('stroke-linecap', 'round');
+      path.setAttribute('fill', 'none');
+      svg.appendChild(path);
+    });
+    active.appendChild(svg);
+    conns.forEach((connected, i) => {
+      if (!connected) return;
+      const cy = i * 62 + 31;
+      // 传送带残段: 渐变轨 + 上下描边 + 两枚流动箭头（箭头自带 opacity 关键帧渐变）
       const stub = document.createElement('div');
       stub.className = `tj-belt ${isInput ? 'in' : 'out'}`;
       stub.style.left = isInput ? '0px' : '120px';
@@ -1141,12 +1149,14 @@ export class DeviceDialog {
     el.classList.toggle('full', count >= cap);
   }
 
-  /** 生产中指示器: 3 枚方向箭头（16×36，交错呼吸动画）。 */
+  /** 生产中指示器: 3 枚方向箭头（16×36，交错呼吸动画；idle 整组压暗到 0.2）。 */
   private buildArrows(): HTMLDivElement {
     const arrows = document.createElement('div');
     arrows.className = 'efd-arrows idle';
     for (let i = 0; i < 3; i++) {
-      arrows.appendChild(this.makeSprite('ui/directional', 16, 36));
+      const a = this.makeSprite('ui/directional', 16, 36);
+      a.classList.add('efd-arrow'); // 呼吸动画/交错延迟/闲置压暗都挂这个类
+      arrows.appendChild(a);
     }
     return arrows;
   }

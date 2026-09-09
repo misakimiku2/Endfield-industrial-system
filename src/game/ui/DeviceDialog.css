@@ -617,21 +617,17 @@
   background: #ebad26;
 }
 
-/* 已连接端口的活动覆盖层: 白/金折线 + 渐变带残段 + 流动箭头 */
+/* 已连接端口的活动覆盖层: 白/金折线（单条 SVG path 防接缝）+ 渐变带残段 + 流动箭头 */
 .tj-active {
   position: absolute;
   inset: 0;
   pointer-events: none;
 }
 
-.tj-active-line {
+.tj-active-svg {
   position: absolute;
-  border-radius: 1.5px;
-  background: #ffffff;
-}
-
-.efd-trackjoints.out .tj-active-line {
-  background: #ebad26;
+  left: 0;
+  top: 0;
 }
 
 .tj-belt {
@@ -668,16 +664,8 @@
   overflow: hidden;
 }
 
-.tj-belt.in .tj-belt-arrows {
-  -webkit-mask-image: linear-gradient(to right, transparent, #000);
-  mask-image: linear-gradient(to right, transparent, #000);
-}
-
-.tj-belt.out .tj-belt-arrows {
-  -webkit-mask-image: linear-gradient(to right, #000, transparent);
-  mask-image: linear-gradient(to right, #000, transparent);
-}
-
+/* 箭头右移扫过 2s/枚（错开 1s），opacity 随位置渐变——旧项目逐箭头 alpha 曲线的等价:
+   输入从左缘透明渐显到接口块侧 0.9；输出从接口块侧 0.9 渐隐到格端。*/
 .tj-belt-arrows > div {
   position: absolute;
   top: 50%;
@@ -695,8 +683,17 @@
 }
 
 @keyframes efd-tj-flow {
-  from { left: -10px; }
-  to   { left: 168px; }
+  0%   { left: -10px; opacity: 0; }
+  100% { left: 168px; opacity: 0.9; }
+}
+
+.tj-belt.out .tj-belt-arrows > div {
+  animation-name: efd-tj-flow-out;
+}
+
+@keyframes efd-tj-flow-out {
+  0%   { left: -10px; opacity: 0.9; }
+  100% { left: 168px; opacity: 0; }
 }
 
 /* ── 仓库口面板（depot_grid_tile 复刻）── */
