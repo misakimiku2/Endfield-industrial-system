@@ -860,6 +860,9 @@ async function main() {
   const eventTag = (e: { type: string }): string =>
     e.type === 'input' ? 'T2.6 物流' : e.type === 'output' ? 'T2.7 物流' : 'T2.5 生产';
   machineSystem.onEvent = (e) => {
+    // T2.15: 转发给设备弹窗（input/output 事件驱动轨道物品飞行动画——逐事件
+    // 触发与真实物流频率一致，弹窗内部自行过滤 handle/面板类型）
+    deviceDialog.notifyEvent(e);
     // T2.12 仓库口吞吐事件不转发控制台——无限源/汇随物品节奏持续产生（1件/2秒/口），
     // 转发必然刷屏；recentEvents 环形缓冲仍可经 __game.productionLog() 覆盘验证。
     if (e.type === 'depot-output' || e.type === 'depot-input') return;

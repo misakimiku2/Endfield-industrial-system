@@ -135,8 +135,6 @@ export class DeviceDialog {
   private connKey = ''; // 端口连接态去重（变化才重建活动覆盖层）
   private inputConns: boolean[] = []; // 最近一次端口连接态（物品飞行选分支用）
   private outputConns: boolean[] = [];
-  private prevInputCount = -1; // 物品飞行触发: 上一轮缓冲计数（<0 = 首轮只记录）
-  private prevOutputCount = -1;
   private lastFlightAt = { input: 0, output: 0 }; // 实测到货/出货间隔（自适应飞行时长）
   private mainRow: HTMLDivElement | null = null; // FittedBox 缩放目标
   private mainNaturalW = 0;
@@ -251,8 +249,6 @@ export class DeviceDialog {
     this.connKey = '';
     this.inputConns = [];
     this.outputConns = [];
-    this.prevInputCount = -1;
-    this.prevOutputCount = -1;
     this.lastFlightAt = { input: 0, output: 0 };
     this.mainRow = null;
     this.mainNaturalW = 0;
@@ -741,52 +737,54 @@ export class DeviceDialog {
   }
 
   /**
-   * 物品飞行触发（旧 SynthesisGrid ItemTrackAnim 的等价物）: 缓冲计数变化且对应侧
-   * 有已连接端口时，按变化件数沿轨道放飞物品图标——输入侧从带子残段经贝塞尔拐角
-   * 飞进格（从左往右），输出侧从格飞出到带子残段（从右往左的镜像路径）。
-   * 飞行时长自适应到**实测传输间隔**（钳制 300~5000ms，首件 1500ms），
-   * 使画面上的物品密度与真实传送带节奏一致（旧 _createItemAnimations 同款）。
+   * 物品飞行触发（事件驱动，main.ts 转发 machineSystem 事件）:
+   * `input` 事件 = 传送带送进一件（门口预约瞬间，飞入格）；`output` 事件 = 传送带
+   * 取走一件（飞出格）。**逐事件触发，频率严格等于真实物流节奏**——计数差采样会在
+   * 到货/消费同帧相抵时漏件（实测: 输出通畅时动画只出一次，堵塞后消费停止才恢复）。
+   * 飞行时长自适应实测事件间隔（钳 300~5000ms、首件 1500ms，旧 _createItemAnimations
+   * 同款）。分支用事件携带的端口下标（与连接器分支同序），未连接时退回首个已连接。
    */
-  private spawnItemFlights(isInput: boolean, count: number, itemId: string | null): void {
-    const prev = isInput ? this.prevInputCount : this.prevOutputCount;
-    if (isInput) this.prevInputCount = count; else this.prevOutputCount = count;
-    if (prev < 0 || itemId === null || itemId === '') return;
-    const delta = isInput ? count - prev : prev - count; // 输入看增加、输出看减少
-    if (delta <= 0) return;
+  notifyEvent(e: { type: string; handle: EntityHandle; portIndex?: number }): void {
+    if (!this.open || e.handle !== this.handle) return;
+    if (this.depotPreview !== null) return; // 仓库口面板无轨道连接器
+    if (e.type !== 'input' && e.type !== 'output') return;
+    const isInput = e.type === 'input';
     const conns = isInput ? this.inputConns : this.outputConns;
-    const branch = conns.indexOf(true); // 旧项目: 取第一个已连接端口
-    if (branch < 0) return;
+    let branch = e.portIndex ?? -1;
+    if (conns[branch] !== true) branch = conns.indexOf(true); // 防御: 序错位 → 首个已连接
+    if (branch < 0) return; // 该侧未接带 → 无轨道可飞
     const conn = isInput ? this.inputConnector : this.outputConnector;
     if (conn === null) return;
 
     const now = performance.now();
-    const last = this.lastFlightAt[isInput ? 'input' : 'output'];
+    const key = isInput ? 'input' : 'output';
+    const last = this.lastFlightAt[key];
     const duration = last > 0 ? Math.min(5000, Math.max(300, now - last)) : 1500;
-    this.lastFlightAt[isInput ? 'input' : 'output'] = now;
+    this.lastFlightAt[key] = now;
 
-    for (let i = 0; i < Math.min(delta, 16); i++) {
-      this.spawnFlightItem(conn.el, isInput, branch, conns.length, itemId, duration);
-    }
+    const comp = this.deps.world.getComponent<BuildingComp>(this.handle, 'BuildingComp');
+    if (!comp) return;
+    const slots = isInput ? comp.bufferInput : comp.bufferOutput;
+    const itemId = slots.find((s) => s.itemId !== null)?.itemId ?? null;
+    if (itemId === null) return;
+    this.spawnFlightItem(conn.el, isInput, branch, itemId, duration);
   }
 
-  /** 放飞一枚物品图标: offset-path 沿贝塞尔轨道（残段→分支→骨干→格端），播完自删。 */
+  /**
+   * 放飞一枚物品图标: 与轨道箭头同款——沿残段（168px 带内）从一端扫到另一端，
+   * 不飞出轨道；透明度跟随轨道渐变方向（输入 0→0.9 渐显、输出 0.9→0 渐隐），
+   * 播完自删。
+   */
   private spawnFlightItem(
-    container: HTMLElement, isInput: boolean, branch: number, n: number,
+    container: HTMLElement, isInput: boolean, branch: number,
     itemId: string, duration: number,
   ): void {
     const cy = branch * 62 + 31;
-    const devCY = (n * 62) / 2;
-    const sIn = Math.sign(devCY - cy); // 输入: 从分支 y 走向骨干中点 y 的方向
-    const sOut = -sIn;
-    // 两处 90° 拐角用二次贝塞尔（Q）圆滑过渡；单分支时 s=0 退化为直线
-    const d = isInput
-      ? `M -40 ${cy} L 196 ${cy} Q 210 ${cy} 210 ${cy + sIn * 14} L 210 ${devCY - sIn * 14} Q 210 ${devCY} 224 ${devCY} L 288 ${devCY}`
-      : `M 0 ${devCY} L 64 ${devCY} Q 78 ${devCY} 78 ${devCY + sOut * 14} L 78 ${cy - sOut * 14} Q 78 ${cy} 92 ${cy} L 328 ${cy}`;
     const item = document.createElement('div');
     item.className = 'efd-flight-item';
     this.itemIconStyle(item, itemId, 40, 40);
-    item.style.offsetPath = `path("${d}")`;
-    item.style.animation = `efd-item-fly ${duration}ms cubic-bezier(0.65, 0, 0.35, 1) forwards`;
+    item.style.top = `${cy - 20}px`; // 图标中心对准分支中线（40px 图标 → top = cy−20）
+    item.style.animation = `${isInput ? 'efd-item-in' : 'efd-item-out'} ${duration}ms linear forwards`;
     item.addEventListener('animationend', () => item.remove());
     container.appendChild(item);
   }
@@ -1098,10 +1096,9 @@ export class DeviceDialog {
           this.refreshTrackActive(this.outputConnector.active, this.outputConns, false);
         }
       }
-      // 物品飞行: 输入计数+1 = 传送带送进一件（飞入格）；输出计数−1 = 传送带
-      // 取走一件（飞出格）——每件真实传输触发一次，动画频率与传送带节奏一致。
-      this.spawnItemFlights(true, inputCount, firstItem(comp.bufferInput));
-      this.spawnItemFlights(false, outputCount, firstItem(comp.bufferOutput));
+      // 物品飞行触发改为事件驱动（notifyEvent，main.ts 转发 machineSystem 事件）——
+      // 计数差采样会在「到货+消费同帧相抵」时漏触发（实测: 输出通畅时动画只出一次，
+      // 堵塞后消费停止才恢复），事件流不会丢件。
     }
 
     // FittedBox scaleDown 等价: 行自然宽超出右区时整行等比缩小
