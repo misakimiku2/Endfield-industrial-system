@@ -714,6 +714,8 @@
   position: absolute;
   top: 7px; /* (54−40)/2: 图标在 54px 残段带上垂直居中 */
   left: -40px;
+  width: 40px; /* 必须显式声明: Canvas 缓存路径不设内联宽高，缺省会让 div 塌缩 0×0 不可见 */
+  height: 40px;
   opacity: 0.9;
   pointer-events: none;
 }
