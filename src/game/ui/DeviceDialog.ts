@@ -766,9 +766,10 @@ export class DeviceDialog {
   }
 
   /**
-   * 放飞一枚物品图标: 与轨道箭头同款——在残段同尺寸的裁剪容器（168×54,
-   * overflow hidden）里从左缘外滑入、滑出右缘被裁掉（**不飞出轨道、无突然消失**），
-   * 全程恒定透明度 0.9（旧项目物品动画的 Opacity(0.9) + ClipRect 同款），播完自删。
+   * 放飞一枚物品图标: 在残段同尺寸的裁剪容器（168×54, overflow hidden）里从左缘
+   * 滑入、滑出右缘被裁掉（与箭头同一蒙版行为，恒定透明度 0.9），播完自删。
+   * 缓动: 输入「快→慢」（easeOutCubic，冲离传送带后减速进格）、输出「慢→快」
+   * （easeInCubic，缓慢离开格后加速上带）——用户指定的方向性。
    */
   private spawnFlightItem(
     container: HTMLElement, isInput: boolean, branch: number, itemId: string,
@@ -780,11 +781,65 @@ export class DeviceDialog {
     clip.style.top = `${cy - 27}px`;
     const item = document.createElement('div');
     item.className = 'efd-flight-item';
-    this.itemIconStyle(item, itemId, 40, 40);
-    item.style.animation = 'efd-item-sweep 1500ms linear forwards';
+    this.applyFlightIcon(item, itemId);
+    item.style.animation = `efd-item-sweep 1500ms ${isInput ? 'cubic-bezier(0.33, 1, 0.68, 1)' : 'cubic-bezier(0.32, 0, 0.67, 0)'} forwards`;
     item.addEventListener('animationend', () => clip.remove());
     clip.appendChild(item);
     container.appendChild(clip);
+  }
+
+  /**
+   * 飞行物品图标: 图集大图（4096²）直接 GPU 缩采样到 40px 会有运动锯齿——
+   * 改用 Canvas 以 imageSmoothingQuality=high 预重采样成目标尺寸的位图
+   * （一次性代价 + 缓存，等价旧项目 cacheWidth 预缩放思路）。图集图片未就绪时
+   * 先用 CSS sprite 兜底，就绪后补上。
+   */
+  private applyFlightIcon(el: HTMLElement, itemId: string): void {
+    const size = 40;
+    const cached = this.flightIconCache.get(`${itemId}@${size}`);
+    if (cached !== undefined) {
+      el.style.backgroundImage = `url("${cached}")`;
+      el.style.backgroundSize = '100% 100%';
+      return;
+    }
+    this.itemIconStyle(el, itemId, size, size); // 兜底: CSS sprite 直缩
+    void this.ensureItemsImage().then((img) => {
+      const f = this.frame('items', itemId);
+      if (f === null || img === null || !el.isConnected) return;
+      const key = `${itemId}@${size}`;
+      let url = this.flightIconCache.get(key);
+      if (url === undefined) {
+        const canvas = document.createElement('canvas');
+        canvas.width = size * 2; // 2x 超采样，CSS 缩回一半进一步抗锯齿
+        canvas.height = size * 2;
+        const ctx = canvas.getContext('2d');
+        if (ctx === null) return;
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(img, f.x, f.y, f.w, f.h, 0, 0, canvas.width, canvas.height);
+        url = canvas.toDataURL('image/png');
+        this.flightIconCache.set(key, url);
+      }
+      if (el.isConnected) {
+        el.style.backgroundImage = `url("${url}")`;
+        el.style.backgroundSize = '100% 100%';
+      }
+    });
+  }
+
+  private itemsImagePromise: Promise<HTMLImageElement | null> | null = null;
+  private flightIconCache = new Map<string, string>();
+
+  private ensureItemsImage(): Promise<HTMLImageElement | null> {
+    if (this.itemsImagePromise === null) {
+      this.itemsImagePromise = new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => resolve(null);
+        img.src = ATLAS_PNG_URL.items;
+      });
+    }
+    return this.itemsImagePromise;
   }
 
   /** 生成一个 128×128 物品格并登记引用（bg/icon/count 供刷新）。 */
