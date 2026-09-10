@@ -3,12 +3,13 @@
 //       A3 building-spec.md §1 (selectable)、A2 world-model.md §2.4 (Position=左上角)、
 //       A6 §4 (worldToScreen)
 //
-// 交互结构（T1.8 前瞻约束，为 Phase 2 T2.14 长按移动预留）:
+// 交互结构（T1.8 前瞻约束，T2.14 已落地长按）:
 //   - 用 pointerdown/pointerup 结构，不用 click 事件
-//   - pointerdown: 记录按下时间戳 + 命中的目标（不立即 commit，不吞后续事件）
-//   - pointerup: 判定"短按(<300ms) → 选中/取消"；长按(≥300ms) Phase 1 无移动语义，
-//     不产生任何选中变更。Phase 2 只需在 pointerdown 后挂 300ms 定时器:
-//     定时器触发前 pointerup = 选中（走本类原逻辑），定时器触发 = 升级为移动态。
+//   - pointerdown: 记录按下时间戳 + 命中的目标（不立即 commit，不吞后续事件）；
+//     命中设备时另挂 300ms 定时器
+//   - pointerup: 判定"短按(<300ms) → 选中/取消"；定时器触发（按住满 300ms）=
+//     升级为移动态——清掉 pendingPress 后，本次按压的 pointerup 不再提交选中
+//     （MoveSystem 的重放由"下一次"左键 pointerdown 触发，与放置模式同构）。
 //
 // 命中测试:
 //   - 设备: 遍历 Position+SpriteComp+BuildingComp，**有效占地**世界 AABB 点包含测试
@@ -37,7 +38,7 @@ import { CELL_SIZE } from '../render/constants';
 import { queryChain } from './belt/BeltChainOps';
 import type { BeltSelection } from './belt/BeltSelection';
 
-/** 短按阈值 (ms)。pointerup 时按下时长 < 此值 → 选中；≥ 此值 = 长按（Phase 2 移动态用）。 */
+/** 短按阈值 (ms)。pointerup 时按下时长 < 此值 → 选中；按住满此时长 → 长按（T2.14 移动态）。 */
 export const SELECTION_SHORT_PRESS_MS = 300;
 /** 传送带双击阈值 (ms)：两次单击同一格且间隔 < 此值 → 升级为整链选中。 */
 const DOUBLE_CLICK_MS = 350;
@@ -179,6 +180,10 @@ export function buildingScreenPolygon(
  *   - onPointerDown(screenX, screenY, button, now): 记录时间戳 + 命中目标
  *   - onPointerUp(now): 短按提交选中/取消（传送带支持双击升级整链）
  *   - update(): 每帧重绘设备选中框（跟随相机）+ 重算传送带选中态写入 BeltSelection
+ *
+ * 长按（T2.14）: onLongPress 注入后，pointerdown 命中设备时挂 300ms 定时器——
+ *   触发前 pointerup = 选中（原逻辑，定时器一并清除）；触发 = 升级移动态
+ *   （清 pendingPress，本次按压的 pointerup 不再提交选中）。
  */
 export class SelectionSystem {
   private world: World;
@@ -189,6 +194,10 @@ export class SelectionSystem {
   private selected: SelectionTarget | null = null;
   /** pointerdown 记录的按压上下文（含修饰键，T1.8 前瞻约束）。 */
   private pendingPress: { target: SelectionTarget | null; time: number; mods: PointerMods } | null = null;
+  /** 长按定时器 id（pendingPress 生命周期内存在；T2.14 移动态升级用）。 */
+  private longPressTimer: number | null = null;
+  /** 长按回调（main.ts 注入: MoveSystem.enterMove；未注入时长按无效果，Phase 1 行为）。 */
+  private readonly onLongPress: ((handle: EntityHandle) => void) | null;
   /** 上一次单击传送带段的记录（双击检测用）。 */
   private lastBeltClick: { handle: EntityHandle; time: number } | null = null;
   /** Shift 范围连选的起点（= 上次普通单击的传送带段）；Ctrl/Shift 操作不更新它（与文件选择一致）。 */
@@ -198,10 +207,17 @@ export class SelectionSystem {
   /** 传送带选中态共享对象（渲染器读）；可选，未注入时带身选中视觉不渲染。 */
   private beltSelection: BeltSelection | null = null;
 
-  constructor(world: World, camera: Camera, layers: SceneLayers, beltSelection?: BeltSelection) {
+  constructor(
+    world: World,
+    camera: Camera,
+    layers: SceneLayers,
+    beltSelection?: BeltSelection,
+    onLongPress?: (handle: EntityHandle) => void,
+  ) {
     this.world = world;
     this.camera = camera;
     this.beltSelection = beltSelection ?? null;
+    this.onLongPress = onLongPress ?? null;
     this.graphics = new Graphics({ label: 'selectionBox' });
     // 负 zIndex → 永远在 overlayLayer 常规 UI（工具栏 zIndex 0）之下，
     // 避免选中框盖到工具栏按钮；仍高于 worldContainer（overlayLayer 整体在上）。
@@ -214,6 +230,7 @@ export class SelectionSystem {
    * 鼠标按下（main 的 pointerdown 转发）。
    * 只消费左键；中键拖拽/右键由相机/放置系统处理。
    * 这里只记录，不 commit、不 preventDefault/stopPropagation（前瞻约束）。
+   * 命中设备时挂长按定时器（T2.14）。
    */
   onPointerDown(screenX: number, screenY: number, button: number, now: number, mods: PointerMods = { shift: false, ctrl: false }): void {
     if (button !== 0) return;
@@ -223,6 +240,30 @@ export class SelectionSystem {
       time: now,
       mods,
     };
+    this.armLongPress();
+  }
+
+  /** 命中设备时挂 300ms 定时器: 触发 = 清 pendingPress + 升级移动态。 */
+  private armLongPress(): void {
+    this.clearLongPressTimer();
+    if (this.onLongPress === null) return; // Phase 1 行为: 无移动语义
+    const press = this.pendingPress;
+    const target = press?.target ?? null;
+    if (target === null || target.kind !== 'device') return;
+    this.longPressTimer = window.setTimeout(() => {
+      this.longPressTimer = null;
+      // 定时器触发时 pendingPress 必须仍是当初那次按压（未被 pointerup 消费）
+      if (this.pendingPress !== press) return;
+      this.pendingPress = null; // 本次按压的 pointerup 不再提交选中
+      this.onLongPress?.(target.handle);
+    }, SELECTION_SHORT_PRESS_MS);
+  }
+
+  private clearLongPressTimer(): void {
+    if (this.longPressTimer !== null) {
+      window.clearTimeout(this.longPressTimer);
+      this.longPressTimer = null;
+    }
   }
 
   /**
@@ -231,10 +272,11 @@ export class SelectionSystem {
    *   - 命中设备 → 选中设备；
    *   - 命中传送带段 → 单击选中该单格；若与上次单击同段且 <DOUBLE_CLICK_MS → 升级整链；
    *   - 命中空白 → 取消选中。
-   * 长按(≥300ms) → Phase 1 无移动语义，不改变选中。
+   * 长按(≥300ms) → 定时器已升级为移动态并清掉 pendingPress，此处天然 no-op。
    */
   onPointerUp(now: number): void {
     if (!this.pendingPress) return;
+    this.clearLongPressTimer(); // 短按提交/超时长按: 定时器都必须停
     const { target, time, mods } = this.pendingPress;
     this.pendingPress = null; // 一次性消费
     if (now - time >= SELECTION_SHORT_PRESS_MS) return; // 长按不选中
@@ -405,6 +447,7 @@ export class SelectionSystem {
 
   /** 销毁选中框（teardown 用）。 */
   destroy(): void {
+    this.clearLongPressTimer();
     this.graphics.removeFromParent();
     this.graphics.destroy();
   }

@@ -43,6 +43,7 @@ import equipBasicCsvText from '../doc/csv/终末地设备 - 基础生产.csv?raw
 import equipDepotCsvText from '../doc/csv/终末地设备 - 仓储存取.csv?raw';
 import { SelectionSystem } from './game/systems/SelectionSystem';
 import { DeleteSystem } from './game/systems/DeleteSystem';
+import { MoveSystem } from './game/systems/MoveSystem';
 import { deleteChain, deleteSegment, queryChain } from './game/systems/belt/BeltChainOps';
 import { BeltSelection } from './game/systems/belt/BeltSelection';
 import { PerfMonitor, type BenchmarkReport, type MemoryStressRound } from './game/perf/PerfMonitor';
@@ -118,7 +119,7 @@ async function main() {
   app.stage.addChild(hud);
 
   const help = new Text({
-    text: '中键拖拽: 平移  |  WASD/方向键: 平移(屏幕相对)  |  鼠标靠边: 边缘滚动  |  滚轮: 以鼠标为中心缩放  |  Ctrl+R: 视图旋转  |  E: 传送带创建模式  |  左键点设备=选中(点空白取消)  |  选中+Delete=删除  |  T1.7: 工具栏选设备→左键放置→R旋转→右键/ESC取消',
+    text: '中键拖拽: 平移  |  WASD/方向键: 平移(屏幕相对)  |  鼠标靠边: 边缘滚动  |  滚轮: 以鼠标为中心缩放  |  Ctrl+R: 视图旋转  |  E: 传送带创建模式  |  左键点设备=选中(点空白取消)  |  选中+Delete=删除  |  长按设备=拾取移动(R旋转/左键重放/右键ESC取消)  |  T1.7: 工具栏选设备→左键放置→R旋转→右键/ESC取消',
     style: { fontFamily: 'system-ui, sans-serif', fontSize: 13, fill: 0x444444 },
   });
   help.x = 10;
@@ -135,7 +136,15 @@ async function main() {
   // ── T1.8 基础交互: 点击选中 + 屏幕空间选中框 ──
   // 传送带选中态共享对象：SelectionSystem 每帧写，带身渲染器（白边/隐指针/屏幕常量斜杠）读。
   const beltSelection = new BeltSelection();
-  const selection = new SelectionSystem(game.world, camera, scene.layers, beltSelection);
+  // ── T2.14 设备移动: 长按拾取 + R 旋转 + 左键重放 / 右键·ESC 取消 ──
+  const moveSystem = new MoveSystem(game.world, occupancy, camera, scene.layers, getTexture, game.renderSystem);
+  // 长按回调（SelectionSystem 300ms 定时器触发）: 短按仍走选中，长按升级移动态。
+  const selection = new SelectionSystem(game.world, camera, scene.layers, beltSelection, (handle) => {
+    // 模式互斥双保险: 放置/传送带模式的点击不经选中系统，正常不可达
+    if (placement.isPlacing() || belt.isActive()) return;
+    if (!moveSystem.enterMove(handle)) return;
+    selection.clearSelection(); // 选中框退出；弹窗经 syncSelection 联动关闭
+  });
   game.renderSystem.setBeltSelection(beltSelection);
 
   // ── T1.9 设备删除: 选中 + Delete 键 → 销毁实体 + 释放占用 ──
@@ -154,6 +163,8 @@ async function main() {
       belt.exitMode();
       selection.clearSelection();
     }
+    // T2.14: 移动态先归位（设备放回原位），避免移动预览与放置预览双预览并存
+    if (moveSystem.isMoving()) moveSystem.cancel();
     // enterMode 有 toggle 语义（同设备再点取消），用 placement 当前态决定高亮
     const wasPlacingThis = placement.isPlacing() && placement.getCurrentDefinitionId() === id;
     placement.enterMode(def);
@@ -180,6 +191,7 @@ async function main() {
       p.y <= app.canvas.clientHeight + tol;
     placement.setMouse(p.x, p.y, inside);
     belt.setMouse(p.x, p.y, inside);
+    moveSystem.setMouse(p.x, p.y, inside); // T2.14: 移动预览跟随
     game.renderSystem.setBeltHoverMouse(p.x, p.y, inside);
   };
   // 鼠标按下: 放置态 → 左键(0)=确认放置, 右键(2)=取消；
@@ -209,6 +221,13 @@ async function main() {
       if (!placement.isPlacing()) inventoryUI.setActive(null);
       return; // 放置点击不进入选中逻辑
     }
+    if (moveSystem.isMoving()) {
+      // T2.14 移动态: 左键=重放（canPlace 失败→红+震动保持在移动态），右键=取消放回原位
+      if (e.button === 0) moveSystem.tryCommit();
+      else if (e.button === 2) moveSystem.cancel();
+      game.update();
+      return; // 移动态点击不进入选中逻辑
+    }
     if (e.button === 0) {
       // 非放置态左键 → 选中（pointerdown 记录时间戳+命中+修饰键，pointerup 提交）。
       // Shift=范围连选、Ctrl=点选切换（SelectionSystem.onPointerUp 按 mods 分支）。
@@ -234,6 +253,8 @@ async function main() {
     if (e.code !== 'KeyE' || e.ctrlKey || e.metaKey) return;
     if (placement.isPlacing()) return;
     e.preventDefault();
+    // T2.14: 移动态先归位（设备放回原位），再进传送带模式
+    if (moveSystem.isMoving()) moveSystem.cancel();
     belt.toggleMode();
     // hover 的 enabled 改由主循环每帧按 belt.isActive() 同步（见 ticker），此处不再手动设，
     // 避免 ESC/右键退出创建模式时漏调 setBeltHoverEnabled(true) 导致 hover 永久禁用。
@@ -268,6 +289,20 @@ async function main() {
   };
   window.addEventListener('keydown', onKeyPlacing);
 
+  // 键盘: 移动态 R(旋转预览/设备朝向) + ESC(取消放回原位)，仅在移动态响应（T2.14）。
+  // 与放置模式的 R/ESC 监听同构（两模式互斥，不会同时激活）。
+  const onKeyMoving = (e: KeyboardEvent): void => {
+    if (!moveSystem.isMoving()) return;
+    if (e.code === 'KeyR' && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      moveSystem.rotate();
+    } else if (e.code === 'Escape') {
+      moveSystem.cancel();
+      game.update(); // 立即刷一帧: 真身回原位显示
+    }
+  };
+  window.addEventListener('keydown', onKeyMoving);
+
   // 键盘: Delete 键 = 删除选中目标（T1.9 设备 / T2.0 传送带）。只在**非放置态**响应——
   // 放置模式下 Delete 无动作，与"右键=取消放置"两套语义不重叠。
   //   - 传送带整链选中 → 整链删除；单格选中 → 单段删除（下游重拆为断头链）
@@ -276,6 +311,7 @@ async function main() {
   const onKeyDelete = (e: KeyboardEvent): void => {
     if (e.code !== 'Delete') return;
     if (placement.isPlacing()) return; // 放置态不响应删除
+    if (moveSystem.isMoving()) return; // T2.14: 移动态不响应删除（先放置或取消）
     // 传送带：删除所有选中段（多选批量；逐个 deleteSegment，下游自动重拆为断头链）
     const beltHandles = beltSelection.getHandles();
     if (beltHandles.length > 0) {
@@ -316,6 +352,7 @@ async function main() {
     camera.updateTransform();
     gridRenderer.update();
     placement.update(ticker.deltaMS); // T1.7: 放置预览跟随鼠标
+    moveSystem.update(ticker.deltaMS); // T2.14: 移动预览跟随鼠标 + 重放失败震动
     belt.update(ticker.deltaMS); // T2.0: 传送带创建模式高亮/预览刷新
     // 每帧同步 hover 启用态：创建模式（E 进 / ESC / 右键 任一方式）下禁用 hover，
     // 普通模式下启用。集中在此同步，避免分散在各退出入口导致漏调（曾使 hover 永久禁用）。
@@ -348,6 +385,9 @@ async function main() {
           : '') +
         (placement.isPlacing()
           ? `  |  放置: ${placement.getCurrentDefinitionId()} (R=旋转, 左键=放, 右键/ESC=取消)`
+          : '') +
+        (moveSystem.isMoving()
+          ? `  |  移动: 已拾取设备 (R=旋转, 左键=放置, 右键/ESC=取消放回原位)`
           : '') +
         (belt.isActive()
           ? `  |  传送带模式: 点击蓝色高亮起点 → 移动鼠标预览 → 左键落盘 (右键/ESC/E=退出)`
@@ -872,7 +912,8 @@ async function main() {
   // ── T2.15 设备详情弹窗（DOM overlay，样式对齐旧 Flutter 项目）──
   // 选中即弹窗: 点设备打开/切换、点空白/ESC/关闭按钮/遮罩关闭（双向绑定选中）。
   // 电源开关 = T2.8 暂停的正式玩家入口（写 comp.paused，渲染侧 LOGO 自动联动）；
-  // 删除按钮 = 复用 T1.9 DeleteSystem（与 Delete 键同路径）。
+  // 删除按钮 = 复用 T1.9 DeleteSystem（与 Delete 键同路径）；
+  // 移动按钮 = 复用 T2.14 MoveSystem（与长按同路径: 关弹窗 → 对该设备进入移动态）。
   const deviceDialog = new DeviceDialog({
     world: game.world,
     itemName,
@@ -884,6 +925,12 @@ async function main() {
         selection.clearSelection(); // 触发 syncSelection(null) → 弹窗关闭
         game.update();
       }
+    },
+    onMove: (h) => {
+      // T2.14: 关弹窗 + 对该设备进入移动态（拾取后 R 旋转/左键重放/右键·ESC 取消）
+      deviceDialog.close();
+      selection.clearSelection();
+      if (moveSystem.enterMove(h)) game.update();
     },
     onClose: () => selection.clearSelection(),
   });
@@ -1783,6 +1830,7 @@ async function main() {
     occupancy,
     inventoryUI,
     selection,
+    move: moveSystem, // T2.14: 设备移动（isMoving()/enterMove/rotate/tryCommit/cancel/getPreviewInfo）
     deleteSystem,
     belt,
     deviceDialog, // T2.15: 设备弹窗（isOpen()/getHandle()；开弹窗走 selectFirstBuilding 即可）
@@ -1836,6 +1884,7 @@ async function main() {
   console.log('  放置: 底部工具栏选设备 → 左键放网格 → R 旋转(相对视图) → 右键/ESC 取消');
   console.log('  传送带: E 进入创建模式 → 点蓝色高亮端口/末端选起点 → 移动鼠标显蓝色预览(L形+BFS绕障) → 左键逐段落盘并延伸 → 右键/ESC/E 退出(不落盘)');
   console.log('  交互: 左键点设备=选中并弹出详情弹窗（电源开关=暂停/恢复、缓冲数量、删除; 点空白/ESC/关闭按钮关闭）; 左键点传送带段=选中该格(白边+斜杠+隐pointer), 双击同段=选中整条链; 点空白=取消; Delete=删当前所选(单格→单段/整链→整链)');
+  console.log('  T2.14 移动: 长按已放置设备(≥300ms)=拾取（半透明预览跟随鼠标）→ R 旋转 90°(四档) → 左键=重放(占位冲突则红+震动保持移动态) → 右键/ESC=取消放回原位; 弹窗「移动」按钮同效; 搬迁保留缓冲区/生产进度');
   console.log('  验收: __game.placeAt("refining_unit",5,5) 放设备 → selectFirstBuilding() 选中 → deleteSelectedBuilding() 删除 → getOccupiedCells() 查占用');
   console.log('  T1.10: __game.spawnBenchmarkDevices(100) 一键100设备 / fillBenchmarkDevices() 铺满地图 → runFpsBenchmark() 采样FPS/内存 → memoryStressCheck() 内存压测');
   console.log('  T2.0: __game.spawnBelt([[5,5],[8,5],[8,8]],0) 程序化生成带转角传送带链 → 验证4方向转角+pointer流动');

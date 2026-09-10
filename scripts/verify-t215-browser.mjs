@@ -188,7 +188,8 @@ ok(await dialogVisible(), 'F1. 选中存货口 → 弹窗（只读面板）');
 const loaderName = await page.evaluate(() =>
   document.querySelector('.efd-infobar-name')?.textContent ?? '');
 ok(loaderName === '仓库存货口', `F2. 信息栏为存货口且无耗电段（${loaderName}）`);
-await page.click('.efd-action-btn');
+// T2.14 起动作行 = 移动 + 删除 两个按钮；删除是第二个（按文本定位，不依赖顺序）
+await page.locator('.efd-action-btn', { hasText: '删除' }).click();
 await page.waitForTimeout(400);
 const goneAndClosed = await game(() =>
   window.__game.world.query('BuildingComp').length === 0 && !window.__game.deviceDialog.isOpen());

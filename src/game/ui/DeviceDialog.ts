@@ -1,5 +1,5 @@
 // 设备详情弹窗 (T2.15) — 点击已放置设备弹出，承载电源开关（暂停正式入口）+
-// 设备信息 + 生产状态摘要（吸收 T2.9b 临时读数）+ 删除按钮 + 仓库口产出物品选择。
+// 设备信息 + 生产状态摘要（吸收 T2.9b 临时读数）+ 移动/删除按钮 + 仓库口产出物品选择。
 // 依据: doc/implementation-phase-2.md T2.15；样式复刻基准 = 旧 Flutter 项目
 //       C:\Users\Misaki\Desktop\git\Endfield\lib\widgets\{building_detail_dialog,
 //       building_synthesis_panel, building_depot_panel, building_shared_widgets,
@@ -85,6 +85,8 @@ export interface DeviceDialogDeps {
   items: ItemRegistry;
   /** 删除按钮回调（main.ts: DeleteSystem.deleteBuilding + 清选中 + game.update）。 */
   onDelete(handle: EntityHandle): void;
+  /** 移动按钮回调（T2.14；main.ts: 关弹窗清选中 + MoveSystem.enterMove）。 */
+  onMove(handle: EntityHandle): void;
   /** 用户途径关闭（关闭按钮/遮罩）回调（main.ts: selection.clearSelection）。 */
   onClose(): void;
 }
@@ -864,10 +866,19 @@ export class DeviceDialog {
     return { root, bg, icon, count };
   }
 
-  /** 动作按钮行（旧 ActionButton: 44×44 图标 + 文字 14px w500 白）。 */
+  /** 动作按钮行（旧 ActionButton: 44×44 图标 + 文字 14px w500 白）。T2.14 起为 移动 + 删除。 */
   private buildActionRow(): HTMLDivElement {
     const row = document.createElement('div');
     row.className = 'efd-action-row';
+    // 移动（T2.14）: 关弹窗 + 对该设备进入移动态（main.ts 回调；拾取后 R 旋转/左键重放/右键·ESC 取消）
+    const move = document.createElement('button');
+    move.className = 'efd-action-btn';
+    move.appendChild(this.makeSprite('ui/move', 44, 44));
+    move.appendChild(Object.assign(document.createElement('span'), { textContent: '移动' }));
+    move.addEventListener('click', () => {
+      if (this.handle !== null) this.deps.onMove(this.handle);
+    });
+    row.appendChild(move);
     const del = document.createElement('button');
     del.className = 'efd-action-btn';
     del.appendChild(this.makeSprite('ui/recycle', 44, 44));

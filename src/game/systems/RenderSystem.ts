@@ -159,6 +159,8 @@ export class RenderSystem {
 
   /** handle → 渲染态。每帧 diff 维护。 */
   private entries = new Map<EntityHandle, SpriteEntry>();
+  /** T2.14 移动态: 强制隐藏的实体（真身被拾取，视觉由 MoveSystem 预览接管）。 */
+  private hiddenSprites = new Set<EntityHandle>();
   /** 传送带 pointer 流动渲染器（T2.0 阶段1）。挂在 layer3Item，盖在带身之上。 */
   private readonly pointerRenderer: BeltPointerRenderer;
   /** 传送带物品渲染器（T2.1）。挂在 layer3Item，与 pointer 同层（二者互斥：有物品隐 pointer）。 */
@@ -237,6 +239,21 @@ export class RenderSystem {
     this.beltHoverRenderer.setMouse(screenX, screenY, inside);
   }
 
+  /**
+   * 强制隐藏/恢复某实体的 Sprite（T2.14 移动态: 真身被拾取，视觉由移动预览接管）。
+   * setSpriteHidden(handle, true) 后每帧 update 都维持 visible=false（视口剔除等
+   * 常规可见性逻辑对该实体短路），直到 hidden=false 恢复。
+   */
+  setSpriteHidden(handle: EntityHandle, hidden: boolean): void {
+    if (hidden) {
+      this.hiddenSprites.add(handle);
+    } else {
+      this.hiddenSprites.delete(handle);
+    }
+    const entry = this.entries.get(handle);
+    if (entry) entry.sprite.visible = !hidden; // 立即生效（不等下一帧 update）
+  }
+
   /** 启用/禁用悬停高亮（创建模式 E 下禁用，避免与起点高亮冲突）。 */
   setBeltHoverEnabled(enabled: boolean): void {
     this.beltHoverRenderer.setEnabled(enabled);
@@ -257,6 +274,7 @@ export class RenderSystem {
       if (!seen.has(handle)) {
         this.disposeEntry(entry);
         this.entries.delete(handle);
+        this.hiddenSprites.delete(handle); // 实体没了，隐藏标记一并清（防集合滞留）
       }
     }
 
@@ -361,6 +379,10 @@ export class RenderSystem {
         eff ? eff.h * CELL_SIZE : spr.height,
         view,
       );
+      // T2.14 移动态: 真身强制隐藏（每帧维持，优先于视口剔除结果）
+      if (this.hiddenSprites.size > 0 && this.hiddenSprites.has(handle)) {
+        sprite.visible = false;
+      }
     }
 
     // 传送带带身矢量渲染（T2.0 方案A）：在 Sprite 同步之后，刷新带身 Graphics 位置/朝向/选中变色。
