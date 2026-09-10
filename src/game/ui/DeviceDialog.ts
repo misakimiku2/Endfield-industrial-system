@@ -800,6 +800,7 @@ export class DeviceDialog {
     if (cached !== undefined) {
       el.style.backgroundImage = `url("${cached}")`;
       el.style.backgroundSize = '100% 100%';
+      el.style.backgroundPosition = '0 0'; // 清掉 CSS sprite 兜底路径的负偏移，否则图标被切出画布外
       return;
     }
     this.itemIconStyle(el, itemId, size, size); // 兜底: CSS sprite 直缩
@@ -823,6 +824,7 @@ export class DeviceDialog {
       if (el.isConnected) {
         el.style.backgroundImage = `url("${url}")`;
         el.style.backgroundSize = '100% 100%';
+        el.style.backgroundPosition = '0 0'; // 同上: 覆盖兜底路径的图集负偏移
       }
     });
   }
