@@ -271,7 +271,7 @@ export class MachineSystem implements SimulationSystem {
       let started = false;
       // 早退: 全空槽不可能匹配任何配方（跳过配方遍历——性能基准 100 台空炉零开销）
       if (comp.bufferInput.some((s) => s.count > 0)) {
-        const m = findMatchingRecipe(recipeList, comp.bufferInput, this.registry);
+        const m = findMatchingRecipe(recipeList, comp.bufferInput, this.registry, comp.pinnedRecipeId);
         if (m) {
           comp.currentRecipeId = m.recipe.id; // 启动计时（不扣原料，A8 §3.1）
           comp.progress = 0;

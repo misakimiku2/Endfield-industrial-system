@@ -17,7 +17,13 @@ export type ItemCategory =
   | 'aic_products'
   | 'usable_items';
 
-/** 物品定义 (A4 §1，运行时只读)。stackSize/texture 本阶段未用到，按约定 itemId 即 textureKey。 */
+/**
+ * 物品定义 (A4 §1，运行时只读)。stackSize/texture 本阶段未用到，按约定 itemId 即 textureKey。
+ *
+ * level/description/secondaryDescription (T2.22 补，旧 Flutter 项目 models/item.dart 同名字段):
+ * 设备弹窗左侧物品栏的格子等级配色（level）与「物品说明」二级弹窗文案（description/
+ * secondaryDescription）需要——二者都直接来自 CSV 列，不在代码里另造文案。
+ */
 export interface ItemDefinition {
   /** 唯一标识 (snake_case 英文ID): "originium_ore", "origocrust" */
   id: string;
@@ -26,6 +32,12 @@ export interface ItemDefinition {
   category: ItemCategory;
   /** 标签（配方类别匹配用），含类别 slug 与语义别名 */
   tags: string[];
+  /** 物品等级（CSV「等级」列，1~4）。格子底色/等级色条的取值依据，缺省 1。 */
+  level: number;
+  /** 主描述（物品说明弹窗白色正文）。无描述时为空串。 */
+  description: string;
+  /** 次要描述（物品说明弹窗灰色小字）。CSV 填 '-' 表示无，此处原样保留。 */
+  secondaryDescription: string;
 }
 
 /** CSV 类别列 → ItemCategory + 语义别名 tag。 */
@@ -65,12 +77,28 @@ export function splitCsvLine(line: string): string[] {
   return out.map((s) => s.trim());
 }
 
-function defFromRow(name: string, enId: string, categoryCell: string): ItemDefinition | null {
+/**
+ * 行 → 物品定义。level/desc/secondary 由调用方按各自 CSV 的列序取出后传入
+ * （两个 CSV 的描述列位置不同，见 parseItemCsv / productItemsFromRecipeCsv）。
+ */
+function defFromRow(
+  name: string, enId: string, categoryCell: string,
+  levelCell: string, desc: string, secondary: string,
+): ItemDefinition | null {
   const mapped = CATEGORY_MAP[categoryCell];
   if (!mapped) return null; // 未知类别 → 调用方跳过并告警
   const id = slugifyItemId(enId);
   const tags = mapped.alias ? [mapped.category, mapped.alias] : [mapped.category];
-  return { id, name, category: mapped.category, tags };
+  const level = parseInt(levelCell, 10);
+  return {
+    id,
+    name,
+    category: mapped.category,
+    tags,
+    level: Number.isFinite(level) && level > 0 ? level : 1,
+    description: desc ?? '',
+    secondaryDescription: secondary ?? '',
+  };
 }
 
 /**
@@ -81,25 +109,30 @@ export function parseItemCsv(csv: string): ItemDefinition[] {
   const defs: ItemDefinition[] = [];
   for (const line of csv.split(/\r?\n/).slice(1)) {
     if (!line.trim()) continue;
-    const [name, enId, category] = splitCsvLine(line);
+    const [name, enId, category, level, desc, secondary] = splitCsvLine(line);
     if (!name || !enId) continue;
-    const def = defFromRow(name, enId, category);
+    const def = defFromRow(name, enId, category, level, desc, secondary);
     if (def) defs.push(def);
   }
   return defs;
 }
 
 /**
- * 解析 recipe.csv 的产物行（列: 物品名称,英文ID,类别,...）为物品定义。
+ * 解析 recipe.csv 的产物行（列: 物品名称,英文ID,类别,等级,合成设备,原料需求,
+ * 消耗时常/秒,合成数量,描述,次要描述,副产物）为物品定义。
  * 每条配方的产物（含未定义设备的配方产物，如反应池的赫铜块）都是可被引用的物品。
  */
 export function productItemsFromRecipeCsv(csv: string): ItemDefinition[] {
   const defs: ItemDefinition[] = [];
   for (const line of csv.split(/\r?\n/).slice(1)) {
     if (!line.trim()) continue;
-    const [name, enId, category] = splitCsvLine(line);
+    const cols = splitCsvLine(line);
+    const [name, enId, category, level] = cols;
     if (!name || !enId) continue;
-    const def = defFromRow(name, enId, category);
+    // 描述在倒数第 3/2 列（副产物是最后一列），用长度反推以兼容尾部空列
+    const desc = cols[8] ?? '';
+    const secondary = cols[9] ?? '';
+    const def = defFromRow(name, enId, category, level, desc, secondary);
     if (def) defs.push(def);
   }
   return defs;
@@ -110,7 +143,11 @@ export function productItemsFromRecipeCsv(csv: string): ItemDefinition[] {
  * CSV 副产物列只写中文名，英文ID 在此补充。
  */
 export const EXTRA_ITEM_DEFS: ItemDefinition[] = [
-  { id: 'sewage', name: '污水', category: 'natural_liquid', tags: ['natural_liquid', 'liquid'] },
+  {
+    id: 'sewage', name: '污水', category: 'natural_liquid',
+    tags: ['natural_liquid', 'liquid'], level: 1,
+    description: '', secondaryDescription: '',
+  },
 ];
 
 /** 物品注册表: id/中文名 双向索引 (A4 §6.4)。重复 id/名称时先注册者优先。 */

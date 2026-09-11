@@ -32,33 +32,26 @@ import type { BuildingDefinition } from '../data/buildings';
 import { getBuildingDefinition } from '../data/buildings';
 import type { ItemRegistry } from '../data/items';
 import type { Recipe } from '../data/recipes';
-import { portStatuses } from '../systems/machine/PortStatusOps';
+import { portStatuses, incomingInputItems } from '../systems/machine/PortStatusOps';
+import { tryAcceptItem } from '../systems/machine/BufferOps';
+import { AtlasSprites, type AtlasGroup } from './AtlasSprites';
+import { ItemDescriptionDialog } from './ItemDescriptionDialog';
 
 /** 简化版取货口的兜底产出物品（与 DepotOps.DEPOT_SOURCE_ITEM 同值；避免循环依赖不直接 import）。 */
 const FALLBACK_DEPOT_ITEM = 'originium_ore';
 
-/** 图集 JSON/PNG 的 URL（与 AssetsLoader 同一约定: Vite 以根路径 serve public/）。 */
-const ATLAS_JSON_URL = {
-  devices: '/spritesheets/devices.json',
-  items: '/spritesheets/items.json',
-  ui: '/spritesheets/ui.json',
-} as const;
-const ATLAS_PNG_URL = {
-  devices: '/spritesheets/devices.png',
-  items: '/spritesheets/items.png',
-  ui: '/spritesheets/ui.png',
-} as const;
-type AtlasGroup = keyof typeof ATLAS_JSON_URL;
-
-interface AtlasFrame { x: number; y: number; w: number; h: number }
-interface AtlasData {
-  size: { w: number; h: number };
-  frames: Map<string, AtlasFrame>;
-}
-
 /** 物品格/选择格的等级配色（synthesis_grid._getGridSvg 抄录）。 */
 const LEVEL_GRADIENT_END: Record<number, string> = { 2: '#93e8a4', 3: '#6d9bf1', 4: '#b73cc5' };
 const LEVEL_TAG: Record<number, string> = { 2: '#44aa00', 3: '#0082ea', 4: '#b73cc5' };
+
+/** 物品格等级色条的 path（两种尺寸各自抄录，不按比例缩放——旧项目是两张独立 SVG）。 */
+const TILE_TAG_PATH: Record<number, string> = {
+  // 128×128 格（synthesis_grid._getGridSvg）
+  128: 'm 1,118 c 2,5.8 7.6,10 14,10 h 98 c 6.4,0 12,-4.2 14,-10 z',
+  // 94×94 物品栏格（building_resource_panel.gridTileSvg）
+  94: 'M 0.62286269,86.67038 C 2.1269947,90.943986 6.1932067,93.993161 11.000205,93.999896 '
+    + 'h 72.000299 c 4.807005,-0.0066 8.873217,-3.05591 10.377348,-7.329516 z',
+};
 
 /** 弹窗信息栏 LOGO 的图集帧映射（旧项目对 LOGO SVG 染白；图集内 _white/logo 帧即染白版）。 */
 const LOGO_SPRITES: Record<string, { group: AtlasGroup; key: string }> = {
@@ -67,7 +60,29 @@ const LOGO_SPRITES: Record<string, { group: AtlasGroup; key: string }> = {
   depot_loader: { group: 'devices', key: 'depot_loader_logo_white' },
 };
 
-/** 产出物品选择面板的 4 标签页（旧资源面板 tab 序 + items.ts 类目映射）。 */
+/**
+ * 加号图标 — 内联 src/assets/svg/add.svg（旧项目拖放提示用的同一枚图标:
+ * 4 段分离圆角条拼成的加号，非普通十字）。原 SVG 的 inkscape 元数据已剥离，
+ * fill 改 currentColor（颜色由 .efd-add-icon 的 color 控制，遮罩态取 #555555）。
+ */
+const ADD_SVG =
+  '<svg viewBox="0 0 31.160156 31.160156" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
+  + '<path fill="currentColor" transform="matrix(0.73,0,0,0.73,-1668.0199,-616.025)" d="m 2306.3014,843.86986 '
+  + 'c -1.8973,0 -3.4247,1.5274 -3.4247,3.42466 v 9.58904 c 0,1.89726 1.5274,3.42466 3.4247,3.42466 1.8972,0 '
+  + '3.4246,-1.5274 3.4246,-3.42466 v -9.58904 c 0,-1.89726 -1.5274,-3.42466 -3.4246,-3.42466 z m -17.9179,17.91792 '
+  + 'c -1.8973,0 -3.4247,1.5274 -3.4247,3.42466 0,1.89726 1.5274,3.42465 3.4247,3.42465 h 9.589 c 1.8973,0 '
+  + '3.4247,-1.52739 3.4247,-3.42465 0,-1.89726 -1.5274,-3.42466 -3.4247,-3.42466 z m 26.2467,0 c -1.8972,0 '
+  + '-3.4246,1.5274 -3.4246,3.42466 0,1.89726 1.5274,3.42465 3.4246,3.42465 h 9.5891 c 1.8972,0 3.4246,-1.52739 '
+  + '3.4246,-3.42465 0,-1.89726 -1.5274,-3.42466 -3.4246,-3.42466 z m -8.3288,8.32887 c -1.8973,0 -3.4247,1.5274 '
+  + '-3.4247,3.42466 v 9.58904 c 0,1.89726 1.5274,3.42466 3.4247,3.42466 1.8972,0 3.4246,-1.5274 '
+  + '3.4246,-3.42466 v -9.58904 c 0,-1.89726 -1.5274,-3.42466 -3.4246,-3.42466 z"/></svg>';
+
+/** 图钉图标（旧项目 Icons.push_pin；填 currentColor，颜色由 .efd-rcard-pin 的 color 切换）。 */
+const PIN_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">'
+  + '<path d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7'
+  + 'l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"/></svg>';
+
+/** 左侧物品栏的 4 标签页（旧 _tabLabels + items.ts 类目映射；取货口「添加物品」共用）。 */
 const PICKER_TABS: Array<{ label: string; category: string; iconKey: string }> = [
   { label: '植物', category: 'plant', iconKey: 'plant_icon' },
   { label: '矿物', category: 'mineral_ore', iconKey: 'mineral_ore_icon' },
@@ -91,6 +106,9 @@ export interface DeviceDialogDeps {
   onClose(): void;
 }
 
+/** 拖拽来源（旧 building_shared_widgets.InventoryDragSource）。 */
+type DragSource = 'itemPanel' | 'inputGrid' | 'outputGrid';
+
 /** 物品格动态引用（合成面板输入/输出格、仓库口物品格共用）。 */
 interface TileRefs {
   root: HTMLDivElement;
@@ -110,9 +128,10 @@ export class DeviceDialog {
   private open = false;
   private refreshTimer: number | null = null;
 
-  /** 图集 JSON 懒加载缓存（构造即预取，点开设备时通常已就绪）。 */
-  private atlasPromise: Promise<unknown> | null = null;
-  private atlases: Partial<Record<AtlasGroup, AtlasData>> = {};
+  /** 图集 sprite 访问（与物品说明弹窗共用同一实例）。 */
+  private readonly sprites = new AtlasSprites();
+  /** 物品说明二级弹窗（T2.22；点击物品栏格子/输入输出格/配方卡迷你格打开）。 */
+  private readonly itemDesc: ItemDescriptionDialog;
 
   // ── 动态节点引用（按面板类型选择性填充；均为构建一次、刷新只改样式）──
   private switchEl: HTMLDivElement | null = null;
@@ -148,11 +167,33 @@ export class DeviceDialog {
   private connectorEl: HTMLDivElement | null = null;
   private capsuleBtn: HTMLButtonElement | null = null;
   private depotPreview: HTMLDivElement | null = null;
-  private pickerRoot: HTMLDivElement | null = null;
-  private pickerPill: HTMLDivElement | null = null;
-  private pickerGrid: HTMLDivElement | null = null;
-  private pickerTab = 0;
+  // ── 左侧物品栏（旧 _buildResourcePanel: 440×520 + 4 标签页 + 4 列物品网格）──
+  private resPanel: HTMLDivElement | null = null;
+  private resPill: HTMLDivElement | null = null;
+  private resGrid: HTMLDivElement | null = null;
+  private resScrollTrack: HTMLDivElement | null = null;
+  private resScrollThumb: HTMLDivElement | null = null;
+  private resTab = 0;
+  private resScrollFadeTimer: number | null = null;
+  // ── 配方一览二级弹窗（旧 RecipeListDialog: 960×560 + 2 列配方卡 + 图钉）──
+  private recipeListEl: HTMLDivElement | null = null;
+  private recipeListGrid: HTMLDivElement | null = null;
+  private recipeListSub: HTMLDivElement | null = null;
+  private recipeListShownKey = '';
+  // ── 全部收取按钮（旧 CollectAllButton: 300×68.3，在配方条右侧）──
+  private collectBtn: HTMLButtonElement | null = null;
+  // ── 拖拽投放（旧 InventoryDragSource / DragTarget）──
+  private drag: { source: DragSource; itemId: string; startX: number; startY: number; active: boolean } | null = null;
+  private dragGhost: HTMLDivElement | null = null;
+  /** 拖拽结束后紧跟的 click 要吞掉（否则会顺带打开物品说明/选中产出）。 */
+  private dragSuppressClick = false;
+  // 存货口在途物品列表（旧 DepotLoaderPanel 的多物品卡片）
+  private depotIncoming: HTMLDivElement | null = null;
+  private depotIncomingKey = '';
+  // 取货口「添加物品」模式（旧 _isAddMode: 左侧物品栏格子显示 + 图标）
   private pickerAddMode = false;
+  /** 物品栏上次按哪种模式渲染（addMode 变化才重建格子，避免每 100ms 重建 DOM）。 */
+  private resAddModeShown = false;
 
   constructor(deps: DeviceDialogDeps) {
     this.deps = deps;
@@ -184,7 +225,21 @@ export class DeviceDialog {
     this.root.appendChild(this.panel);
     document.body.appendChild(this.root);
 
-    void this.ensureAtlas(); // 预取图集 JSON，首次打开即有图标
+    // 二级弹窗: 物品说明（共用同一 AtlasSprites 实例，不重复加载图集）
+    this.itemDesc = new ItemDescriptionDialog({
+      sprites: this.sprites,
+      itemName: deps.itemName,
+      items: deps.items,
+    });
+
+    void this.sprites.ensureAtlas(); // 预取图集 JSON，首次打开即有图标
+    // 图集迟到场景: 打开态下补刷一次。物品栏必须**重建**——首填时图集未就绪会让
+    // resourceItems() 的"图集有帧"过滤掉全部物品，只刷图标救不回来。
+    this.sprites.onReady(() => {
+      if (!this.open) return;
+      this.refreshResourcePanel();
+      this.refresh();
+    });
   }
 
   // ═════════════════════ 外部接口 ═════════════════════
@@ -260,117 +315,73 @@ export class DeviceDialog {
     this.connectorEl = null;
     this.capsuleBtn = null;
     this.depotPreview = null;
-    this.pickerRoot = null;
-    this.pickerPill = null;
-    this.pickerGrid = null;
-    this.pickerTab = 0;
+    this.depotIncoming = null;
+    this.depotIncomingKey = '';
     this.pickerAddMode = false;
+    this.resPanel = null;
+    this.resPill = null;
+    this.resGrid = null;
+    this.resScrollTrack = null;
+    this.resScrollThumb = null;
+    this.resTab = 0;
+    if (this.resScrollFadeTimer !== null) {
+      clearTimeout(this.resScrollFadeTimer);
+      this.resScrollFadeTimer = null;
+    }
+    this.closeRecipeList();
+    this.itemDesc.close();
+    this.collectBtn = null;
+    this.resAddModeShown = false;
   }
 
   // ═════════════════════ 图集访问 ═════════════════════
 
-  private ensureAtlas(): Promise<unknown> {
-    if (this.atlasPromise === null) {
-      const groups = Object.keys(ATLAS_JSON_URL) as AtlasGroup[];
-      this.atlasPromise = Promise.all(
-        groups.map(async (g) => {
-          try {
-            const res = await fetch(ATLAS_JSON_URL[g]);
-            const json = (await res.json()) as {
-              meta: { size: { w: number; h: number } };
-              frames: Record<string, { frame: { x: number; y: number; w: number; h: number } }>;
-            };
-            const frames = new Map<string, AtlasFrame>();
-            for (const [name, f] of Object.entries(json.frames)) {
-              frames.set(name.replace(/\.png$/, ''), f.frame);
-            }
-            return [g, { size: json.meta.size, frames }] as const;
-          } catch {
-            console.warn(`[DeviceDialog] 图集 ${g} JSON 加载失败，弹窗图标降级为空`);
-            return [g, undefined] as const;
-          }
-        }),
-      ).then((entries) => {
-        this.atlases = Object.fromEntries(entries) as Partial<Record<AtlasGroup, AtlasData>>;
-        // 图集迟到场景: 打开态下补刷一次，把已建好的节点补上图标
-        if (this.open) this.refresh();
-        return this.atlases;
-      });
-    }
-    return this.atlasPromise;
+  private frame(group: AtlasGroup, key: string): ReturnType<AtlasSprites['frame']> {
+    return this.sprites.frame(group, key);
   }
 
-  private frame(group: AtlasGroup, key: string): AtlasFrame | null {
-    return this.atlases[group]?.frames.get(key) ?? null;
-  }
-
-  /**
-   * 图集帧 → CSS sprite 样式（contain 缩放到 dw×dh 目标盒）。
-   * 元素实际盒 = 帧缩放后尺寸（父容器 flex 居中），图集未就绪返回 false。
-   * mode='mask' 用于需要染色的白色图标: mask 定位帧 + CSS background-color 上色
-   * （等价旧项目 SvgPicture colorFilter srcIn）。
-   */
+  /** 见 AtlasSprites.spriteStyle。 */
   private spriteStyle(
     el: HTMLElement, group: AtlasGroup, key: string, dw: number, dh: number,
     mode: 'image' | 'mask' = 'image',
   ): boolean {
-    const f = this.frame(group, key);
-    if (f === null) {
-      el.style.backgroundImage = 'none';
-      return false;
-    }
-    const scale = Math.min(dw / f.w, dh / f.h);
-    const { w: aw, h: ah } = this.atlases[group]!.size;
-    const size = `${aw * scale}px ${ah * scale}px`;
-    const pos = `${-f.x * scale}px ${-f.y * scale}px`;
-    if (mode === 'mask') {
-      el.style.setProperty('-webkit-mask-image', `url("${ATLAS_PNG_URL[group]}")`);
-      el.style.setProperty('-webkit-mask-size', size);
-      el.style.setProperty('-webkit-mask-position', pos);
-      el.style.maskImage = `url("${ATLAS_PNG_URL[group]}")`;
-      el.style.maskSize = size;
-      el.style.maskPosition = pos;
-      el.style.backgroundImage = 'none';
-    } else {
-      el.style.backgroundImage = `url("${ATLAS_PNG_URL[group]}")`;
-      el.style.backgroundSize = size;
-      el.style.backgroundPosition = pos;
-    }
-    el.style.width = `${f.w * scale}px`;
-    el.style.height = `${f.h * scale}px`;
-    return true;
+    return this.sprites.spriteStyle(el, group, key, dw, dh, mode);
   }
 
   /** 物品图标（items 图集帧，key = itemId）。 */
   private itemIconStyle(el: HTMLElement, itemId: string, dw: number, dh: number): boolean {
-    return this.spriteStyle(el, 'items', itemId, dw, dh);
+    return this.sprites.itemIconStyle(el, itemId, dw, dh);
   }
 
-  /** 物品格渐变底 SVG data URI（synthesis_grid._getGridSvg 1:1 复刻）。 */
-  private tileBgStyle(el: HTMLDivElement, level: number | null): void {
+  /**
+   * 物品格渐变底 SVG data URI（synthesis_grid._getGridSvg 1:1 复刻）。
+   * opts.size=94 走 building_resource_panel.gridTileSvg（物品栏格子: 圆角 11 +
+   * 独立的等级色条 path）；opts.hover 把底色换成 #252525（旧项目悬停态）。
+   */
+  private tileBgStyle(
+    el: HTMLDivElement, level: number | null,
+    opts?: { size?: number; hover?: boolean },
+  ): void {
+    const size = opts?.size ?? 128;
+    const radius = size === 128 ? 15 : 11;
+    const stop = opts?.hover === true ? '#252525' : '#696969';
     const endColor = (level !== null && LEVEL_GRADIENT_END[level]) || '#dddddd';
     const tagColor = (level !== null && LEVEL_TAG[level]) || '#ebebeb';
     const hasItem = level !== null;
     const svg =
-      `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">` +
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">` +
       `<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">` +
-      `<stop offset="0" stop-color="#696969"/><stop offset="0.7" stop-color="#696969"/>` +
+      `<stop offset="0" stop-color="${stop}"/><stop offset="0.7" stop-color="${stop}"/>` +
       `<stop offset="1" stop-color="${endColor}"/></linearGradient></defs>` +
-      `<rect x="0" y="0" width="128" height="128" rx="15" ry="15" fill="${hasItem ? 'url(#g)' : '#696969'}"/>` +
-      `${hasItem ? `<path d="m 1,118 c 2,5.8 7.6,10 14,10 h 98 c 6.4,0 12,-4.2 14,-10 z" fill="${tagColor}"/>` : ''}` +
+      `<rect x="0" y="0" width="${size}" height="${size}" rx="${radius}" ry="${radius}" fill="${hasItem ? 'url(#g)' : stop}"/>` +
+      `${hasItem ? `<path d="${TILE_TAG_PATH[size]}" fill="${tagColor}"/>` : ''}` +
       `</svg>`;
     el.style.backgroundImage = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
   }
 
   /** 创建带 sprite 标记的图标元素（data-w/h = 目标盒，applySprites 据此算缩放）。 */
   private makeSprite(spec: string, w: number, h: number, mode: 'image' | 'mask' = 'image'): HTMLDivElement {
-    const el = document.createElement('div');
-    el.className = 'efd-icon-sprite';
-    el.dataset.sprite = spec;
-    el.dataset.w = String(w);
-    el.dataset.h = String(h);
-    if (mode === 'mask') el.dataset.mode = 'mask';
-    return el;
+    return this.sprites.makeSprite(spec, w, h, mode);
   }
 
   // ═════════════════════ 打开/构建 ═════════════════════
@@ -390,6 +401,7 @@ export class DeviceDialog {
     this.panel.appendChild(this.buildPowerRow());
     this.panel.appendChild(this.buildBody(def));
 
+    this.refreshResourcePanel(); // 物品栏首填（图集未就绪时图标由 onReady 补刷）
     this.refresh(); // 首刷（图集未就绪时图标由 ensureAtlas 的补刷兜底）
     this.refreshTimer = window.setInterval(() => this.refresh(), 100);
   }
@@ -482,17 +494,240 @@ export class DeviceDialog {
     return row;
   }
 
+  /**
+   * 内容区: 左侧物品栏(440×520) + 20px 间距 + 右区（旧 building_detail_dialog Row 布局）。
+   * T2.22 前右区靠 padding-left:480px 占位，物品栏落地后改为真实两列。
+   */
   private buildBody(def: BuildingDefinition): HTMLDivElement {
     const body = document.createElement('div');
     body.className = 'efd-dialog-body';
+    body.appendChild(this.buildResourcePanel());
+    const right = document.createElement('div');
+    right.className = 'efd-body-right';
     if (def.depot === 'unload') {
-      body.appendChild(this.buildDepotPanel('unload'));
+      right.appendChild(this.buildDepotPanel('unload'));
     } else if (def.depot === 'load') {
-      body.appendChild(this.buildDepotPanel('load'));
+      right.appendChild(this.buildDepotPanel('load'));
     } else {
-      body.appendChild(this.buildSynthesisPanel(def));
+      right.appendChild(this.buildSynthesisPanel(def));
     }
+    body.appendChild(right);
     return body;
+  }
+
+  // ═════════════════════ 左侧物品栏 ═════════════════════
+
+  /**
+   * 物品栏面板（旧 _buildResourcePanel + _buildTabBar + _buildGridArea 1:1 复刻）:
+   * 440×520 #373737 圆角 15 → [24] 标签页胶囊 375×32 [24] → 物品网格 395.66×438（4 列
+   * 93.44×93.62，间距 7.3）+ 右侧 10×438 自定义滚动条（滚动时淡入，800ms 后淡出）。
+   *
+   * 交互: 悬停显示物品名 tooltip；单击打开物品说明弹窗；**取货口「添加物品」模式下**
+   * 格子叠加 + 图标，单击即选定该物品为产出（旧 _isAddMode 语义）。
+   */
+  private buildResourcePanel(): HTMLDivElement {
+    const panel = document.createElement('div');
+    panel.className = 'efd-res';
+    panel.dataset.drop = 'panel'; // 放置目标: 拖入格内物品 = 收纳
+
+    // 标签页（与产出选择同 4 类目，复用同一套图标与胶囊几何）
+    const tabs = document.createElement('div');
+    tabs.className = 'efd-picker-tabs';
+    this.resPill = document.createElement('div');
+    this.resPill.className = 'efd-picker-tabs-pill';
+    tabs.appendChild(this.resPill);
+    PICKER_TABS.forEach((t, i) => {
+      const tab = document.createElement('button');
+      tab.className = 'efd-picker-tab';
+      tab.title = t.label;
+      tab.style.left = `${i * 93.75}px`;
+      tab.appendChild(this.makeSprite(`ui/${t.iconKey}`, 20, 20, 'mask'));
+      tab.appendChild(Object.assign(document.createElement('span'), { textContent: t.label }));
+      tab.addEventListener('click', () => {
+        this.resTab = i;
+        this.refreshResourcePanel();
+      });
+      tabs.appendChild(tab);
+    });
+    panel.appendChild(tabs);
+
+    // 物品网格（滚动容器）
+    const gridWrap = document.createElement('div');
+    gridWrap.className = 'efd-res-grid-wrap';
+    this.resGrid = document.createElement('div');
+    this.resGrid.className = 'efd-res-grid';
+    this.resGrid.addEventListener('scroll', () => {
+      this.showResScrollbar();
+      this.syncResScrollbar();
+    });
+    gridWrap.appendChild(this.resGrid);
+    panel.appendChild(gridWrap);
+
+    // 自定义滚动条 10×438（右侧 6.085，top 72；thumb 高度按内容比推算，钳 30~438）
+    const track = document.createElement('div');
+    track.className = 'efd-res-scrollbar';
+    this.resScrollTrack = track;
+    const thumb = document.createElement('div');
+    thumb.className = 'efd-res-scroll-thumb';
+    this.resScrollThumb = thumb;
+    track.appendChild(thumb);
+    this.bindResThumbDrag(thumb);
+    panel.appendChild(track);
+
+    this.resPanel = panel;
+    return panel;
+  }
+
+  /** 滚动条淡入 + 800ms 后淡出（旧 _onGridScrolled）。 */
+  private showResScrollbar(): void {
+    if (this.resScrollTrack === null) return;
+    this.resScrollTrack.classList.add('visible');
+    if (this.resScrollFadeTimer !== null) clearTimeout(this.resScrollFadeTimer);
+    this.resScrollFadeTimer = window.setTimeout(() => {
+      this.resScrollTrack?.classList.remove('visible');
+      this.resScrollFadeTimer = null;
+    }, 800);
+  }
+
+  /** 滚动条 thumb 位置/高度同步（旧 _buildGridScrollbar 的 ListenableBuilder）。 */
+  private syncResScrollbar(): void {
+    if (this.resGrid === null || this.resScrollTrack === null || this.resScrollThumb === null) return;
+    const el = this.resGrid;
+    const max = el.scrollHeight - el.clientHeight;
+    if (max <= 0) {
+      this.resScrollTrack.style.display = 'none';
+      return;
+    }
+    this.resScrollTrack.style.display = 'block';
+    const trackH = this.resScrollTrack.clientHeight; // 随面板高度自适应（小窗口 <438）
+    const thumbH = Math.min(Math.max((trackH * trackH) / (trackH + max), 30), trackH);
+    const top = (el.scrollTop / max) * (trackH - thumbH);
+    this.resScrollThumb.style.height = `${thumbH}px`;
+    this.resScrollThumb.style.top = `${top}px`;
+  }
+
+  /**
+   * 滚动条 thumb 拖拽（旧 _buildGridScrollbar 的 onVerticalDragStart/Update/End）:
+   * 按下记录起点，移动按「拇指位移 × (maxScroll / 可滑行程)」换算 scrollTop；
+   * 拖拽中拇指加深（0.7）且不淡出，松手重新计时淡出。pointer capture 保证移出
+   * 拇指后 move/up 仍送达（否则快速拖动会丢事件、卡在拖拽态）。
+   */
+  private bindResThumbDrag(thumb: HTMLDivElement): void {
+    let dragging = false;
+    let startY = 0;
+    let startScrollTop = 0;
+
+    thumb.addEventListener('pointerdown', (e) => {
+      if (this.resGrid === null) return;
+      e.preventDefault();
+      dragging = true;
+      startY = e.clientY;
+      startScrollTop = this.resGrid.scrollTop;
+      thumb.setPointerCapture(e.pointerId);
+      this.resScrollTrack?.classList.add('dragging');
+      this.resScrollTrack?.classList.add('visible'); // 拖拽期间不淡出
+      if (this.resScrollFadeTimer !== null) {
+        clearTimeout(this.resScrollFadeTimer);
+        this.resScrollFadeTimer = null;
+      }
+    });
+    thumb.addEventListener('pointermove', (e) => {
+      if (!dragging || this.resGrid === null) return;
+      const trackH = this.resScrollTrack?.clientHeight ?? 0;
+      const thumbH = thumb.clientHeight;
+      const range = trackH - thumbH;
+      if (range <= 0) return;
+      const max = this.resGrid.scrollHeight - this.resGrid.clientHeight;
+      const delta = ((e.clientY - startY) * max) / range;
+      this.resGrid.scrollTop = Math.min(Math.max(startScrollTop + delta, 0), max);
+    });
+    const endDrag = (e: PointerEvent): void => {
+      if (!dragging) return;
+      dragging = false;
+      if (thumb.hasPointerCapture(e.pointerId)) thumb.releasePointerCapture(e.pointerId);
+      this.resScrollTrack?.classList.remove('dragging');
+      this.showResScrollbar(); // 松手重新计时淡出
+    };
+    thumb.addEventListener('pointerup', endDrag);
+    thumb.addEventListener('pointercancel', endDrag);
+  }
+
+  /** 当前标签页的物品 id 列表（类目过滤 + 图集有帧 + 中文名排序）。 */
+  private resourceItems(): string[] {
+    const out: string[] = [];
+    const category = PICKER_TABS[this.resTab].category;
+    for (const [id, item] of this.deps.items.byId) {
+      if (item.category !== category) continue;
+      if (this.frame('items', id) === null) continue;
+      out.push(id);
+    }
+    return out.sort((a, b) => this.deps.itemName(a).localeCompare(this.deps.itemName(b), 'zh'));
+  }
+
+  /** 标签页选中态 + 物品格重建（切换标签页 / 添加模式变化时调用）。 */
+  private refreshResourcePanel(): void {
+    if (this.resPanel === null || this.resPill === null || this.resGrid === null) return;
+    this.resPill.style.left = `${this.resTab * 93.75}px`;
+    this.resPanel.querySelectorAll<HTMLButtonElement>('.efd-picker-tab').forEach((t, i) => {
+      t.classList.toggle('active', i === this.resTab);
+    });
+
+    this.resGrid.innerHTML = '';
+    for (const id of this.resourceItems()) {
+      const tile = document.createElement('button');
+      tile.className = 'efd-res-tile';
+      const bg = document.createElement('div');
+      bg.className = 'efd-res-tile-bg';
+      const def = this.deps.items.byId.get(id);
+      this.tileBgStyle(bg, def?.level ?? 1, { size: 94 });
+      const img = document.createElement('div');
+      img.className = 'efd-res-tile-img';
+      this.itemIconStyle(img, id, 93, 93);
+      tile.appendChild(bg);
+      tile.appendChild(img);
+
+      // 按下并拖出 = 拖该物品投料（仅非添加模式；添加模式下格子是"选产出"按钮）
+      if (!this.pickerAddMode) {
+        tile.addEventListener('pointerdown', (e) => this.armDrag('itemPanel', id, e));
+      }
+      if (this.pickerAddMode) {
+        // 添加模式: 半透明遮罩 + add 图标（旧 showAddIcon: 未悬停白底黑图标 0.4 /
+        // 悬停黑底白图标 0.3），点击选定产出
+        const add = document.createElement('div');
+        add.className = 'efd-res-tile-add';
+        const addIcon = document.createElement('div');
+        addIcon.className = 'efd-icon-sprite';
+        this.spriteStyle(addIcon, 'ui', 'add', 40, 40, 'mask');
+        add.appendChild(addIcon);
+        tile.appendChild(add);
+        tile.addEventListener('click', () => this.selectDepotOutput(id));
+      } else {
+        // 普通模式: 悬停 tooltip（物品名）+ 单击打开物品说明
+        const tip = document.createElement('div');
+        tip.className = 'efd-res-tile-tip';
+        tip.textContent = this.deps.itemName(id);
+        tile.appendChild(tip);
+        tile.addEventListener('click', () => {
+          if (this.dragSuppressClick) return; // 刚拖完: 不当作点击
+          this.itemDesc.open(id);
+        });
+      }
+      // 悬停换底（旧 ResourceGridTileState._hovering → gridTileSvg(isHovered:true)）
+      tile.addEventListener('pointerenter', () => {
+        this.tileBgStyle(bg, def?.level ?? 1, { size: 94, hover: true });
+      });
+      tile.addEventListener('pointerleave', () => {
+        this.tileBgStyle(bg, def?.level ?? 1, { size: 94 });
+      });
+      this.resGrid.appendChild(tile);
+    }
+    if (this.resGrid.children.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'efd-picker-empty';
+      empty.textContent = '该分类下暂无物品';
+      this.resGrid.appendChild(empty);
+    }
+    this.syncResScrollbar();
   }
 
   // ═════════════════════ 生产设备面板 ═════════════════════
@@ -531,6 +766,9 @@ export class DeviceDialog {
       this.inputGridBox.appendChild(this.inputConnector.el);
     }
     this.inputTile = this.makeTileAt(this.inputGridBox, nIn > 0 ? 288 : 0, tileTop);
+    // 输入格: 既是拖拽源（可拖回物品栏收纳）又是放置目标（从物品栏拖入投料）
+    this.inputTile.root.dataset.drop = 'input';
+    this.inputTile.root.dataset.drag = 'inputGrid';
     this.inputCountEl = this.makeUnderCount(this.inputGridBox, nIn > 0 ? 288 : 0, tileTop + 134);
     main.appendChild(this.inputGridBox);
 
@@ -581,6 +819,8 @@ export class DeviceDialog {
     this.outputGridBox.style.width = `${nOut > 0 ? 416 : 128}px`;
     this.outputGridBox.style.height = `${rowH}px`;
     this.outputTile = this.makeTileAt(this.outputGridBox, 0, tileTop);
+    // 输出格: 仅拖拽源（拖回物品栏 = 收取全部产物）
+    this.outputTile.root.dataset.drag = 'outputGrid';
     this.outputCountEl = this.makeUnderCount(this.outputGridBox, 0, tileTop + 134);
     if (nOut > 0) {
       this.outputConnector = this.buildTrackJoints(nOut, false, rowH);
@@ -592,22 +832,67 @@ export class DeviceDialog {
     mainWrap.appendChild(main);
     panel.appendChild(mainWrap);
 
-    // 底部: 当前自动生产中的配方
+    // 底部: 当前自动生产中的配方（旧 800×76.8 Stack:
+    //   信息区 348.16[含背景] | 配方按钮 @326 | 竖分隔线 @448 | 全部收取 @524）
     const section = document.createElement('div');
     section.className = 'efd-recipe-section';
     const label = document.createElement('div');
     label.className = 'efd-recipe-label';
     label.textContent = '当前自动生产中的配方';
+
+    const bar = document.createElement('div');
+    bar.className = 'efd-recipe-bar';
+
+    // 信息区（点它 = 打开配方一览，旧项目 InformationBackground 的 GestureDetector）
     this.recipeBar = document.createElement('div');
-    this.recipeBar.className = 'efd-recipe-bar';
+    this.recipeBar.className = 'efd-recipe-info';
     const barBg = this.makeSprite('ui/information_bg', 348.16, 76.8);
     barBg.style.position = 'absolute';
     barBg.style.inset = '0';
     this.recipeBar.appendChild(barBg);
+    this.recipeBar.addEventListener('click', () => this.openRecipeList());
+    bar.appendChild(this.recipeBar);
+
+    // 配方按钮 43.52×43.52（Recipe_button: 白圆 + #636363 放大镜，两色 → image 模式）
+    const rbtn = document.createElement('button');
+    rbtn.className = 'efd-recipe-btn';
+    rbtn.title = '配方一览';
+    rbtn.appendChild(this.makeSprite('ui/recipe_button', 43.52, 43.52));
+    rbtn.addEventListener('click', () => this.openRecipeList());
+    bar.appendChild(rbtn);
+
+    const vsep = document.createElement('div');
+    vsep.className = 'efd-recipe-vsep';
+    bar.appendChild(vsep);
+
+    // 全部收取 300×68.33（Collect_button 是单色 #ffef01 → mask 染 原色/hover/禁用 三态）
+    const collect = document.createElement('button');
+    collect.className = 'efd-collect';
+    collect.appendChild(this.makeSprite('ui/collect_button', 300, 68.33, 'mask'));
+    collect.appendChild(Object.assign(document.createElement('span'), {
+      className: 'efd-collect-text', textContent: '全部收取',
+    }));
+    collect.addEventListener('click', () => this.collectAllOutput());
+    this.collectBtn = collect;
+    bar.appendChild(collect);
+
     section.appendChild(label);
-    section.appendChild(this.recipeBar);
+    section.appendChild(bar);
     panel.appendChild(section);
     return panel;
+  }
+
+  /** 「全部收取」(旧 CollectAllButton): 清空输出缓冲，堵塞态随之解除。 */
+  private collectAllOutput(): void {
+    if (this.handle === null) return;
+    const comp = this.deps.world.getComponent<BuildingComp>(this.handle, 'BuildingComp');
+    if (!comp) return;
+    for (const slot of comp.bufferOutput) {
+      slot.itemId = null;
+      slot.count = 0;
+    }
+    if (comp.state === 'blocked') comp.state = 'idle'; // 输出腾位 → 交回 MachineSystem 重判
+    this.refresh();
   }
 
   /** 在指定容器内放一个 128×128 物品格（绝对定位）并登记引用。 */
@@ -627,7 +912,27 @@ export class DeviceDialog {
     root.appendChild(bg);
     root.appendChild(imgWrap);
     parent.appendChild(root);
-    return { root, bg, icon, count: document.createElement('div') };
+    const refs: TileRefs = { root, bg, icon, count: document.createElement('div') };
+    this.bindTileItemTap(refs);
+    return refs;
+  }
+
+  /**
+   * 物品格交互（旧 synthesis_grid）: 点击 → 打开物品说明；按下并拖动（>5px）
+   * → 拖出格内物品（仅输入/输出格有 data-drag，仓库口格子不参与拖拽）。
+   */
+  private bindTileItemTap(tile: TileRefs): void {
+    tile.root.classList.add('efd-tile-tap');
+    tile.root.addEventListener('click', () => {
+      if (this.dragSuppressClick) return; // 刚拖完: 不当作点击
+      const id = tile.root.dataset.item;
+      if (id) this.itemDesc.open(id);
+    });
+    tile.root.addEventListener('pointerdown', (e) => {
+      const src = tile.root.dataset.drag as DragSource | undefined;
+      if (src === undefined) return; // 仓库口格子等非拖拽源
+      this.armDrag(src, tile.root.dataset.item ?? '', e);
+    });
   }
 
   /** 格下计数文本（旧 SynthesisGrid: countY = 格顶+128+6，20px w500，满仓变红）。 */
@@ -831,19 +1136,10 @@ export class DeviceDialog {
     });
   }
 
-  private itemsImagePromise: Promise<HTMLImageElement | null> | null = null;
   private flightIconCache = new Map<string, string>();
 
   private ensureItemsImage(): Promise<HTMLImageElement | null> {
-    if (this.itemsImagePromise === null) {
-      this.itemsImagePromise = new Promise((resolve) => {
-        const img = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = () => resolve(null);
-        img.src = ATLAS_PNG_URL.items;
-      });
-    }
-    return this.itemsImagePromise;
+    return this.sprites.ensureItemsImage();
   }
 
   /** 生成一个 128×128 物品格并登记引用（bg/icon/count 供刷新）。 */
@@ -863,7 +1159,9 @@ export class DeviceDialog {
     root.appendChild(imgWrap);
     root.appendChild(count);
     parent.appendChild(root);
-    return { root, bg, icon, count };
+    const refs: TileRefs = { root, bg, icon, count };
+    this.bindTileItemTap(refs);
+    return refs;
   }
 
   /** 动作按钮行（旧 ActionButton: 44×44 图标 + 文字 14px w500 白）。T2.14 起为 移动 + 删除。 */
@@ -890,6 +1188,351 @@ export class DeviceDialog {
     return row;
   }
 
+  // ═════════════════════ 拖拽投放（旧 InventoryDragSource / DragTarget）═════════════════════
+
+  /**
+   * 指针按下 → 预备拖拽。**旧项目是长按 450ms（LongPressDraggable delay），
+   * 用户明确要求"正常拖拽"** → 改为位移超过 5px 即进入拖拽态；未超阈值松手 =
+   * 普通点击，原有行为（打开物品说明 / 选中产出）完全不变。
+   */
+  private armDrag(source: DragSource, itemId: string, e: PointerEvent): void {
+    if (e.button !== 0 || itemId === '') return;
+    this.drag = { source, itemId, startX: e.clientX, startY: e.clientY, active: false };
+    const onMove = (ev: PointerEvent): void => this.onDragMove(ev);
+    const onUp = (ev: PointerEvent): void => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      this.onDragEnd(ev);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }
+
+  private onDragMove(e: PointerEvent): void {
+    const d = this.drag;
+    if (d === null) return;
+    if (!d.active) {
+      if (Math.abs(e.clientX - d.startX) < 5 && Math.abs(e.clientY - d.startY) < 5) return;
+      d.active = true;
+      this.makeDragGhost(d.itemId);
+      this.markDropTargets(d.source);
+    }
+    if (this.dragGhost !== null) {
+      // 右下偏移 28px: 鼠标压在目标格中心时，正中央的拖放提示（加号/文案）会被
+      // 80×80 的 ghost 整个盖住；偏移后既保持跟手又露出目标中心（用户实测反馈）。
+      this.dragGhost.style.left = `${e.clientX - 40 + 28}px`;
+      this.dragGhost.style.top = `${e.clientY - 40 + 28}px`;
+    }
+    this.updateDropHover(e.clientX, e.clientY);
+  }
+
+  private onDragEnd(e: PointerEvent): void {
+    const d = this.drag;
+    this.drag = null;
+    if (d === null) return;
+    if (d.active) {
+      this.dragSuppressClick = true; // 吞掉随后的 click（见 bindTileItemTap / 物品栏格子）
+      window.setTimeout(() => { this.dragSuppressClick = false; }, 0);
+      this.applyDrop(d.source, this.dropTargetAt(e.clientX, e.clientY), d.itemId);
+    }
+    this.clearDragVisuals();
+  }
+
+  /** 拖拽反馈（旧 feedback: 80×80 #373737 圆角 10 白边 + 68×68 物品图，opacity .85）。 */
+  private makeDragGhost(itemId: string): void {
+    const ghost = document.createElement('div');
+    ghost.className = 'efd-drag-ghost';
+    const img = document.createElement('div');
+    img.className = 'efd-icon-sprite';
+    this.itemIconStyle(img, itemId, 68, 68);
+    ghost.appendChild(img);
+    document.body.appendChild(ghost);
+    this.dragGhost = ghost;
+  }
+
+  /**
+   * 标出本次拖拽可放置的目标并铺提示遮罩（旧 SynthesisGrid/资源面板的拖放提示:
+   * 模糊遮罩 + 中央 add 图标 + 涟漪动画 + 底部文案；悬停到目标上时 add 旋转 90°
+   * 放大 1.15 并加深、文字下滑淡出——见 .efd-drop-hint 的 efd-drag-over 态）。
+   */
+  private markDropTargets(source: DragSource): void {
+    const target = source === 'itemPanel' ? this.inputTile?.root : this.resPanel;
+    if (target === undefined || target === null) return;
+    target.classList.add('efd-droppable');
+
+    const hint = document.createElement('div');
+    hint.className = source === 'itemPanel' ? 'efd-drop-hint tile' : 'efd-drop-hint panel';
+    for (let i = 0; i < 2; i++) {
+      const ripple = document.createElement('i');
+      ripple.className = 'efd-ripple';
+      hint.appendChild(ripple);
+    }
+    // add 图标用内联 SVG（旧项目 add.svg，见 ADD_SVG）——不用图集 ui/add 帧:
+    // 帧只有约 32px，放大到 90px 会明显发虚（用户实测反馈"太糊"）。
+    const addIcon = document.createElement('i');
+    addIcon.className = 'efd-add-icon';
+    addIcon.innerHTML = ADD_SVG;
+    hint.appendChild(addIcon);
+    hint.appendChild(Object.assign(document.createElement('span'), {
+      className: 'efd-drop-text',
+      textContent: source === 'itemPanel' ? '拖到此处输入' : '拖动到此收纳物品',
+    }));
+    target.appendChild(hint);
+  }
+
+  private updateDropHover(x: number, y: number): void {
+    const el = this.dropElementAt(x, y);
+    this.panel.querySelectorAll('.efd-drag-over').forEach((n) => {
+      if (n !== el) n.classList.remove('efd-drag-over');
+    });
+    if (el !== null) el.classList.add('efd-drag-over');
+  }
+
+  /** 命中检测: 只看本次标记为可放置的 [data-drop]（ghost 是 pointer-events:none，不挡）。 */
+  private dropElementAt(x: number, y: number): HTMLElement | null {
+    const el = document.elementFromPoint(x, y);
+    return el?.closest<HTMLElement>('[data-drop].efd-droppable') ?? null;
+  }
+
+  private dropTargetAt(x: number, y: number): string | null {
+    return this.dropElementAt(x, y)?.dataset.drop ?? null;
+  }
+
+  private clearDragVisuals(): void {
+    this.dragGhost?.remove();
+    this.dragGhost = null;
+    this.panel.querySelectorAll('.efd-drop-hint').forEach((n) => n.remove());
+    this.panel.querySelectorAll('.efd-droppable, .efd-drag-over').forEach((n) => {
+      n.classList.remove('efd-droppable', 'efd-drag-over');
+    });
+  }
+
+  /**
+   * 落点生效（旧 building_detail_dialog.onAcceptWithDetails）:
+   * - **物品栏 → 输入格**: 逐件 `tryAcceptItem` 补满输入槽（旧项目同款语义:
+   *   一次拖入即 `inputItemIdCount = maxInputItemCount`）。槽已锁异类物品时一件也
+   *   进不去（tryAcceptItem 拒绝），不会出现混料。
+   * - **输入格 → 物品栏**: 清空输入缓冲，并**解除配方锁 + 重置计时**——残留
+   *   progress>0 会让生产引擎的「progress<=0 才启动」永不成立，后续物品只堆积在
+   *   输入端不生产（旧项目踩过并已在注释里记下的坑，这里同款处理）。
+   * - **输出格 → 物品栏**: 清空输出缓冲（等同「全部收取」）。
+   */
+  private applyDrop(source: DragSource, target: string | null, itemId: string): void {
+    if (target === null) return;
+    const comp = this.handle !== null
+      ? this.deps.world.getComponent<BuildingComp>(this.handle, 'BuildingComp') : null;
+    const def = comp ? getBuildingDefinition(comp.definitionId) : undefined;
+    if (!comp || !def) return;
+
+    if (source === 'itemPanel' && target === 'input') {
+      const cap = def.bufferCapacity;
+      let n = 0;
+      while (n < cap && tryAcceptItem(comp.bufferInput, itemId, cap)) n++;
+    } else if (source === 'inputGrid' && target === 'panel') {
+      for (const s of comp.bufferInput) {
+        s.itemId = null;
+        s.count = 0;
+      }
+      comp.currentRecipeId = null;
+      comp.progress = 0;
+      comp.elapsed = 0;
+      comp.state = 'idle';
+    } else if (source === 'outputGrid' && target === 'panel') {
+      for (const s of comp.bufferOutput) {
+        s.itemId = null;
+        s.count = 0;
+      }
+      if (comp.state === 'blocked') comp.state = 'idle';
+    }
+    this.refresh();
+  }
+
+  // ═════════════════════ 配方一览（旧 RecipeListDialog）═════════════════════
+
+  /**
+   * 配方一览二级弹窗 (960×560 #161616 圆角 16 边框 #444，padding 24):
+   *   头: [26] 标题「可自动生产的配方一览」20px w600 + 副标题设备名 14px #A6A6A6 + 关闭
+   *   体: 2 列网格（gap 16，childAspectRatio 3.5 → 行高 128）配方卡
+   * 卡片 = 配方名行 + 白底卡(80 高): 输入×2 →「>>>」+秒数 → 输出×2 → 竖线 → 图钉。
+   *
+   * 图钉 = **锁定配方**（写 comp.pinnedRecipeId，T2.22）——语义是"优先"而非强制:
+   * 锁定配方当前可生产时用它，否则回退常规匹配（旧项目是硬性 activeRecipeId，
+   * 锁定后异类原料会让设备一直空转；改成软优先后只影响多配方可匹配时的取舍）。
+   */
+  private buildRecipeList(): HTMLDivElement {
+    const root = document.createElement('div');
+    root.className = 'efd-rlist-root';
+    root.hidden = true;
+
+    const barrier = document.createElement('div');
+    barrier.className = 'efd-rlist-barrier';
+    barrier.addEventListener('click', () => this.closeRecipeList());
+
+    const panel = document.createElement('div');
+    panel.className = 'efd-rlist';
+
+    const head = document.createElement('div');
+    head.className = 'efd-rlist-head';
+    const spacer = document.createElement('div');
+    spacer.className = 'efd-rlist-head-spacer';
+    const titles = document.createElement('div');
+    titles.className = 'efd-rlist-titles';
+    const title = document.createElement('div');
+    title.className = 'efd-rlist-title';
+    title.textContent = '可自动生产的配方一览';
+    this.recipeListSub = document.createElement('div');
+    this.recipeListSub.className = 'efd-rlist-sub';
+    titles.appendChild(title);
+    titles.appendChild(this.recipeListSub);
+    const close = document.createElement('button');
+    close.className = 'efd-infobar-close';
+    close.title = '关闭';
+    close.appendChild(this.makeSprite('ui/close_button', 26, 26));
+    close.addEventListener('click', () => this.closeRecipeList());
+    head.appendChild(spacer);
+    head.appendChild(titles);
+    head.appendChild(close);
+
+    this.recipeListGrid = document.createElement('div');
+    this.recipeListGrid.className = 'efd-rlist-grid';
+
+    panel.appendChild(head);
+    panel.appendChild(this.recipeListGrid);
+    panel.addEventListener('click', (e) => e.stopPropagation());
+
+    root.appendChild(barrier);
+    root.appendChild(panel);
+    this.root.appendChild(root);
+    return root;
+  }
+
+  private openRecipeList(): void {
+    if (this.handle === null) return;
+    const comp = this.deps.world.getComponent<BuildingComp>(this.handle, 'BuildingComp');
+    if (!comp) return;
+    const def = getBuildingDefinition(comp.definitionId);
+    if (!def) return;
+
+    if (this.recipeListEl === null) this.recipeListEl = this.buildRecipeList();
+    if (this.recipeListSub !== null) this.recipeListSub.textContent = def.name;
+    this.recipeListShownKey = `${this.handle}|${comp.pinnedRecipeId ?? ''}`;
+    this.renderRecipeCards(this.deps.recipeIndex.get(comp.definitionId) ?? []);
+    this.recipeListEl.hidden = false;
+    this.applySprites();
+  }
+
+  private closeRecipeList(): void {
+    if (this.recipeListEl !== null) this.recipeListEl.hidden = true;
+    this.recipeListShownKey = '';
+  }
+
+  /** 配方卡网格重建（图钉态/设备切换时调用）。 */
+  private renderRecipeCards(recipes: Recipe[]): void {
+    if (this.recipeListGrid === null) return;
+    const comp = this.handle !== null
+      ? this.deps.world.getComponent<BuildingComp>(this.handle, 'BuildingComp') : null;
+    const pinnedId = comp?.pinnedRecipeId ?? null;
+    const levelOf = (id: string): number => this.deps.items.byId.get(id)?.level ?? 1;
+
+    this.recipeListGrid.innerHTML = '';
+    if (recipes.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'efd-rlist-empty';
+      empty.textContent = '该设备暂无可用配方';
+      this.recipeListGrid.appendChild(empty);
+      return;
+    }
+
+    for (const r of recipes) {
+      const card = document.createElement('div');
+      card.className = 'efd-rcard';
+
+      const head = document.createElement('div');
+      head.className = 'efd-rcard-head';
+      head.appendChild(Object.assign(document.createElement('i'), { className: 'efd-rcard-doc' }));
+      head.appendChild(Object.assign(document.createElement('span'), { textContent: this.recipeName(r) }));
+      card.appendChild(head);
+
+      const body = document.createElement('div');
+      body.className = 'efd-rcard-body';
+
+      // 输入（最多 2 组；组是"或"关系 → 取首个备选；tag 原子无单一图标 → 空位）
+      for (let i = 0; i < 2; i++) {
+        const atom = r.inputs[i]?.alternatives[0];
+        const id = atom !== undefined && atom.kind === 'item' ? atom.ref : null;
+        body.appendChild(this.makeMiniTile(id, atom?.count ?? 1, id !== null ? levelOf(id) : 1));
+      }
+
+      const spacerL = document.createElement('div');
+      spacerL.className = 'efd-rcard-spacer';
+      body.appendChild(spacerL);
+
+      const run = document.createElement('div');
+      run.className = 'efd-rcard-run';
+      const chevs = document.createElement('div');
+      chevs.className = 'efd-rcard-chevs';
+      for (let i = 0; i < 3; i++) chevs.appendChild(document.createElement('i'));
+      run.appendChild(chevs);
+      run.appendChild(Object.assign(document.createElement('span'), {
+        className: 'efd-rcard-time', textContent: `${Math.round(r.time / 1000)}秒`,
+      }));
+      body.appendChild(run);
+
+      const spacerR = document.createElement('div');
+      spacerR.className = 'efd-rcard-spacer';
+      body.appendChild(spacerR);
+
+      // 输出（主产物 + 副产物，最多 2 个）
+      for (let i = 0; i < 2; i++) {
+        const out = r.outputs[i];
+        const id = out?.itemId ?? null;
+        body.appendChild(this.makeMiniTile(id, out?.count ?? 1, id !== null ? levelOf(id) : 1));
+      }
+
+      body.appendChild(Object.assign(document.createElement('div'), { className: 'efd-rcard-gap' }));
+      body.appendChild(Object.assign(document.createElement('div'), { className: 'efd-rcard-vsep' }));
+      body.appendChild(Object.assign(document.createElement('div'), { className: 'efd-rcard-gap' }));
+
+      const pin = document.createElement('button');
+      pin.className = `efd-rcard-pin${r.id === pinnedId ? ' pinned' : ''}`;
+      pin.title = r.id === pinnedId ? '取消固定该配方' : '固定该配方（优先生产）';
+      pin.innerHTML = PIN_SVG;
+      pin.addEventListener('click', () => this.mutateComp((c) => {
+        c.pinnedRecipeId = c.pinnedRecipeId === r.id ? null : r.id;
+      }));
+      body.appendChild(pin);
+
+      card.appendChild(body);
+      this.recipeListGrid.appendChild(card);
+    }
+    this.applySprites();
+  }
+
+  /** 配方名（旧 Recipe.name；本项目的 Recipe 无 name 字段 → 用主产物中文名）。 */
+  private recipeName(r: Recipe): string {
+    const main = this.deps.itemName(r.outputs[0].itemId);
+    return r.outputs.length > 1 ? `${main} +${r.outputs.length - 1}` : main;
+  }
+
+  /** 配方卡迷你物品格（旧 MiniItemTile: 54×54 #333333 圆角4 边框#666 + 底部数量色条）。 */
+  private makeMiniTile(itemId: string | null, count: number, level: number): HTMLDivElement {
+    const el = document.createElement('div');
+    el.className = itemId === null ? 'efd-mini empty' : 'efd-mini';
+    if (itemId === null) return el; // 空位: 透明 + 边框 + 对角线（旧 DiagonalSlashPainter）
+    const img = document.createElement('div');
+    img.className = 'efd-mini-img';
+    this.itemIconStyle(img, itemId, 50, 50);
+    const tag = document.createElement('div');
+    tag.className = 'efd-mini-tag';
+    tag.style.backgroundColor = LEVEL_TAG[level] ?? '#ebebeb';
+    tag.classList.toggle('on-light', level < 2);
+    tag.textContent = String(count);
+    el.appendChild(img);
+    el.appendChild(tag);
+    el.addEventListener('click', () => this.itemDesc.open(itemId));
+    return el;
+  }
+
   // ═════════════════════ 仓库口面板 ═════════════════════
 
   private buildDepotPanel(kind: 'unload' | 'load'): HTMLDivElement {
@@ -906,26 +1549,32 @@ export class DeviceDialog {
     const rowEl = document.createElement('div');
     rowEl.className = 'efd-depot-row';
 
-    // 1. 仓库卡 265×128（名称 + ∞ 数量 + 右侧大图）
-    const card = document.createElement('div');
-    card.className = 'efd-warehouse-card';
-    const cardImgWrap = document.createElement('div');
-    cardImgWrap.className = 'efd-warehouse-card-img';
-    this.cardImg = document.createElement('div');
-    this.cardImg.className = 'efd-icon-sprite';
-    cardImgWrap.appendChild(this.cardImg);
-    this.cardName = document.createElement('div');
-    this.cardName.className = 'efd-warehouse-card-name';
-    this.cardName.textContent = kind === 'load' ? '——' : ''; // 存货口首版只读: 无物品概念
-    const qty = document.createElement('div');
-    qty.className = 'efd-warehouse-card-qty';
-    const depotIcon = this.makeSprite('ui/depot_icon', 38.72, 34.03);
-    qty.appendChild(depotIcon);
-    qty.appendChild(document.createTextNode(kind === 'unload' ? '∞' : '——'));
-    card.appendChild(cardImgWrap);
-    card.appendChild(this.cardName);
-    card.appendChild(qty);
-    rowEl.appendChild(card);
+    // 1. 卡片区 265×128
+    //    取货口: 仓库卡（名称 + ∞ 数量 + 右侧大图）
+    //    存货口: 在途物品列表（旧 DepotLoaderPanel: 多台传送带送来的物品，各显示件数）
+    if (kind === 'unload') {
+      const card = document.createElement('div');
+      card.className = 'efd-warehouse-card';
+      const cardImgWrap = document.createElement('div');
+      cardImgWrap.className = 'efd-warehouse-card-img';
+      this.cardImg = document.createElement('div');
+      this.cardImg.className = 'efd-icon-sprite';
+      cardImgWrap.appendChild(this.cardImg);
+      this.cardName = document.createElement('div');
+      this.cardName.className = 'efd-warehouse-card-name';
+      const qty = document.createElement('div');
+      qty.className = 'efd-warehouse-card-qty';
+      qty.appendChild(this.makeSprite('ui/depot_icon', 38.72, 34.03));
+      qty.appendChild(document.createTextNode('∞'));
+      card.appendChild(cardImgWrap);
+      card.appendChild(this.cardName);
+      card.appendChild(qty);
+      rowEl.appendChild(card);
+    } else {
+      this.depotIncoming = document.createElement('div');
+      this.depotIncoming.className = 'efd-depot-incoming';
+      rowEl.appendChild(this.depotIncoming);
+    }
 
     // 2. 连接线 75px（有产出配置时金色）
     this.connectorEl = document.createElement('div');
@@ -973,9 +1622,7 @@ export class DeviceDialog {
       wrap.appendChild(btn);
       wrap.style.minHeight = '184px';
 
-      this.pickerRoot = this.buildPicker();
-      this.pickerRoot.hidden = true;
-      main.appendChild(this.pickerRoot);
+      // 产出选择走左侧物品栏（旧项目同款: 添加模式下物品栏格子显示 + 图标）
       main.appendChild(wrap);
     } else {
       main.appendChild(wrap);
@@ -985,113 +1632,88 @@ export class DeviceDialog {
     return panel;
   }
 
-  /** 取货口产出选择面板（旧资源面板: 4 标签页胶囊 + 4 列物品网格）。 */
-  private buildPicker(): HTMLDivElement {
-    const root = document.createElement('div');
-    root.className = 'efd-picker';
+  /**
+   * 存货口面板刷新 (旧 DepotLoaderPanel): 在途物品列表 + 物品格显示当前进入项。
+   * 存货口是无限汇——物品入库即消失，没有"仓库库存"可读，能显示的只有
+   * **接入传送带上正在送来的物品**（incomingInputItems，只读）。
+   * 列表内容变化才重建 DOM（100ms 刷新下避免每轮重建）。
+   */
+  private refreshDepotLoader(def: BuildingDefinition, comp: BuildingComp): void {
+    if (this.handle === null) return;
+    const incoming = incomingInputItems(this.deps.world, this.handle, comp, def);
+    const first = incoming[0]?.itemId ?? null;
 
-    const tabs = document.createElement('div');
-    tabs.className = 'efd-picker-tabs';
-    this.pickerPill = document.createElement('div');
-    this.pickerPill.className = 'efd-picker-tabs-pill';
-    tabs.appendChild(this.pickerPill);
-    PICKER_TABS.forEach((t, i) => {
-      const tab = document.createElement('button');
-      tab.className = 'efd-picker-tab';
-      tab.title = t.label;
-      tab.style.left = `${i * 93.75}px`; // 绝对定位横向排开（与 pill 同步距）
-      tab.appendChild(this.makeSprite(`ui/${t.iconKey}`, 20, 20, 'mask'));
-      tab.appendChild(Object.assign(document.createElement('span'), { textContent: t.label }));
-      tab.addEventListener('click', () => {
-        this.pickerTab = i;
-        this.refreshPicker();
-      });
-      tabs.appendChild(tab);
-    });
-    root.appendChild(tabs);
+    // 物品格: 首件在途物品（无在途 → 保留空态 No 图标）
+    if (this.gridTile !== null) {
+      const noEl = this.gridTile.root.querySelector<HTMLElement>('.efd-tile-empty-icon');
+      if (noEl !== null) noEl.style.display = first === null ? 'flex' : 'none';
+      this.tileBgStyle(this.gridTile.bg, null);
+      if (first === null) {
+        this.gridTile.icon.style.backgroundImage = 'none';
+        this.gridTile.icon.style.display = 'none';
+        this.gridTile.count.textContent = '';
+        delete this.gridTile.root.dataset.item;
+      } else {
+        this.itemIconStyle(this.gridTile.icon, first, 128, 128);
+        this.gridTile.icon.style.display = 'block';
+        this.gridTile.count.textContent = String(incoming[0].count);
+        this.gridTile.root.dataset.item = first;
+      }
+    }
 
-    const gridWrap = document.createElement('div');
-    gridWrap.className = 'efd-picker-grid-wrap';
-    this.pickerGrid = document.createElement('div');
-    this.pickerGrid.className = 'efd-picker-grid';
-    gridWrap.appendChild(this.pickerGrid);
-    root.appendChild(gridWrap);
-    return root;
+    if (this.depotIncoming === null) return;
+    const key = incoming.map((i) => `${i.itemId}:${i.count}`).join(',');
+    if (key === this.depotIncomingKey) return;
+    this.depotIncomingKey = key;
+    this.depotIncoming.innerHTML = '';
+    if (incoming.length === 0) {
+      this.depotIncoming.appendChild(Object.assign(document.createElement('div'), {
+        className: 'efd-depot-inc-empty', textContent: '暂无物品入库',
+      }));
+      return;
+    }
+    for (const { itemId, count } of incoming) {
+      const row = document.createElement('div');
+      row.className = 'efd-depot-inc-item';
+      const icon = document.createElement('div');
+      icon.className = 'efd-icon-sprite';
+      this.itemIconStyle(icon, itemId, 44, 44);
+      row.appendChild(icon);
+      row.appendChild(Object.assign(document.createElement('div'), {
+        className: 'efd-depot-inc-name', textContent: this.deps.itemName(itemId),
+      }));
+      row.appendChild(Object.assign(document.createElement('div'), {
+        className: 'efd-depot-inc-qty', textContent: String(count),
+      }));
+      row.addEventListener('click', () => this.itemDesc.open(itemId));
+      this.depotIncoming.appendChild(row);
+    }
   }
 
+  /** 取货口「添加物品」模式: 点物品栏格子 → 写入该物品为实例产出（旧 onAddItem）。 */
+  private selectDepotOutput(id: string): void {
+    const comp = this.handle !== null
+      ? this.deps.world.getComponent<BuildingComp>(this.handle, 'BuildingComp') : null;
+    if (comp) comp.depotOutputItemId = id; // MachineSystem 下一 Tick 生效
+    this.pickerAddMode = false;
+    this.refresh();
+  }
+
+  /**
+   * 取货口胶囊按钮（旧 _toggleDepotAddMode）: 有物品 → 移除物品（回退定义默认源矿）；
+   * 无物品 → 切换「添加物品」模式（左侧物品栏格子显示 + 图标）。
+   */
   private toggleDepotAddMode(): void {
     if (this.handle === null) return;
     const comp = this.deps.world.getComponent<BuildingComp>(this.handle, 'BuildingComp');
     if (!comp) return;
     if (comp.depotOutputItemId != null && !this.pickerAddMode) {
-      // 有物品 → 移除物品（回退到定义默认源矿）
       comp.depotOutputItemId = null;
       this.refresh();
       return;
     }
     this.pickerAddMode = !this.pickerAddMode;
     this.refresh();
-  }
-
-  /** 选择面板物品列表（按当前标签页类目过滤；仅含图集有帧的物品，按中文名排序）。 */
-  private pickerItems(): string[] {
-    const out: string[] = [];
-    for (const [id, item] of this.deps.items.byId) {
-      if (item.category !== PICKER_TABS[this.pickerTab].category) continue;
-      if (this.frame('items', id) === null) continue;
-      out.push(id);
-    }
-    return out.sort((a, b) => this.deps.itemName(a).localeCompare(this.deps.itemName(b), 'zh'));
-  }
-
-  private refreshPicker(): void {
-    if (this.pickerRoot === null || this.pickerPill === null || this.pickerGrid === null) return;
-    this.pickerPill.style.left = `${this.pickerTab * 93.75}px`;
-    this.pickerRoot.querySelectorAll<HTMLButtonElement>('.efd-picker-tab').forEach((t, i) => {
-      t.classList.toggle('active', i === this.pickerTab);
-    });
-    this.pickerGrid.innerHTML = '';
-    for (const id of this.pickerItems()) {
-      const tile = document.createElement('button');
-      tile.className = 'efd-picker-tile';
-      tile.title = this.deps.itemName(id);
-      const bg = document.createElement('div');
-      bg.className = 'efd-tile-bg';
-      bg.style.borderRadius = '11px';
-      this.tileBgStyle(bg, null);
-      const img = document.createElement('div');
-      img.className = 'efd-icon-sprite';
-      img.style.position = 'absolute';
-      img.style.left = '50%';
-      img.style.top = '50%';
-      img.style.transform = 'translate(-50%, -50%)';
-      this.itemIconStyle(img, id, 64, 64);
-      const add = document.createElement('div');
-      add.className = 'efd-picker-tile-add';
-      const addIcon = document.createElement('div');
-      addIcon.className = 'efd-icon-sprite';
-      this.spriteStyle(addIcon, 'ui', 'add', 31, 31);
-      add.appendChild(addIcon);
-      tile.appendChild(bg);
-      tile.appendChild(img);
-      tile.appendChild(add);
-      tile.addEventListener('click', () => {
-        const comp = this.handle !== null
-          ? this.deps.world.getComponent<BuildingComp>(this.handle, 'BuildingComp') : null;
-        if (comp) {
-          comp.depotOutputItemId = id; // T2.15: 写入实例产出物品（MachineSystem 下一 Tick 生效）
-        }
-        this.pickerAddMode = false;
-        this.refresh();
-      });
-      this.pickerGrid.appendChild(tile);
-    }
-    if (this.pickerGrid.children.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'efd-picker-empty';
-      empty.textContent = '该分类下暂无物品';
-      this.pickerGrid.appendChild(empty);
-    }
   }
 
   // ═════════════════════ 100ms 局部刷新 ═════════════════════
@@ -1113,7 +1735,7 @@ export class DeviceDialog {
       return;
     }
 
-    this.applySprites(); // 图集就绪后才有图标；迟就绪由 ensureAtlas 补刷
+    this.applySprites(); // 图集就绪后才有图标；迟就绪由 onReady 补刷
 
     // 电源开关
     if (this.switchEl !== null) {
@@ -1121,11 +1743,42 @@ export class DeviceDialog {
       this.switchEl.classList.toggle('is-off', comp.paused);
     }
 
+    // 取货口「添加物品」模式切换 → 物品栏格子重挂（+ 图标 / tooltip 二选一）
+    if (this.pickerAddMode !== this.resAddModeShown) {
+      this.resAddModeShown = this.pickerAddMode;
+      this.refreshResourcePanel();
+    }
+
     if (this.depotPreview !== null) {
       this.refreshDepot(def, comp);
     } else {
       this.refreshSynthesis(def, comp);
     }
+
+    // 配方一览开着时同步图钉态（锁定配方变化才重建卡片，避免每 100ms 重建 DOM）
+    if (this.recipeListEl !== null && !this.recipeListEl.hidden) {
+      const key = `${String(this.handle)}|${comp.pinnedRecipeId ?? ''}`;
+      if (key !== this.recipeListShownKey) {
+        this.recipeListShownKey = key;
+        this.renderRecipeCards(this.deps.recipeIndex.get(comp.definitionId) ?? []);
+      }
+    }
+  }
+
+  /**
+   * ESC 分层关闭 (T2.22): 先关二级弹窗（物品说明 → 配方一览），都没有才轮到主弹窗。
+   * @returns true = 已消费这次 ESC（main.ts 不再关主弹窗）。
+   */
+  handleEscape(): boolean {
+    if (this.itemDesc.isOpen()) {
+      this.itemDesc.close();
+      return true;
+    }
+    if (this.recipeListEl !== null && !this.recipeListEl.hidden) {
+      this.closeRecipeList();
+      return true;
+    }
+    return false;
   }
 
   /** 生产设备面板刷新: 指示器/倒计时/进度条/缓冲格/轨道连接态/配方行。 */
@@ -1145,6 +1798,15 @@ export class DeviceDialog {
     this.updateTile(this.outputTile, firstItem(comp.bufferOutput), outputCount, cap, level);
     this.setUnderCount(this.inputCountEl, inputCount, cap);
     this.setUnderCount(this.outputCountEl, outputCount, cap);
+
+    // 「全部收取」启用态（旧 hasCollectableOutput: 有输出带时需 ≥2 件——避免单件
+    // 被传走的瞬间按钮闪烁；无输出带时只要有一件即可收取）
+    if (this.collectBtn !== null) {
+      const hasBelt = this.outputConns.some((c) => c);
+      const enabled = hasBelt ? outputCount >= 2 : outputCount > 0;
+      this.collectBtn.disabled = !enabled;
+      this.collectBtn.classList.toggle('disabled', !enabled);
+    }
 
     // 轨道连接态（端口是否接带 → 活动覆盖层; 连接态变化才重建）+ 物品飞行触发
     if ((this.inputConnector !== null || this.outputConnector !== null) && this.handle !== null) {
@@ -1266,9 +1928,11 @@ export class DeviceDialog {
     if (itemId !== null) {
       this.itemIconStyle(tile.icon, itemId, 128, 128);
       tile.icon.style.display = 'block';
+      tile.root.dataset.item = itemId; // 点击打开物品说明用
     } else {
       tile.icon.style.backgroundImage = 'none';
       tile.icon.style.display = 'none';
+      delete tile.root.dataset.item;
     }
   }
 
@@ -1323,19 +1987,15 @@ export class DeviceDialog {
     return el;
   }
 
-  /** 仓库口面板刷新: 取货口产出物品卡片/胶囊态/选择面板可见性。 */
+  /** 仓库口面板刷新: 取货口产出物品卡片/胶囊态；存货口在途物品列表。 */
   private refreshDepot(def: BuildingDefinition, comp: BuildingComp): void {
-    if (def.depot === 'load') return; // 存货口首版只读（无限汇，无内部状态可显示）
+    if (def.depot === 'load') {
+      this.refreshDepotLoader(def, comp);
+      return;
+    }
 
     const outputItemId = comp.depotOutputItemId ?? def.depotOutputItem ?? FALLBACK_DEPOT_ITEM;
     const configured = comp.depotOutputItemId != null;
-
-    // 选择面板与预览区切换
-    if (this.pickerRoot !== null && this.depotPreview !== null) {
-      this.pickerRoot.hidden = !this.pickerAddMode;
-      this.depotPreview.style.display = this.pickerAddMode ? 'none' : 'block';
-      if (this.pickerAddMode) this.refreshPicker();
-    }
 
     if (this.cardName !== null) {
       this.cardName.textContent = this.deps.itemName(outputItemId);
@@ -1368,23 +2028,12 @@ export class DeviceDialog {
     }
   }
 
-  /** 把标记了 data-sprite / data-item-icon 的节点补上图集背景（refresh 每轮重设，幂等）。 */
+  /**
+   * 把标记了 data-sprite / data-item-icon 的节点补上图集背景（refresh 每轮重设，幂等）。
+   * 范围: 主面板 + 配方一览（二级弹窗节点不在 panel 内，单独刷）。
+   */
   private applySprites(): void {
-    this.panel.querySelectorAll<HTMLElement>('[data-sprite]').forEach((el) => {
-      const spec = el.dataset.sprite ?? '';
-      const slash = spec.indexOf('/');
-      if (slash <= 0) return;
-      const group = spec.slice(0, slash) as AtlasGroup;
-      const key = spec.slice(slash + 1);
-      this.spriteStyle(
-        el, group, key,
-        Number(el.dataset.w ?? '26'), Number(el.dataset.h ?? '26'),
-        el.dataset.mode === 'mask' ? 'mask' : 'image',
-      );
-    });
-    this.panel.querySelectorAll<HTMLElement>('[data-item-icon]').forEach((el) => {
-      const size = Number(el.dataset.itemSize ?? '56');
-      this.itemIconStyle(el, el.dataset.itemIcon ?? '', size, size);
-    });
+    this.sprites.applySprites(this.panel);
+    if (this.recipeListEl !== null) this.sprites.applySprites(this.recipeListEl);
   }
 }

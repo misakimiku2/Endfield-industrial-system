@@ -84,13 +84,26 @@ export function planRecipeInputs(
 
 /**
  * 在设备的配方列表中找第一条可匹配的配方 (A8 §5.4 步骤 1~2)。
+ *
+ * @param pinnedRecipeId 图钉锁定的配方 id (T2.22)。**软优先**: 锁定配方当前可匹配时
+ *   直接返回它，否则回退列表顺序匹配（不强制——旧项目的硬性锁定会让设备在异类原料
+ *   进入后永远空转）。undefined/null = 不锁定。
  * @returns { recipe, plan }；无匹配 → null。多配方可匹配时取列表序（CSV 顺序，确定性）。
  */
 export function findMatchingRecipe(
   recipes: Recipe[],
   slots: BufferSlot[],
   registry: ItemRegistry,
+  pinnedRecipeId?: string | null,
 ): { recipe: Recipe; plan: InputPlanEntry[] } | null {
+  if (pinnedRecipeId != null) {
+    const pinned = recipes.find((r) => r.id === pinnedRecipeId);
+    if (pinned !== undefined) {
+      const pinnedPlan = planRecipeInputs(pinned, slots, registry);
+      if (pinnedPlan !== null) return { recipe: pinned, plan: pinnedPlan };
+    }
+    // 锁定配方不可匹配 → 落到常规顺序匹配（不 return null）
+  }
   for (const recipe of recipes) {
     const plan = planRecipeInputs(recipe, slots, registry);
     if (plan !== null) return { recipe, plan };

@@ -127,6 +127,16 @@ export interface BuildingComp {
    */
   outputNextEmitTick?: number;
   /**
+   * 图钉锁定的配方 id (T2.22，对齐旧项目 PlacedBuilding.activeRecipeId 的图钉语义)。
+   * null/undefined = 不锁定（按配方表顺序匹配第一条可行的）。
+   *
+   * 语义: **优先**而非强制——findMatchingRecipe 先试被锁定的配方，当前输入不满足时
+   * 仍回退到顺序匹配（旧项目是硬性 activeRecipeId，锁定后异类物品会一直卡住不生产；
+   * 这里改成软优先，锁定只影响"多配方可匹配时选谁"，不会让设备空转）。
+   * 入口: 设备弹窗「配方一览」的图钉按钮。
+   */
+  pinnedRecipeId?: string | null;
+  /**
    * 取货口产出物品 (T2.15)。null/undefined = 用 BuildingDefinition.depotOutputItem
    * 的默认值（简化版默认源矿 DEPOT_SOURCE_ITEM）；设备弹窗「仓库取货口」面板选物品时写入。
    * 每台实例独立（BuildingDefinition 运行时只读，A3 §6），仅 def.depot==='unload' 时有意义。

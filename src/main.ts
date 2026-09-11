@@ -944,6 +944,8 @@ async function main() {
     e.stopImmediatePropagation();
     if (e.code === 'Escape') {
       e.preventDefault();
+      // T2.22: 二级弹窗（物品说明 / 配方一览）优先吃 ESC，都没有才关主弹窗
+      if (deviceDialog.handleEscape()) return;
       deviceDialog.closeByUser(); // 内部回调 onClose → 清选中
     }
   }, true);

@@ -13,6 +13,19 @@
  *   仓库卡 265×128 #696969 圆角 15；连接线 75px #CCCCCC/#EBAD26；轨道 168×54
  *   胶囊按钮 圆角 20 字 13px w600（添加=白/#212121 hover#A3A3A3，移除=#E53935 hover#8A1717，取消=#CCCCCC hover#777777）
  *   标签页胶囊 375×32 底 #6E6E6E，选中页白 93.75×32，字 11px w600 #212121，未选中图标 #929292
+ *
+ * T2.22 新增（旧项目其余弹窗部分补齐）:
+ *   物品栏面板 440×520 #373737 圆角 15；网格 395.66×438，格 93.44×93.62 间距 7.3
+ *     格底渐变 #696969→等级色（94² 版 gridTileSvg），悬停底 #252525 + 图放大 1.08
+ *     滚动条 10×438 right 6.085/top 72，thumb 白 50%，滚动淡入 800ms 后淡出
+ *   配方条右段: 配方按钮 43.52×43.52 @326 | 竖线 3×30 #444444 @448 | 全部收取 300×68.33 @524
+ *     全部收取 mask 染色: 原色 #FFEF01 / hover #EBAD26 / 禁用 #373737；字 24px w800 #222222(#666666)
+ *   配方一览 960×560 #161616 圆角 16 边框 #444 padding 24；标题 20px w600 + 副标题 14px #A6A6A6
+ *     2 列网格 gap 16 行高 128；卡: 名 14px w500 + 白底卡 80 高 #F0F0F0 圆角 8 边框 #DDDDDD
+ *     迷你格 54×54 #333333 圆角 4 边框 #666666 + 底部 12px 数量色条（9px w700）
+ *     图钉 36×36 边框 #CCCCCC / hover #CAAD2B / 固定 #99932A（固定旋转 45° + 放大 1.25）
+ *   物品说明 460 宽 #1C1C1C 圆角 16 边框 #444 padding 28/24；名 22px w600 + 大图 160×160
+ *     主描述 15px 白 h1.7 / 次要描述 13px #9A9A9A / 空态 14px #777777
  */
 
 .efd-dialog-root {
@@ -204,17 +217,25 @@
 }
 
 /* ── 内容区 ──
-   左侧预留 480px = 旧项目资源面板 440 + 间距 20（Phase 2 无资源面板，但全部面板
-   内容按旧布局落在「右区」——生产行/仓库卡片/动作按钮的横向位置与旧项目一致）。
-   配合 .efd-synthesis-main 的 zoom 缩放（旧 FittedBox scaleDown 等价）。*/
+   左侧物品栏 440×520（旧 _buildResourcePanel）+ 20px 间距 + 右区（生产/仓库面板）。
+   T2.22 前右区靠 padding-left:480px 占位，物品栏落地后改为真实两列 flex。*/
 .efd-dialog-body {
   position: relative;
   flex: 1;
   min-height: 0;
-  padding: 12px 20px 20px 480px;
+  padding: 12px 20px 20px 20px;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 20px;
+  box-sizing: border-box;
+}
+
+.efd-body-right {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  box-sizing: border-box;
 }
 
 /* 动作按钮行（移动/删除——旧 ActionButton: 图标 44×44 + 6px + 文字 14px w500 白） */
@@ -442,22 +463,114 @@
   padding: 0 0 6px 30px;
 }
 
+/* 旧 building_synthesis_panel 的 SizedBox(800×76.8) Stack:
+   信息区 348.16[@0] | 配方按钮 43.52[@326] | 竖分隔线 3×30[@448] | 全部收取 300×68.3[@524] */
 .efd-recipe-bar {
   position: relative;
-  width: 348.16px;
+  width: 800px;
   height: 76.8px;
   margin-left: 30px;
+  flex: none;
+}
+
+.efd-recipe-info {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 348.16px;
+  height: 76.8px;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 24px;
-  cursor: default;
+  cursor: pointer;
 }
 
 /* 背景帧是绝对定位子元素（绘制在非定位内容之上）——内容一律抬到 relative，
    否则配方的输入/产物图标会被背景盖住（实测只透出三角形指示器）。*/
-.efd-recipe-bar > :not([data-sprite]) {
+.efd-recipe-info > :not([data-sprite]) {
   position: relative;
+}
+
+/* 配方按钮 43.52×43.52（Recipe_button.svg: 白圆 + #636363 放大镜，双色 → 原色 + hover 提亮）*/
+.efd-recipe-btn {
+  position: absolute;
+  left: 326px;
+  top: 16.64001px;
+  width: 43.52px;
+  height: 43.52px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.efd-recipe-btn:hover {
+  filter: brightness(1.35);
+}
+
+.efd-recipe-vsep {
+  position: absolute;
+  left: 448px;
+  top: 23.4px;
+  width: 3px;
+  height: 30px;
+  border-radius: 1.5px;
+  background: #444444;
+}
+
+/* 全部收取 300×68.33（Collect_button.svg 单色 #ffef01 → mask 染色:
+   原色→#ffef01 / hover→#EBAD26 / 禁用→#373737，与旧项目 ColorFilter 三态一致）*/
+.efd-collect {
+  position: absolute;
+  left: 524px;
+  top: 4.23613px;
+  width: 300px;
+  height: 68.32774px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.efd-collect .efd-icon-sprite {
+  position: absolute;
+  left: 0;
+  top: 0;
+  background-color: #ffef01;
+  transition: background-color 120ms ease-in-out;
+}
+
+.efd-collect:hover:not(.disabled) .efd-icon-sprite {
+  background-color: #ebad26;
+}
+
+.efd-collect.disabled {
+  cursor: default;
+}
+
+.efd-collect.disabled .efd-icon-sprite {
+  background-color: #373737;
+}
+
+.efd-collect-text {
+  position: absolute;
+  left: 82px;
+  right: 48px;
+  top: 6px;
+  bottom: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #222222;
+  font-size: 24px;
+  font-weight: 800;
+  font-family: inherit;
+  letter-spacing: 0;
+}
+
+.efd-collect.disabled .efd-collect-text {
+  color: #666666;
 }
 
 .efd-recipe-io {
@@ -886,7 +999,67 @@
   to   { left: -12px; }
 }
 
-/* 胶囊按钮（DepotCapsuleButton: 三态 + hover + add 图标 45° 旋转）*/
+/* 存货口: 在途物品列表 265×128（旧 DepotLoaderPanel 的多物品卡片）*/
+.efd-depot-incoming {
+  width: 265px;
+  height: 128px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 15px;
+  background: #696969;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.efd-depot-incoming::-webkit-scrollbar {
+  width: 6px;
+}
+
+.efd-depot-incoming::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.4);
+  border-radius: 3px;
+}
+
+.efd-depot-inc-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.efd-depot-inc-item:hover {
+  filter: brightness(1.2);
+}
+
+.efd-depot-inc-name {
+  flex: 1;
+  min-width: 0;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.efd-depot-inc-qty {
+  flex: none;
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.efd-depot-inc-empty {
+  color: #bbbbbb;
+  font-size: 14px;
+  text-align: center;
+}
+
+/* ── 取货口胶囊按钮（DepotCapsuleButton: 三态 + hover + add 图标 45° 旋转）── */
 .efd-capsule-btn {
   position: absolute;
   display: flex;
@@ -934,17 +1107,7 @@
 
 .efd-capsule-btn.cancel:hover { background: #777777; }
 
-/* ── 取货口产出物品选择（旧资源面板 4 标签页 + 物品网格复刻）── */
-.efd-picker {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding-top: 24px;
-  box-sizing: border-box;
-}
-
+/* ── 标签页胶囊（物品栏 与 产出选择 共用同一套几何: 375×32，选中页 93.75×32）── */
 .efd-picker-tabs {
   position: relative;
   width: 375px;
@@ -996,68 +1159,712 @@
   background-color: #212121;
 }
 
-.efd-picker-grid-wrap {
+/* ══════════ 左侧物品栏（旧 _buildResourcePanel / ResourceGridTile）══════════ */
+/* 440×520 #373737 圆角 15；底对齐右区（旧 Row crossAxisAlignment.end） */
+.efd-res {
+  position: relative;
+  width: 440px;
+  height: 520px;
+  max-height: 100%; /* 小窗口（弹窗被压到 <720 高）时不再上溢盖住电源开关 */
+  flex: none;
+  align-self: flex-end;
+  background: #373737;
+  border-radius: 15px;
+  overflow: hidden;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.efd-res > .efd-picker-tabs {
+  margin-top: 24px;
+}
+
+/* 网格区 395.66 宽（4 列 93.44 + 3×7.3），高度 = 面板剩余空间（满高时 438）*/
+.efd-res-grid-wrap {
   position: relative;
   margin-top: 24px;
   width: 395.66px;
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
 }
 
-.efd-picker-grid {
+.efd-res-grid {
   width: 100%;
   height: 100%;
   overflow-y: auto;
+  overflow-x: hidden;
   display: grid;
   grid-template-columns: repeat(4, 93.44px);
   grid-auto-rows: 93.62px;
   gap: 7.3px;
-  padding: 0 12px 8px 0;
-  box-sizing: border-box;
+  scrollbar-width: none;
 }
 
-.efd-picker-grid::-webkit-scrollbar {
-  width: 8px;
+.efd-res-grid::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
-.efd-picker-grid::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.5);
-  border-radius: 5px;
-}
-
-.efd-picker-tile {
+.efd-res-tile {
   position: relative;
   width: 93.44px;
   height: 93.62px;
+  border: none;
   border-radius: 11px;
   overflow: hidden;
-  background: #696969;
-  border: none;
   padding: 0;
+  background: transparent;
   cursor: pointer;
 }
 
-.efd-picker-tile:hover {
-  filter: brightness(1.15);
+.efd-res-tile-bg {
+  position: absolute;
+  inset: 0;
+  background-size: 100% 100%;
 }
 
-.efd-picker-tile .efd-tile-bg {
-  border-radius: 11px;
+/* 物品图 93×93，悬停放大 1.08（旧 AnimatedScale 150ms）*/
+.efd-res-tile-img {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 93px;
+  height: 93px;
+  transition: transform 150ms ease-in-out;
 }
 
-.efd-picker-tile-add {
+.efd-res-tile:hover .efd-res-tile-img {
+  transform: scale(1.08);
+}
+
+/* 悬停 tooltip: 物品名 11px，贴格底 8px。
+   配色不沿用旧项目的深灰底（rgba(33,33,33,.9) 与格子深色底几乎融为一体，
+   用户实测反馈对比不足）→ 改白底黑字 + 深色描边，在深浅格底上都足够醒目。*/
+.efd-res-tile-tip {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 8px;
+  display: none;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: #f0f0f0;
+  border: 1px solid #555555;
+  color: #212121;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+}
+
+.efd-res-tile:hover .efd-res-tile-tip {
+  display: block;
+}
+
+/* 添加模式遮罩 + add 图标 40×40（旧 showAddIcon: 未悬停白底黑图标 0.4 / 悬停黑底白图标 0.3）*/
+.efd-res-tile-add {
   position: absolute;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.25);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.4);
+  opacity: 0.8;
 }
 
+.efd-res-tile-add .efd-icon-sprite {
+  background-color: #000000;
+}
+
+.efd-res-tile:hover .efd-res-tile-add {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.efd-res-tile:hover .efd-res-tile-add .efd-icon-sprite {
+  background-color: #ffffff;
+}
+
+/* 自定义滚动条 10 宽（right 6.085 / top 72 → 面板底），滚动时淡入、800ms 后淡出。
+   轨道不拦截指针（保持对格子的点击穿透），仅 thumb 可拖拽（pointer-events: auto）。*/
+.efd-res-scrollbar {
+  position: absolute;
+  right: 6.085px;
+  top: 72px;
+  bottom: 0;
+  width: 10px;
+  opacity: 0;
+  transition: opacity 300ms ease-in-out;
+  pointer-events: none;
+}
+
+.efd-res-scrollbar.visible {
+  opacity: 1;
+}
+
+.efd-res-scroll-thumb {
+  position: absolute;
+  left: 0;
+  width: 10px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.5);
+  pointer-events: auto;
+  cursor: pointer;
+  touch-action: none; /* 拖拽期间不让浏览器接管触摸滚动 */
+}
+
+.efd-res-scrollbar.dragging .efd-res-scroll-thumb {
+  background: rgba(255, 255, 255, 0.7);
+}
+
+/* ══════════ 配方一览二级弹窗（旧 RecipeListDialog）══════════ */
+.efd-rlist-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: system-ui, 'Microsoft YaHei', sans-serif;
+  user-select: none;
+}
+
+.efd-rlist-root[hidden] {
+  display: none;
+}
+
+.efd-rlist-barrier {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+/* 960×560 #161616 圆角 16 边框 #444，padding 24 */
+.efd-rlist {
+  position: relative;
+  width: 960px;
+  height: 560px;
+  background: #161616;
+  border: 1px solid #444444;
+  border-radius: 16px;
+  padding: 24px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+.efd-rlist-head {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.efd-rlist-head-spacer {
+  width: 26px;
+  flex: none;
+}
+
+.efd-rlist-titles {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.efd-rlist-title {
+  color: #ffffff;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.efd-rlist-sub {
+  margin-top: 4px;
+  color: #a6a6a6;
+  font-size: 14px;
+}
+
+.efd-rlist-grid {
+  flex: 1;
+  min-height: 0;
+  margin-top: 24px;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  grid-auto-rows: 128px;
+  gap: 16px;
+  padding: 0 16px;
+  box-sizing: border-box;
+}
+
+.efd-rlist-grid::-webkit-scrollbar {
+  width: 8px;
+}
+
+.efd-rlist-grid::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.5);
+  border-radius: 5px;
+}
+
+.efd-rlist-empty {
+  grid-column: 1 / -1;
+  color: #aaaaaa;
+  font-size: 14px;
+}
+
+/* 配方卡: 名称行 + 白底卡 80 高 #F0F0F0 圆角 8 边框 #DDDDDD */
+.efd-rcard {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.efd-rcard-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 0 6px 4px;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+/* 文档图标（旧 Icons.description_outlined 14px #CCCCCC）*/
+.efd-rcard-doc {
+  width: 10px;
+  height: 13px;
+  flex: none;
+  border: 1.5px solid #cccccc;
+  border-radius: 1px;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      #cccccc 0 1.5px,
+      transparent 1.5px 4px
+    );
+  background-clip: padding-box;
+}
+
+.efd-rcard-body {
+  height: 80px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  background: #f0f0f0;
+  border: 1px solid #dddddd;
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
+.efd-rcard-spacer {
+  flex: 1;
+  min-width: 0;
+}
+
+.efd-rcard-gap {
+  width: 12px;
+  flex: none;
+}
+
+.efd-rcard-vsep {
+  width: 1px;
+  height: 54px;
+  flex: none;
+  background: #dcdcdc;
+}
+
+/* 「>>>」+ 秒数（旧: 3×chevron_right 14px #666666 + 11px bold #444444）*/
+.efd-rcard-run {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.efd-rcard-chevs {
+  display: flex;
+  align-items: center;
+}
+
+.efd-rcard-chevs > i {
+  width: 0;
+  height: 0;
+  border-top: 7px solid transparent;
+  border-bottom: 7px solid transparent;
+  border-left: 7px solid #666666;
+}
+
+.efd-rcard-time {
+  color: #444444;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* 图钉按钮 36×36（旧 RecipePinButton: 固定时旋转 45° + 放大 1.25 + 金色 #99932A）*/
+.efd-rcard-pin {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid #cccccc;
+  border-radius: 4px;
+  background: transparent;
+  color: #888888;
+  cursor: pointer;
+  transition: transform 150ms ease-in-out, color 150ms ease-in-out,
+    border-color 150ms ease-in-out, background-color 150ms ease-in-out;
+}
+
+.efd-rcard-pin svg {
+  display: block;
+}
+
+.efd-rcard-pin:hover {
+  color: #caad2b;
+  border-color: #caad2b;
+  transform: scale(1.25);
+}
+
+.efd-rcard-pin.pinned {
+  color: #99932a;
+  border-color: #99932a;
+  border-width: 1.5px;
+  background: rgba(153, 147, 42, 0.15);
+  transform: rotate(45deg) scale(1.25);
+}
+
+/* 迷你物品格 54×54（旧 MiniItemTile: #333333 圆角 4 边框 #666666 + 底部 12px 数量色条）*/
+.efd-mini {
+  position: relative;
+  width: 54px;
+  height: 54px;
+  flex: none;
+  border: 1px solid #666666;
+  border-radius: 4px;
+  background: #333333;
+  overflow: hidden;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+.efd-mini + .efd-mini {
+  margin-left: 8px;
+}
+
+.efd-mini.empty {
+  background: transparent;
+  border-color: #cccccc;
+  cursor: default;
+  /* 对角线（旧 DiagonalSlashPainter）*/
+  background-image: linear-gradient(
+    to top right,
+    transparent calc(50% - 0.75px),
+    #cccccc calc(50% - 0.75px),
+    #cccccc calc(50% + 0.75px),
+    transparent calc(50% + 0.75px)
+  );
+}
+
+.efd-mini-img {
+  position: absolute;
+  left: 2px;
+  top: 2px;
+}
+
+.efd-mini-tag {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ebebeb;
+  color: #ffffff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.efd-mini-tag.on-light {
+  color: #000000;
+}
+
+/* ══════════ 物品说明二级弹窗（旧 ItemDescriptionDialog）══════════ */
+.efd-itemdesc-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: system-ui, 'Microsoft YaHei', sans-serif;
+  user-select: none;
+}
+
+.efd-itemdesc-root[hidden] {
+  display: none;
+}
+
+.efd-itemdesc-barrier {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+/* 460 宽 #1C1C1C 圆角 16 边框 #444，内边距 28/24。
+   高度随内容自适应，**上限 430px**（2026-09-12 用户拍板）；弹窗本体绝不滚动
+   （整弹窗滚动会让背景花纹/图片/标题/关闭按钮一起动，实测极不协调），
+   需要滚动的只有次要描述区（见 .efd-itemdesc-secondary）。*/
+.efd-itemdesc {
+  position: relative;
+  width: 460px;
+  max-height: 430px;
+  overflow: hidden;
+  background: #1c1c1c;
+  border: 1px solid #444444;
+  border-radius: 16px;
+  padding: 24px 28px;
+  box-sizing: border-box;
+}
+
+/* 背景花纹（与设备弹窗同款: 白 2%，本弹窗窄 → 缩小居中，不撑破圆角）*/
+.efd-itemdesc-watermark {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 400px;
+  height: 400px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  filter: brightness(0) invert(1);
+  opacity: 0.02;
+}
+
+.efd-itemdesc-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.efd-itemdesc-title {
+  position: relative;
+  color: #ffffff;
+  font-size: 22px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.efd-itemdesc-sep {
+  position: relative;
+  height: 1px;
+  margin-top: 4px;
+  background: #444444;
+}
+
+/* 物品大图 160×160（旧: 原始图片无网格背景，cacheWidth 480）*/
+.efd-itemdesc-img {
+  position: relative;
+  width: 160px;
+  height: 160px;
+  margin: 28px auto 0;
+  background-repeat: no-repeat;
+}
+
+.efd-itemdesc-body {
+  position: relative;
+  margin-top: 28px;
+}
+
+.efd-itemdesc-desc {
+  color: #ffffff;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+/* 次要描述: **唯一可滚动的区域**——固定 3 行高（13px × 1.7 ≈ 22.1px/行），
+   超过 3 行才出现内部滚动（滚轮滚动，滚动条隐藏——白色轨道在深色弹窗上不协调），
+   不足 3 行时高度自适应、不可滚（「赤铜粉末」的短说明完全显示也不会假滚动）。*/
+.efd-itemdesc-secondary {
+  margin-top: 12px;
+  max-height: 66.3px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  color: #9a9a9a;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.efd-itemdesc-secondary::-webkit-scrollbar {
+  display: none;
+}
+
+.efd-itemdesc-desc.empty {
+  color: #777777;
+  font-size: 14px;
+}
+
+/* ── 物品格可点（打开物品说明）── */
+.efd-tile-tap {
+  cursor: pointer;
+}
+
+.efd-tile-tap:hover {
+  filter: brightness(1.12);
+}
+
+/* ══════════ 拖拽投放 ══════════ */
+/* 拖拽跟随反馈（旧 LongPressDraggable feedback: 80×80 #373737 圆角 10 白边 0.4
+   + 68×68 物品图，opacity .85）。挂 body 上、pointer-events:none 不挡命中检测。*/
+.efd-drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 80px;
+  height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 10px;
+  background: #373737;
+  opacity: 0.85;
+  pointer-events: none;
+  z-index: 2000;
+}
+
+/* 输入格 / 物品栏可放置提示遮罩（旧 SynthesisGrid 拖放提示 + 资源面板
+   "拖动到此收纳物品"遮罩 1:1: 亮色遮罩 + 背景模糊 + 中央 add 图标 + 双环涟漪 +
+   底部文案；悬停到目标（.efd-drag-over）时 add 旋转 90°/放大 1.15/加深 #222222、
+   文字下滑淡出——旧 AnimatedRotation/AnimatedScale/AnimatedSlide 同款参数）。*/
+.efd-drop-hint {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+/* 尺寸变量: 输入格小号 / 物品栏大号（旧项目两处都是 90，输入格 128 里显过大）*/
+.efd-drop-hint {
+  --add-size: 72px;
+}
+
+.efd-drop-hint.tile {
+  --add-size: 56px;
+  border-radius: 10px;
+  background: #b4b4b4; /* 旧项目输入格拖放遮罩色（用户指定）*/
+}
+
+.efd-drop-hint.panel {
+  --add-size: 90px;
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.5);
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+}
+
+/* 双环涟漪（旧 _RipplePainter: 双环错相 50%，半径 0→80、透明度 0.3→0）——
+   淡淡的: 起始不透明度压到 0.12，只在加号后方隐约可见。*/
+.efd-drop-hint .efd-ripple {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 160px;
+  height: 160px;
+  margin: -80px 0 0 -80px;
+  border-radius: 50%;
+  background: rgba(102, 102, 102, 0.12);
+  opacity: 0;
+  animation: efd-drop-ripple 2500ms linear infinite;
+}
+
+.efd-drop-hint .efd-ripple:nth-of-type(2) {
+  animation-delay: 1250ms;
+}
+
+@keyframes efd-drop-ripple {
+  0%   { transform: scale(0.22); opacity: 1; }
+  100% { transform: scale(1); opacity: 0; }
+}
+
+/* 中央加号: 内联 SVG（ADD_SVG = 旧项目 add.svg，4 段分离圆角条），
+   fill=currentColor 由 color 染色（#555555 / 悬停加深 #222222）。
+   悬停 → 旋转 45°（"+" 转 "×"）+ 放大 1.15。*/
+.efd-drop-hint .efd-add-icon {
+  position: relative;
+  display: block;
+  width: var(--add-size);
+  height: var(--add-size);
+  color: #555555;
+  transition: transform 300ms ease-in-out, color 300ms ease-in-out;
+}
+
+.efd-drop-hint .efd-add-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* efd-drag-over 挂在**目标容器**（.efd-tile / .efd-res）上，hint 是其后代 */
+.efd-tile.efd-drag-over .efd-drop-hint .efd-add-icon,
+.efd-res.efd-drag-over .efd-drop-hint .efd-add-icon {
+  transform: rotate(45deg) scale(1.15);
+  color: #222222;
+}
+
+/* 底部文案（悬停时下滑 + 淡出，旧 AnimatedSlide(0,0.8)/AnimatedOpacity）*/
+.efd-drop-hint .efd-drop-text {
+  position: absolute;
+  bottom: 14px;
+  left: 0;
+  right: 0;
+  color: #333333;
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+  transition: transform 300ms ease-in-out, opacity 300ms ease-in-out;
+}
+
+.efd-drop-hint.panel .efd-drop-text {
+  font-size: 16px;
+  bottom: 96px;
+}
+
+.efd-tile.efd-drag-over .efd-drop-hint .efd-drop-text,
+.efd-res.efd-drag-over .efd-drop-hint .efd-drop-text {
+  transform: translateY(14px);
+  opacity: 0;
+}
+
+/* ── 空态提示（物品栏无物品 / 分类为空 共用）── */
 .efd-picker-empty {
   color: #aaaaaa;
   font-size: 14px;
   margin-top: 24px;
+}
+
+.efd-res-grid > .efd-picker-empty {
+  grid-column: 1 / -1;
+  margin-top: 0;
 }
 
 /* ── 通用: 图集帧 sprite（JS 设 background-image/size/position + 宽高）── */

@@ -119,3 +119,33 @@ export function portStatuses(
     output: outputPortStatuses(world, beltAt, handle, comp, def),
   };
 }
+
+/**
+ * 设备输入端口上的「在途物品」统计 (T2.22，对齐旧 DepotLoaderPanel.
+ * _detectAllIncomingItemIds): 扫描每个已连接输入端口的供给带，汇总带上的物品类型
+ * 与件数（含已预约进入的 entering 物品——它还在带上跑，视觉上属于"在途"）。
+ *
+ * 用途: 存货口是无限汇（物品入库即消失，没有仓库库存概念），弹窗能显示的就是
+ * "哪些物品正在送来、各几件"。只读计算，不改任何仿真状态。
+ */
+export function incomingInputItems(
+  world: World,
+  handle: EntityHandle,
+  comp: BuildingComp,
+  def: BuildingDefinition,
+): Array<{ itemId: string; count: number }> {
+  const tl = topLeftGrid(world, handle);
+  if (!tl) return [];
+  const beltAt = buildBeltCellIndex(world);
+  const counts = new Map<string, number>();
+  for (const cell of inputPortCells(tl.gx, tl.gy, def, comp.direction)) {
+    const feeder = findFeederBelt(world, beltAt, cell);
+    if (feeder === null) continue;
+    const seg = world.getComponent<BeltSegmentComp>(feeder, 'BeltSegmentComp');
+    if (!seg) continue;
+    for (const it of seg.items) {
+      counts.set(it.itemId, (counts.get(it.itemId) ?? 0) + 1);
+    }
+  }
+  return [...counts].map(([itemId, count]) => ({ itemId, count }));
+}
